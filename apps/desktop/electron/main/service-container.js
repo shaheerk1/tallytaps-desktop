@@ -132,7 +132,7 @@ async function createServiceContainer() {
   const secretProtector = createSecretProtector();
   const fieldInboxService = createFieldInboxService({
     fieldInboxRepository,
-    documentSequenceRepository,
+    cloudSyncRepository,
     secretProtector
   });
   const cloudSyncService = createCloudSyncService({ repository: cloudSyncRepository, secretProtector });

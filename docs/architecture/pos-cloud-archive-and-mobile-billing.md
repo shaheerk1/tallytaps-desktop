@@ -31,3 +31,7 @@ Cloud backup uses the same host identity/API key configured for Field Transactio
 ## Mobile bills
 
 Each POS publishes its own complete item catalog. A phone selects that catalog, stores immutable item/price/charge snapshots in a standalone mobile bill, and routes it to all POS nodes or one selected node. The bill does not enter local POS sales, stock, cash, customer, or tax ledgers. The Field Transaction Inbox can view it and print a customer copy using this POS terminal's live receipt branding and printer configuration.
+
+## Ordinary field-record delivery
+
+Cash, card, stock, and note records default to all POS inboxes. A mobile device can instead select one or more POS archive nodes as its default destination. Registered desktop clients identify their POS node when fetching the field inbox, so selected records appear only at those destinations. The existing host-key endpoints and older clients remain compatible and receive records whose delivery scope is `all`.

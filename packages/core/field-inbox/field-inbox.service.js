@@ -3,7 +3,7 @@ const LIST_TIMEOUT_MS = 15000;
 const MEDIA_TIMEOUT_MS = 30000;
 const MAX_MEDIA_BYTES = 12 * 1024 * 1024;
 
-function createFieldInboxService({ fieldInboxRepository, secretProtector, fetchImpl = global.fetch }) {
+function createFieldInboxService({ fieldInboxRepository, cloudSyncRepository = null, secretProtector, fetchImpl = global.fetch }) {
   if (!fieldInboxRepository) throw new Error('Field inbox service requires fieldInboxRepository.');
   if (!secretProtector) throw new Error('Field inbox service requires secretProtector.');
   if (typeof fetchImpl !== 'function') throw new Error('Field inbox service requires fetch support.');
@@ -129,12 +129,17 @@ function createFieldInboxService({ fieldInboxRepository, secretProtector, fetchI
 
   async function authenticatedFetch(url, config, timeoutMs) {
     const apiKey = secretProtector.decrypt(config.api_key_ciphertext);
+    const headers = { 'X-Host-ID': config.host_id, 'X-API-Key': apiKey };
+    if (cloudSyncRepository) {
+      const cloud = await cloudSyncRepository.getConfiguration();
+      if (cloud?.node_id && cloud?.registered_host_id === config.host_id) headers['X-POS-Node-ID'] = cloud.node_id;
+    }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetchImpl(url, {
         method: 'GET',
-        headers: { 'X-Host-ID': config.host_id, 'X-API-Key': apiKey },
+        headers,
         signal: controller.signal
       });
       if (!response.ok) {

@@ -65,3 +65,23 @@ test('configuration snapshot never exposes the stored API key', async () => {
   assert.deepEqual(Object.keys(result).sort(), ['apiBaseUrl', 'configured', 'hasApiKey', 'hostId', 'updatedAt']);
   assert.equal(JSON.stringify(result).includes('encrypted-secret'), false);
 });
+
+test('identifies the registered POS node when requesting routed field records', async () => {
+  let requestHeaders;
+  const service = createFieldInboxService({
+    fieldInboxRepository: {
+      getConfiguration: async () => ({ host_id: 'TH-TEST', api_key_ciphertext: 'cipher' }),
+      listResolved: async () => []
+    },
+    cloudSyncRepository: {
+      getConfiguration: async () => ({ node_id: 'node-7', registered_host_id: 'TH-TEST' })
+    },
+    secretProtector: { decrypt: () => 'secret' },
+    fetchImpl: async (_url, options) => {
+      requestHeaders = options.headers;
+      return { ok: true, status: 200, json: async () => ({ hostId: 'TH-TEST', cursor: 'created_at', range: {}, records: [] }) };
+    }
+  });
+  await service.listRecords({ date: '2026-08-17' });
+  assert.equal(requestHeaders['X-POS-Node-ID'], 'node-7');
+});
