@@ -1,0 +1,101 @@
+<section class="cash-page">
+  <header>
+    <h1>Cash Management <span>~ Drawer Accountability</span></h1>
+    <p>Open, move, count, reconcile, and keep a history of every printed shift report.</p>
+  </header>
+
+  <p class="alert error" *ngIf="error">{{ error }}</p>
+  <p class="alert success" *ngIf="info">{{ info }}</p>
+
+  <section class="open-card" *ngIf="!shift">
+    <h2>Open Cash Shift</h2>
+    <p>Count the opening float by denomination before taking payments.</p>
+    <div class="denominations">
+      <label *ngFor="let line of openingLines">
+        {{ line.denomination | number:'1.2-2' }}
+        <input type="number" min="0" [(ngModel)]="line.quantity" />
+      </label>
+    </div>
+    <strong>Opening total: {{ total(openingLines) | number:'1.2-2' }}</strong>
+    <button class="primary" (click)="openShift()" [disabled]="loading">Open Shift</button>
+  </section>
+
+  <ng-container *ngIf="shift">
+    <section class="summary">
+      <div><span>Drawer</span><strong>{{ shift.drawerName }}</strong></div>
+      <div><span>Status</span><strong>{{ shift.status }}</strong></div>
+      <div><span>Opening</span><strong>{{ shift.openingTotal | number:'1.2-2' }}</strong></div>
+      <div><span>Expected</span><strong>{{ shift.expectedTotal | number:'1.2-2' }}</strong></div>
+      <div *ngIf="shift.declaredTotal !== null"><span>Declared</span><strong>{{ shift.declaredTotal | number:'1.2-2' }}</strong></div>
+      <div *ngIf="shift.varianceTotal !== null"><span>Variance</span><strong>{{ shift.varianceTotal | number:'1.2-2' }}</strong></div>
+    </section>
+
+    <button style="margin-top: 10px;" class="primary" (click)="printReport('X')" *ngIf="shift.status !== 'closed'">Print X Report</button>
+    <button class="primary" (click)="printReport('Z')" *ngIf="shift.status === 'closed'">Print Z Report</button>
+
+    <section class="two-col" *ngIf="shift.status === 'open'">
+      <article>
+        <h2>Cash Movement</h2>
+        <select [(ngModel)]="movementType">
+          <option value="cash_in">Cash in</option>
+          <option value="cash_out">Cash out</option>
+          <option value="safe_drop">Safe drop</option>
+          <option value="bank_drop">Bank drop</option>
+        </select>
+        <input type="number" min="0.01" [(ngModel)]="movementAmount" placeholder="Amount" />
+        <input [(ngModel)]="movementReason" placeholder="Required reason" />
+        <button class="primary" (click)="addMovement()">Record Movement</button>
+      </article>
+
+      <article>
+        <h2>Blind Closing Count</h2>
+        <p>Count physical cash without relying on the expected amount.</p>
+        <div class="denominations">
+          <label *ngFor="let line of closingLines">
+            {{ line.denomination | number:'1.2-2' }}
+            <input type="number" min="0" [(ngModel)]="line.quantity" />
+          </label>
+        </div>
+        <strong>Declared total: {{ total(closingLines) | number:'1.2-2' }}</strong>
+        <button class="primary" (click)="blindClose()">Submit Count</button>
+      </article>
+    </section>
+
+    <section class="close-card" *ngIf="shift.status === 'blind_closed'">
+      <h2>Final Reconciliation</h2>
+      <p>Expected {{ shift.expectedTotal | number:'1.2-2' }} | Declared {{ shift.declaredTotal | number:'1.2-2' }} | Variance {{ (shift.declaredTotal! - shift.expectedTotal) | number:'1.2-2' }}</p>
+      <input [(ngModel)]="varianceReason" placeholder="Reason required if there is a variance" />
+      <button class="primary" (click)="closeShift()">Finalize Z Close</button>
+    </section>
+
+    <section class="movement-list">
+      <h2>Shift Activity</h2>
+      <div *ngFor="let movement of shift.movements">
+        <span>{{ movement.movement_type }}</span>
+        <span>{{ movement.reason || 'System transaction' }}</span>
+        <strong [class.out]="movement.direction === 'out'">{{ movement.direction === 'out' ? '-' : '+' }}{{ movement.amount | number:'1.2-2' }}</strong>
+      </div>
+    </section>
+
+    <section class="history-card">
+      <h2>Report History</h2>
+      <p class="history-empty" *ngIf="reportHistory.length === 0">No report has been archived yet for this shift.</p>
+      <div class="history-list" *ngIf="reportHistory.length > 0">
+        <article *ngFor="let report of reportHistory" class="history-item">
+          <div>
+            <strong>{{ report.reportType }} #{{ report.reportNo }}</strong>
+            <span>{{ report.printedAt | date:'medium' }}</span>
+          </div>
+          <div>
+            <span>Printed by</span>
+            <strong>{{ report.printedByName || 'System' }}</strong>
+          </div>
+          <div>
+            <span>Snapshot</span>
+            <strong>{{ snapshotAmount(report, 'expectedTotal') | number:'1.2-2' }}</strong>
+          </div>
+        </article>
+      </div>
+    </section>
+  </ng-container>
+</section>

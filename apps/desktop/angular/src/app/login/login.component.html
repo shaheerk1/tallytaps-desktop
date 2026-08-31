@@ -1,0 +1,104 @@
+<div class="login-container">
+  <div class="login-card">
+    <div class="login-header">
+      <img class="brand-logo" src="assets/small_icon.png" alt="POS Platform" />
+      <div class="header-divider" aria-hidden="true"></div>
+      <div class="brand-copy">
+        <h1>TallyTaps</h1>
+        <p class="subtitle">Sign in to continue</p>
+      </div>
+    </div>
+
+    <form (ngSubmit)="onLogin()" class="login-form">
+      <!-- Username -->
+      <div class="form-group">
+        <label for="username">Username</label>
+        <div class="input-wrapper">
+          <input
+            #txtUsername
+            id="username"
+            type="text"
+            [(ngModel)]="username"
+            name="username"
+            autocomplete="username"
+            placeholder="Enter username"
+            [disabled]="loading"
+            (keydown.enter)="focusPassword()"
+          />
+        </div>
+      </div>
+
+      <!-- Password -->
+      <div class="form-group">
+        <label for="password">Password</label>
+        <div class="input-wrapper">
+          <input
+            #txtPassword
+            id="password"
+            type="password"
+            [(ngModel)]="password"
+            name="password"
+            autocomplete="current-password"
+            placeholder="Enter password"
+            [disabled]="loading"
+            (keydown.enter)="onLogin()"
+          />
+        </div>
+      </div>
+
+      <!-- Workstation -->
+      <div class="form-group">
+        <label for="workstation">Workstation</label>
+        <div class="input-wrapper">
+          <select
+            id="workstation"
+            [(ngModel)]="selectedWorkstationId"
+            name="workstation"
+            [disabled]="loading || workstations.length === 0"
+            (ngModelChange)="selectWorkstation($event)"
+          >
+            <option [ngValue]="null" disabled *ngIf="workstations.length === 0">
+              No workstation configured
+            </option>
+            <option *ngFor="let ws of workstations" [ngValue]="ws.id">
+              {{ ws.machine_code }} — {{ ws.name }} ({{ ws.location_code }})
+            </option>
+          </select>
+        </div>
+        <p class="field-hint">This machine's registered POS counter</p>
+      </div>
+
+      <p class="field-hint">The open business date for the selected location is applied automatically.</p>
+
+      <!-- Error Message -->
+      <div *ngIf="error" class="error-banner">
+        {{ error }}
+      </div>
+
+      <!-- Warning Message -->
+      <div *ngIf="warning" class="warning-banner">
+        {{ warning }}
+      </div>
+
+      <!-- Buttons -->
+      <div class="button-row">
+        <button
+          type="button"
+          class="btn-cancel"
+          [disabled]="loading"
+          (click)="onCancel()"
+        >
+          Cancel
+        </button>
+        <button
+          type="submit"
+          class="btn-login"
+          [disabled]="loading"
+        >
+          <span *ngIf="loading" class="spinner"></span>
+          {{ loading ? 'Signing in...' : 'Sign In' }}
+        </button>
+      </div>
+    </form>
+  </div>
+</div>

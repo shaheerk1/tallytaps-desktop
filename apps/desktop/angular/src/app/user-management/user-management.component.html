@@ -1,0 +1,222 @@
+<div class="um-container">
+  <div class="um-header">
+    <div class="header-left">
+      <h1>User Management</h1>
+      <p class="subtitle">Manage users, roles, and access permissions</p>
+    </div>
+    <div class="header-right">
+      <input
+        class="search-input"
+        type="text"
+        placeholder="Search users..."
+        [(ngModel)]="searchTerm"
+      />
+      <button class="btn btn-primary" (click)="openCreateModal()">+ New User</button>
+    </div>
+  </div>
+
+  <div class="um-content" *ngIf="!isLoading">
+    <div class="error-banner" *ngIf="errorMessage && !showCreateModal && !showEditModal && !showDeleteModal && !showPasswordModal && !showRolesModal">
+      {{ errorMessage }}
+    </div>
+
+    <div class="user-table-wrap">
+      <table class="user-table">
+        <thead>
+          <tr>
+            <th>User</th>
+            <th>Email</th>
+            <th>Roles</th>
+            <th>Status</th>
+            <th>Last Login</th>
+            <th class="col-actions">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr *ngFor="let user of filteredUsers" [class.inactive]="user.status !== 'active'">
+            <td>
+              <div class="user-cell">
+                <div class="avatar" [class.admin]="user.username === 'admin'">
+                  {{ user.display_name.charAt(0).toUpperCase() }}
+                </div>
+                <div>
+                  <div class="user-name">{{ user.display_name }}</div>
+                  <div class="user-login">{{ '@' }}{{ user.username }}</div>
+                </div>
+              </div>
+            </td>
+            <td class="cell-email">{{ user.email || '—' }}</td>
+            <td>
+              <div class="role-tags">
+                <span class="role-tag" *ngFor="let role of user.roles">{{ role.name }}</span>
+                <span class="role-tag empty" *ngIf="!user.roles || user.roles.length === 0">No roles</span>
+              </div>
+            </td>
+            <td>
+              <span class="status-badge" [class.active]="user.status === 'active'" [class.inactive]="user.status !== 'active'">
+                {{ user.status }}
+              </span>
+            </td>
+            <td class="cell-date">{{ formatDate(user.last_login_at) }}</td>
+            <td class="col-actions">
+              <div class="row-actions">
+                <button class="btn-icon" title="Edit user" (click)="openEditModal(user)">✏️</button>
+                <button class="btn-icon" title="Assign roles" (click)="openRolesModal(user)">👥</button>
+                <button class="btn-icon" title="Reset password" (click)="openPasswordModal(user)">🔑</button>
+                <button class="btn-icon btn-danger-icon" title="Delete user" (click)="openDeleteModal(user)" [disabled]="isAdmin(user)">🗑️</button>
+              </div>
+            </td>
+          </tr>
+          <tr *ngIf="filteredUsers.length === 0">
+            <td colspan="6" class="empty-row">No users found.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="um-loading" *ngIf="isLoading">
+    <div class="spinner"></div>
+    <span>Loading users...</span>
+  </div>
+</div>
+
+<!-- ── Create User Modal ─────────────────────────────────── -->
+<div class="modal-overlay" *ngIf="showCreateModal" (click)="closeCreateModal()">
+  <div class="modal-box modal-lg" (click)="$event.stopPropagation()">
+    <h3>Create New User</h3>
+    <div class="error-banner" *ngIf="errorMessage">{{ errorMessage }}</div>
+
+    <div class="form-grid">
+      <div class="form-field">
+        <label>Username *</label>
+        <input class="form-input" type="text" [(ngModel)]="newUser.username" placeholder="e.g. jsmith" />
+      </div>
+      <div class="form-field">
+        <label>Display Name *</label>
+        <input class="form-input" type="text" [(ngModel)]="newUser.displayName" placeholder="e.g. John Smith" />
+      </div>
+      <div class="form-field">
+        <label>Password *</label>
+        <input class="form-input" type="password" [(ngModel)]="newUser.password" placeholder="Min 4 characters" />
+      </div>
+      <div class="form-field">
+        <label>Email</label>
+        <input class="form-input" type="email" [(ngModel)]="newUser.email" placeholder="user@example.com" />
+      </div>
+      <div class="form-field">
+        <label>Phone</label>
+        <input class="form-input" type="tel" [(ngModel)]="newUser.phone" placeholder="077 123 4567" />
+      </div>
+    </div>
+
+    <div class="form-section" *ngIf="roles.length > 0">
+      <label class="section-label">Roles</label>
+      <div class="checkbox-group">
+        <label class="checkbox-item" *ngFor="let role of roles">
+          <input type="checkbox" [checked]="newUser.roleIds.indexOf(role.id) >= 0" (change)="toggleNewUserRole(role.id)" />
+          <span>{{ role.name }}</span>
+          <span class="checkbox-meta">{{ role.permissionCount }} permissions</span>
+        </label>
+      </div>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-cancel" (click)="closeCreateModal()">Cancel</button>
+      <button class="btn btn-primary" (click)="submitCreate()" [disabled]="!newUser.username || !newUser.password || !newUser.displayName">Create User</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Edit User Modal ───────────────────────────────────── -->
+<div class="modal-overlay" *ngIf="showEditModal" (click)="closeEditModal()">
+  <div class="modal-box" (click)="$event.stopPropagation()">
+    <h3>Edit User</h3>
+    <div class="error-banner" *ngIf="errorMessage">{{ errorMessage }}</div>
+
+    <div class="form-grid single">
+      <div class="form-field">
+        <label>Display Name</label>
+        <input class="form-input" type="text" [(ngModel)]="editUser.displayName" />
+      </div>
+      <div class="form-field">
+        <label>Email</label>
+        <input class="form-input" type="email" [(ngModel)]="editUser.email" />
+      </div>
+      <div class="form-field">
+        <label>Phone</label>
+        <input class="form-input" type="tel" [(ngModel)]="editUser.phone" />
+      </div>
+      <div class="form-field">
+        <label>Status</label>
+        <select class="form-input" [(ngModel)]="editUser.status">
+          <option value="active">Active</option>
+          <option value="inactive">Inactive</option>
+          <option value="locked">Locked</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-cancel" (click)="closeEditModal()">Cancel</button>
+      <button class="btn btn-primary" (click)="submitEdit()">Save Changes</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Delete Confirmation Modal ─────────────────────────── -->
+<div class="modal-overlay" *ngIf="showDeleteModal" (click)="closeDeleteModal()">
+  <div class="modal-box modal-sm" (click)="$event.stopPropagation()">
+    <h3>Delete User</h3>
+    <div class="error-banner" *ngIf="errorMessage">{{ errorMessage }}</div>
+    <p class="confirm-text">
+      Are you sure you want to delete <strong>{{ deleteTarget?.display_name }}</strong>?
+      This action cannot be undone.
+    </p>
+    <div class="modal-actions">
+      <button class="btn btn-cancel" (click)="closeDeleteModal()">Cancel</button>
+      <button class="btn btn-danger" (click)="submitDelete()">Delete User</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Password Reset Modal ──────────────────────────────── -->
+<div class="modal-overlay" *ngIf="showPasswordModal" (click)="closePasswordModal()">
+  <div class="modal-box modal-sm" (click)="$event.stopPropagation()">
+    <h3>Reset Password</h3>
+    <div class="error-banner" *ngIf="errorMessage">{{ errorMessage }}</div>
+    <p class="confirm-text">
+      Setting new password for <strong>{{ passwordForm.username }}</strong>
+    </p>
+    <div class="form-field">
+      <label>New Password</label>
+      <input class="form-input" type="password" [(ngModel)]="passwordForm.newPassword" placeholder="Min 4 characters" />
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-cancel" (click)="closePasswordModal()">Cancel</button>
+      <button class="btn btn-primary" (click)="submitPassword()" [disabled]="!passwordForm.newPassword || passwordForm.newPassword.length < 4">Update Password</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Assign Roles Modal ────────────────────────────────── -->
+<div class="modal-overlay" *ngIf="showRolesModal" (click)="closeRolesModal()">
+  <div class="modal-box" (click)="$event.stopPropagation()">
+    <h3>Assign Roles — {{ rolesTarget?.display_name }}</h3>
+    <div class="error-banner" *ngIf="errorMessage">{{ errorMessage }}</div>
+
+    <div class="checkbox-group">
+      <label class="checkbox-item" *ngFor="let role of roles">
+        <input type="checkbox" [checked]="selectedRoleIds.indexOf(role.id) >= 0" (change)="toggleSelectedRole(role.id)" />
+        <span>{{ role.name }}</span>
+        <span class="checkbox-meta">{{ role.userCount }} users</span>
+      </label>
+      <div class="empty-state" *ngIf="roles.length === 0">No roles available.</div>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-cancel" (click)="closeRolesModal()">Cancel</button>
+      <button class="btn btn-primary" (click)="submitRoles()">Save Roles</button>
+    </div>
+  </div>
+</div>

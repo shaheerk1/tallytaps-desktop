@@ -1,0 +1,516 @@
+<div class="st-container">
+  <header class="st-header">
+    <div>
+      <h1>Settings</h1>
+      <p class="subtitle">Central application configuration</p>
+    </div>
+  </header>
+
+  <div *ngIf="errorMessage" class="alert alert-error">{{ errorMessage }}</div>
+  <div *ngIf="isLoading" class="loading-text">Loading settings...</div>
+
+  <ng-container *ngIf="!isLoading">
+    <nav class="st-tabs">
+      <button
+        *ngFor="let tab of tabs"
+        class="st-tab"
+        [class.active]="activeTab === tab.id"
+        (click)="setTab(tab.id)"
+      >
+        <span class="tab-icon">{{ tab.icon }}</span>
+        <span class="tab-label">{{ tab.label }}</span>
+      </button>
+    </nav>
+
+    <div class="st-body">
+      <!-- ── General ─────────────────────────────────────── -->
+      <section *ngIf="activeTab === 'general'" class="st-section">
+        <h2>Store Information</h2>
+        <p class="section-hint">Name, tagline and contact details printed on receipts and shown to customers.</p>
+
+        <div class="form-grid">
+          <div class="form-field">
+            <label>Store Name</label>
+            <input class="form-input" type="text" [(ngModel)]="form.general.storeName" placeholder="e.g. Main Store" />
+          </div>
+          <div class="form-field">
+            <label>Tagline</label>
+            <input class="form-input" type="text" [(ngModel)]="form.general.tagline" placeholder="e.g. Fresh Produce Daily" />
+          </div>
+          <div class="form-field">
+            <label>Address Line 1</label>
+            <input class="form-input" type="text" [(ngModel)]="form.general.address1" placeholder="e.g. 123 Main Street" />
+          </div>
+          <div class="form-field">
+            <label>Address Line 2</label>
+            <input class="form-input" type="text" [(ngModel)]="form.general.address2" placeholder="Optional" />
+          </div>
+          <div class="form-field">
+            <label>Phone</label>
+            <input class="form-input" type="text" [(ngModel)]="form.general.phone" placeholder="e.g. +94 11 234 5678" />
+          </div>
+          <div class="form-field">
+            <label>Currency Symbol</label>
+            <input class="form-input" type="text" [(ngModel)]="form.general.currencySymbol" placeholder="e.g. Rs." />
+          </div>
+          <div class="form-field">
+            <label>Date Format</label>
+            <select class="form-input" [(ngModel)]="form.general.dateFormat">
+              <option value="Y-m-d">Y-m-d (2026-08-01)</option>
+              <option value="d-m-Y">d-m-Y (01-08-2026)</option>
+              <option value="m/d/Y">m/d/Y (08/01/2026)</option>
+              <option value="d/m/Y">d/m/Y (01/08/2026)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="st-actions">
+          <span class="save-msg" [class.save-error]="isError('general')">{{ messages.general }}</span>
+          <button class="btn btn-primary" (click)="saveGeneral()" [disabled]="saving.general">
+            {{ saving.general ? 'Saving...' : 'Save General' }}
+          </button>
+        </div>
+      </section>
+
+      <!-- ── Billing ─────────────────────────────────────── -->
+      <section *ngIf="activeTab === 'billing'" class="st-section">
+        <h2>Billing</h2>
+        <p class="section-hint">Current business-day context and receipt defaults for new sales.</p>
+
+        <div class="form-grid">
+          <div class="form-field">
+            <label>Current Business Date</label>
+            <input class="form-input" type="date" [(ngModel)]="form.billing.billingDate" readonly />
+            <span class="field-hint">Open, close, or reopen dates from Business Day Control.</span>
+          </div>
+          <div class="form-field">
+            <label>Default Tax Rate (%)</label>
+            <input class="form-input" type="number" step="0.01" min="0" [(ngModel)]="form.billing.defaultTaxRate" />
+          </div>
+          <div class="form-field">
+            <label>Receipt Prefix</label>
+            <input class="form-input" type="text" [(ngModel)]="form.billing.receiptPrefix" placeholder="e.g. RCP-" />
+          </div>
+          <div class="form-field">
+            <label class="toggle-row"><input type="checkbox" [(ngModel)]="form.billing.autoSavePdf" /><span>Auto-save finalized bills as PDF</span></label>
+            <span class="field-hint">Writes a PDF copy after every successful bill completion.</span>
+          </div>
+          <div class="form-field">
+            <label>PDF Folder</label>
+            <input class="form-input" type="text" [(ngModel)]="form.billing.pdfFolder" [disabled]="!form.billing.autoSavePdf" placeholder="e.g. C:\POS Receipts" />
+            <span class="field-hint">The folder is created if needed. Use a local, backed-up location.</span>
+          </div>
+        </div>
+
+        <div class="st-actions">
+          <span class="save-msg" [class.save-error]="isError('billing')">{{ messages.billing }}</span>
+          <button class="btn btn-primary" (click)="saveBilling()" [disabled]="saving.billing">
+            {{ saving.billing ? 'Saving...' : 'Save Billing' }}
+          </button>
+        </div>
+      </section>
+
+      <!-- ── Receipt ─────────────────────────────────────── -->
+      <section *ngIf="activeTab === 'receipt'" class="st-section">
+        <h2>Receipt / Bill Layout</h2>
+        <p class="section-hint">Optional lines and logo added around the store information on the thermal receipt.</p>
+
+        <div class="form-grid">
+          <div class="form-field">
+            <label>Thermal Receipt Language</label>
+            <select class="form-input" [(ngModel)]="form.receipt.language">
+              <option value="en-LK">English</option>
+              <option value="si-LK">සිංහල (Sinhala)</option>
+              <option value="ta-LK">தமிழ் (Tamil)</option>
+            </select>
+            <span class="field-hint">Sinhala and Tamil receipts are printed as high-contrast Unicode images for reliable thermal-printer output.</span>
+          </div>
+          <div class="form-field">
+            <label>Optional Header Line 1</label>
+            <input class="form-input" type="text" [(ngModel)]="form.receipt.header1" />
+          </div>
+          <div class="form-field">
+            <label>Optional Header Line 2</label>
+            <input class="form-input" type="text" [(ngModel)]="form.receipt.header2" />
+          </div>
+          <div class="form-field">
+            <label>Optional Header Line 3</label>
+            <input class="form-input" type="text" [(ngModel)]="form.receipt.header3" />
+          </div>
+          <div class="form-field">
+            <label>Optional Footer Line 1</label>
+            <input class="form-input" type="text" [(ngModel)]="form.receipt.footer1" />
+          </div>
+          <div class="form-field">
+            <label>Optional Footer Line 2</label>
+            <input class="form-input" type="text" [(ngModel)]="form.receipt.footer2" />
+          </div>
+        </div>
+
+        <div class="form-field logo-field">
+          <label>Store Logo</label>
+          <div class="logo-controls">
+            <img *ngIf="form.receipt.logoDataUrl" [src]="form.receipt.logoDataUrl" class="logo-preview" alt="Store logo" />
+            <label class="btn file-btn">
+              Choose Image
+              <input type="file" accept="image/*" (change)="onLogoFileSelected($event)" hidden />
+            </label>
+            <button class="btn" (click)="removeLogo()" [disabled]="!form.receipt.logoDataUrl">Remove</button>
+            <label class="toggle-row">
+              <input type="checkbox" [(ngModel)]="form.receipt.logoEnabled" />
+              <span>Print logo on receipts</span>
+            </label>
+          </div>
+          <span class="field-hint">Small logo only (max 40 KB, PNG/JPG) to keep the receipt compact.</span>
+        </div>
+
+        <div class="st-actions">
+          <span class="save-msg" [class.save-error]="isError('receipt')">{{ messages.receipt }}</span>
+          <button class="btn btn-primary" (click)="saveReceipt()" [disabled]="saving.receipt">
+            {{ saving.receipt ? 'Saving...' : 'Save Receipt' }}
+          </button>
+        </div>
+      </section>
+
+      <!-- ── Sidebar Behavior ───────────────────────────── -->
+      <section *ngIf="activeTab === 'platform'" class="st-section">
+        <h2>Platform Boundary</h2>
+        <p class="section-hint">
+          This control surface defines the rebuild-safe platform rules. Keep it
+          bounded and explicit.
+        </p>
+
+        <div class="platform-callout">
+          <strong>Rule:</strong>
+          Platform settings should shape configuration, not become a second runtime
+          engine that every transaction must consult.
+        </div>
+
+        <div class="form-grid">
+          <div class="form-field">
+            <label>Schema Version</label>
+            <input class="form-input" type="number" min="1" [(ngModel)]="form.platform.schemaVersion" disabled />
+            <span class="field-hint">Reserved for platform config migrations.</span>
+          </div>
+          <div class="form-field">
+            <label>Rebuild Mode</label>
+            <select class="form-input" [(ngModel)]="form.platform.rebuildMode">
+              <option value="bounded">Bounded</option>
+              <option value="open">Open</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label>SDL Mode</label>
+            <input class="form-input" value="Compiled" disabled />
+            <span class="field-hint">SDL is validated and compiled before the POS flow can use it.</span>
+          </div>
+          <div class="form-field">
+            <label>Metadata Policy</label>
+            <select class="form-input" [(ngModel)]="form.platform.metadataPolicy">
+              <option value="optional-only">Optional only</option>
+              <option value="mixed">Mixed</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label class="toggle-row">
+              <input type="checkbox" [(ngModel)]="form.platform.allowRuntimePluginOverrides" />
+              <span>Allow runtime plugin overrides</span>
+            </label>
+            <span class="field-hint">Leave off to keep core transaction paths deterministic.</span>
+          </div>
+          <div class="form-field">
+            <label>SDL Effect Areas</label>
+            <span class="field-hint">Only these compiled SDL effects may participate in the POS flow.</span>
+            <label class="toggle-row"><input type="checkbox" [checked]="hasSdlEffectArea('field-rendering')" (change)="setSdlEffectArea('field-rendering', $event)" /><span>Field rendering</span></label>
+            <label class="toggle-row"><input type="checkbox" [checked]="hasSdlEffectArea('input-validation')" (change)="setSdlEffectArea('input-validation', $event)" /><span>Input validation</span></label>
+            <label class="toggle-row"><input type="checkbox" [checked]="hasSdlEffectArea('receipt-layout')" (change)="setSdlEffectArea('receipt-layout', $event)" /><span>Receipt layout</span></label>
+            <label class="toggle-row"><input type="checkbox" [checked]="hasSdlEffectArea('line-calculation')" (change)="setSdlEffectArea('line-calculation', $event)" /><span>Line calculations</span></label>
+            <label class="toggle-row"><input type="checkbox" [checked]="hasSdlEffectArea('bill-calculation')" (change)="setSdlEffectArea('bill-calculation', $event)" /><span>Bill calculations</span></label>
+          </div>
+          <div class="form-field">
+            <label class="toggle-row">
+              <input type="checkbox" [(ngModel)]="form.platform.preferRelationalForOperationalData" />
+              <span>Prefer relational operational data</span>
+            </label>
+            <span class="field-hint">Promotes reporting-critical fields out of metadata.</span>
+          </div>
+          <div class="form-field">
+            <label>Active Vertical Pack</label>
+            <input class="form-input" type="text" [(ngModel)]="form.platform.activeVerticalPack" placeholder="e.g. retail-pack" />
+          </div>
+          <div class="form-field">
+            <label>Notes</label>
+            <textarea
+              class="form-input platform-notes"
+              rows="4"
+              [(ngModel)]="form.platform.notes"
+              placeholder="Short notes about the current platform config"
+            ></textarea>
+          </div>
+        </div>
+
+        <div class="st-actions">
+          <span class="save-msg" [class.save-error]="isError('platform')">{{ messages.platform }}</span>
+          <button class="btn btn-primary" (click)="savePlatformConfig()" [disabled]="saving.platform || !platformLoaded">
+            {{ saving.platform ? 'Saving...' : 'Save Platform Config' }}
+          </button>
+        </div>
+      </section>
+
+      <section *ngIf="activeTab === 'ui'" class="st-section">
+        <h2>Sidebar Behavior</h2>
+        <p class="section-hint">
+          The wide/compact state is remembered from the ☰ / ✕ toggle on the sidebar itself.
+          Here you control the auto-hide behavior for the whole app.
+        </p>
+
+        <div class="form-grid">
+          <div class="form-field">
+            <label class="toggle-row">
+              <input type="checkbox" [(ngModel)]="sidebarAutoHide" />
+              <span>Hide navbar (auto-hide)</span>
+            </label>
+            <span class="field-hint">
+              Hides the sidebar to the edge, leaving only a small arrow to open/close it.
+            </span>
+          </div>
+          <div class="form-field">
+            <label>Sidebar position</label>
+            <select class="form-input" [(ngModel)]="sidebarPosition">
+              <option value="left">Left</option>
+              <option value="right">Right</option>
+            </select>
+            <span class="field-hint">Which screen edge the sidebar docks to.</span>
+          </div>
+          <div class="form-field">
+            <label>Auto-close after (seconds)</label>
+            <input
+              class="form-input"
+              type="number"
+              min="1"
+              max="120"
+              [(ngModel)]="sidebarAutoCloseSeconds"
+              [disabled]="!sidebarAutoHide"
+            />
+            <span class="field-hint">When open, the bar closes itself after this many seconds (hovering keeps it open).</span>
+          </div>
+          <div class="form-field">
+            <label>App window on startup</label>
+            <select class="form-input" [(ngModel)]="startupWindowMode">
+              <option value="normal">Normal window</option>
+              <option value="maximized">Maximized window (keep minimize and close controls)</option>
+              <option value="fullscreen">True fullscreen (hide the title bar)</option>
+            </select>
+            <span class="field-hint">Applied before login, when the desktop app next starts. Normal mode reopens at its last resized window size.</span>
+          </div>
+        </div>
+
+        <div class="st-actions">
+          <span class="save-msg" [class.save-error]="sidebarMessageError">{{ sidebarMessage }}</span>
+          <button class="btn btn-primary" (click)="saveUiSidebar()" [disabled]="sidebarSaving">
+            {{ sidebarSaving ? 'Saving...' : 'Save UI Defaults' }}
+          </button>
+        </div>
+      </section>
+
+      <!-- ── Priority Lists ──────────────────────────────── -->
+      <section *ngIf="activeTab === 'ui'" class="st-section">
+        <h2>Priority Lists</h2>
+        <p class="section-hint">
+          Ordered lists of forms that set the sidebar order and landing screen for each user.
+          Unassigned users fall back to the Default list.
+        </p>
+
+        <div *ngIf="uiError" class="alert alert-error">{{ uiError }}</div>
+        <div *ngIf="uiLoadingLists" class="loading-text">Loading priority lists...</div>
+
+        <div class="pl-layout" *ngIf="!uiLoadingLists">
+          <div class="pl-sidebar">
+            <div class="pl-list-header">
+              <span class="pl-list-title">Lists</span>
+              <div class="pl-add-row">
+                <input
+                  class="form-input pl-name-input"
+                  type="text"
+                  [(ngModel)]="uiNewListName"
+                  placeholder="New list name"
+                  (keyup.enter)="uiCreateList()"
+                />
+                <button
+                  class="btn btn-primary btn-sm"
+                  (click)="uiCreateList()"
+                  [disabled]="!uiNewListName.trim() || uiBusy"
+                >
+                  Add
+                </button>
+              </div>
+            </div>
+
+            <div class="pl-list">
+              <button
+                *ngFor="let list of uiLists"
+                class="pl-list-item"
+                [class.active]="uiSelectedList?.id === list.id"
+                (click)="uiSelectList(list)"
+              >
+                <span class="pl-item-name">{{ list.name }}</span>
+                <span class="pl-badge" *ngIf="list.isDefault">Default</span>
+                <span class="pl-item-meta">{{ list.entries.length }} forms</span>
+              </button>
+              <div *ngIf="uiLists.length === 0" class="pl-empty">No lists yet.</div>
+            </div>
+          </div>
+
+          <div class="pl-editor" *ngIf="uiSelectedList; else plNoSelection">
+            <div class="pl-editor-head">
+              <input
+                class="form-input pl-name-input"
+                type="text"
+                [(ngModel)]="uiSelectedList.name"
+                placeholder="List name"
+              />
+              <label class="toggle-row">
+                <input
+                  type="checkbox"
+                  [checked]="uiSelectedList.isDefault"
+                  (change)="uiSetDefault(uiSelectedList.id, $any($event.target).checked)"
+                />
+                <span>Default list (fallback)</span>
+              </label>
+            </div>
+
+            <div class="pl-columns">
+              <div class="pl-column">
+                <h3>Sidebar Order</h3>
+                <div class="pl-entries">
+                  <div *ngFor="let entry of uiSelectedList.entries; let i = index" class="pl-entry">
+                    <span class="pl-entry-pos">{{ i + 1 }}</span>
+                    <span class="pl-entry-label">{{ uiEntryLabel(entry) }}</span>
+                    <span class="pl-entry-actions">
+                      <button class="pl-mini" (click)="uiMoveEntry(i, -1)" [disabled]="i === 0">↑</button>
+                      <button class="pl-mini" (click)="uiMoveEntry(i, 1)" [disabled]="i === uiSelectedList.entries.length - 1">↓</button>
+                      <button class="pl-mini pl-mini-danger" (click)="uiRemoveEntry(i)" title="Remove">✕</button>
+                    </span>
+                  </div>
+                  <div *ngIf="uiSelectedList.entries.length === 0" class="pl-empty">
+                    No forms in this list yet — add one below.
+                  </div>
+                </div>
+
+                <div class="pl-add-entry" *ngIf="uiAvailableForms().length > 0">
+                  <select class="form-input" [(ngModel)]="uiAddFormId">
+                    <option *ngFor="let f of uiAvailableForms()" [value]="f.id">{{ f.label }}</option>
+                  </select>
+                  <button class="btn btn-sm" (click)="uiAddEntry()" [disabled]="!uiAddFormId">Add</button>
+                </div>
+              </div>
+
+              <div class="pl-column">
+                <h3>Assigned To</h3>
+                <h4>Roles</h4>
+                <div class="pl-check-list">
+                  <label
+                    *ngFor="let role of uiTargets.roles"
+                    class="pl-check"
+                    [class.assigned]="uiIsAssigned('role', role.id)"
+                  >
+                    <input
+                      type="checkbox"
+                      [checked]="uiIsAssigned('role', role.id)"
+                      (change)="uiToggleAssignment('role', role.id, $event)"
+                    />
+                    <span>{{ role.name }}</span>
+                  </label>
+                  <div *ngIf="uiTargets.roles.length === 0" class="pl-empty">No roles.</div>
+                </div>
+
+                <h4>Users</h4>
+                <div class="pl-check-list">
+                  <label
+                    *ngFor="let user of uiTargets.users"
+                    class="pl-check"
+                    [class.assigned]="uiIsAssigned('user', user.id)"
+                  >
+                    <input
+                      type="checkbox"
+                      [checked]="uiIsAssigned('user', user.id)"
+                      (change)="uiToggleAssignment('user', user.id, $event)"
+                    />
+                    <span>{{ user.displayName || user.username }}</span>
+                  </label>
+                  <div *ngIf="uiTargets.users.length === 0" class="pl-empty">No users.</div>
+                </div>
+                <p class="field-hint">
+                  A user's own assignment wins; otherwise their first role's list; otherwise the Default list.
+                </p>
+              </div>
+            </div>
+
+            <div class="st-actions">
+              <span class="save-msg" [class.save-error]="uiMessageError">{{ uiMessage }}</span>
+              <button
+                class="btn btn-danger"
+                (click)="uiDeleteList()"
+                [disabled]="uiSelectedList.isDefault || uiBusy"
+              >
+                Delete
+              </button>
+              <button class="btn btn-primary" (click)="uiSaveList()" [disabled]="uiBusy">
+                {{ uiBusy ? 'Saving...' : 'Save List' }}
+              </button>
+            </div>
+          </div>
+
+          <ng-template #plNoSelection>
+            <div class="pl-editor pl-empty">Select a list to edit, or create a new one.</div>
+          </ng-template>
+        </div>
+      </section>
+
+      <!-- ── Field Transaction Inbox ────────────────────── -->
+      <section *ngIf="activeTab === 'fieldInbox'" class="st-section">
+        <h2>Field Transaction Inbox</h2>
+        <p class="section-hint">Connect this POS to one field-recording host. Records are fetched only when the inbox is opened, its date changes, or Refresh is pressed.</p>
+
+        <div class="integration-status" [class.connected]="fieldInboxConfigured">
+          <div><strong>{{ fieldInboxConfigured ? 'Connection configured' : 'Not configured' }}</strong><span>{{ fieldInboxConfigured ? 'The API key is encrypted by the operating system and is never displayed again.' : 'Enter the Host ID and API key supplied by the field transaction server.' }}</span></div>
+          <span class="connection-badge">{{ fieldInboxConfigured ? 'READY' : 'SETUP REQUIRED' }}</span>
+        </div>
+
+        <div class="form-grid">
+          <div class="form-field">
+            <label>Host ID</label>
+            <input class="form-input" type="text" [(ngModel)]="fieldInboxHostId" placeholder="e.g. TH-9926122E" autocomplete="off" />
+          </div>
+          <div class="form-field">
+            <label>API Key</label>
+            <input class="form-input" type="password" [(ngModel)]="fieldInboxApiKey" [placeholder]="fieldInboxConfigured ? 'Saved securely - enter only to replace' : 'Enter API key'" autocomplete="new-password" />
+            <span class="field-hint">Leave blank when saving to keep the currently stored key.</span>
+          </div>
+          <div class="form-field integration-endpoint">
+            <label>Server endpoint</label>
+            <code>{{ fieldInboxApiBaseUrl || 'Fixed application endpoint' }}</code>
+            <span class="field-hint">The endpoint is fixed in the POS; only host credentials are configurable.</span>
+          </div>
+        </div>
+
+        <div class="st-actions integration-actions">
+          <span class="save-msg" [class.save-error]="fieldInboxMessageError">{{ fieldInboxMessage }}</span>
+          <button class="btn danger-button" type="button" (click)="clearFieldInboxConfiguration()" [disabled]="fieldInboxBusy || !fieldInboxConfigured">Remove</button>
+          <button class="btn" type="button" (click)="testFieldInboxConnection()" [disabled]="fieldInboxTesting || !fieldInboxConfigured">{{ fieldInboxTesting ? 'Testing...' : 'Test saved connection' }}</button>
+          <button class="btn btn-primary" type="button" (click)="saveFieldInboxConfiguration()" [disabled]="fieldInboxBusy || !fieldInboxHostId.trim()">{{ fieldInboxBusy ? 'Saving...' : 'Save connection' }}</button>
+        </div>
+      </section>
+
+      <!-- ── Printers (embedded) ─────────────────────────── -->
+      <section *ngIf="activeTab === 'printers'" class="st-section st-embedded">
+        <pos-printer-management></pos-printer-management>
+      </section>
+
+      <!-- ── Workstations (embedded) ─────────────────────── -->
+      <section *ngIf="activeTab === 'workstations'" class="st-section st-embedded">
+        <pos-workstation-management></pos-workstation-management>
+      </section>
+    </div>
+  </ng-container>
+</div>

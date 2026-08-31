@@ -1,0 +1,245 @@
+function createReportService({ database }) {
+  if (!database) {
+    throw new Error('Report service requires database.');
+  }
+
+  async function salesSummary() {
+    return database.withConnection(async (connection) => {
+      const [rows] = await connection.execute(
+        `SELECT
+           COUNT(*) AS invoiceCount,
+           COALESCE(SUM(grand_total), 0) AS grossSales,
+           COALESCE(SUM(paid_total), 0) AS paidSales
+         FROM invoices
+         WHERE status <> 'cancelled'`
+      );
+      return rows[0];
+    });
+  }
+
+  async function supplierSummary({ fromDate = null, toDate = null } = {}) {
+    return database.withConnection(async (connection) => {
+      const [rows] = await connection.execute(
+        `SELECT s.id, s.supplier_code, s.name,
+                COALESCE(SUM(e.amount), 0) AS balance,
+                COALESCE(SUM(CASE WHEN e.entry_type = 'consignment_accrual' THEN e.amount ELSE 0 END), 0) AS accruals
+         FROM suppliers s LEFT JOIN supplier_payable_entries e ON e.supplier_id = s.id
+           AND (? IS NULL OR e.business_date >= ?) AND (? IS NULL OR e.business_date <= ?)
+         GROUP BY s.id ORDER BY s.name`, [fromDate, fromDate, toDate, toDate]
+      );
+      return rows;
+    });
+  }
+
+  async function inventoryMovementSummary({ fromDate = null, toDate = null } = {}) {
+    return database.withConnection(async (connection) => {
+      const [rows] = await connection.execute(
+        `SELECT p.sku, p.name, COALESCE(SUM(m.quantity), 0) AS net_quantity
+         FROM stock_movements m JOIN products p ON p.id = m.product_id
+         WHERE (? IS NULL OR m.business_date >= ?) AND (? IS NULL OR m.business_date <= ?)
+         GROUP BY p.id ORDER BY p.name`, [fromDate, fromDate, toDate, toDate]
+      );
+      return rows;
+    });
+  }
+
+  const SALES_COLUMNS = {
+    date: { label: 'Date', value: (row) => row.txnDate || '' },
+    time: { label: 'Time', value: (row) => row.txnTime || '' },
+    item: { label: 'Item', value: (row) => row.itemCode || '' },
+    description: { label: 'Description', value: (row) => row.description || '' },
+    supplier: { label: 'Supplier', value: (row) => row.supplierCode || '' },
+    customer: { label: 'Customer', value: (row) => row.customerCode || '' },
+    status: { label: 'Status', value: (row) => row.status || '' },
+    lines: { label: 'Lines', value: (row) => row.lineCount },
+    invoices: { label: 'Bills', value: (row) => row.invoiceCount },
+    quantity: { label: 'Qty / Bags', value: (row) => row.quantity },
+    kilos: { label: 'Kilos', value: (row) => row.kilos },
+    price: { label: 'Average Rate', value: (row) => row.unitPrice },
+    merchandise: { label: 'Merchandise', value: (row) => row.merchandiseTotal },
+    bag: { label: 'Bag Charge', value: (row) => row.bagChargeTotal },
+    wage: { label: 'Wage Charge', value: (row) => row.wageChargeTotal },
+    total: { label: 'Net Total', value: (row) => row.total }
+  };
+
+  function safeDate(value) {
+    const date = String(value || '').slice(0, 10);
+    return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null;
+  }
+
+  function money(value) { return Math.round(Number(value || 0) * 100) / 100; }
+  function dateText(value) {
+    // MySQL DATE carries no timezone. mysql2 materializes it as local midnight,
+    // so converting to UTC would incorrectly move DDEC's Sri Lanka business
+    // date back one day.
+    if (value instanceof Date) {
+      const pad = (part) => String(part).padStart(2, '0');
+      return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`;
+    }
+    return String(value || '').slice(0, 10);
+  }
+
+  async function salesReport(filters = {}) {
+    const fromDate = safeDate(filters.fromDate);
+    const toDate = safeDate(filters.toDate);
+    const supplierCode = String(filters.supplierCode || '').trim();
+    const customerCode = String(filters.customerCode || '').trim();
+    const itemTerm = String(filters.itemTerm || '').trim();
+    const itemCodes = Array.isArray(filters.itemCodes) ? [...new Set(filters.itemCodes.map((code) => String(code || '').trim()).filter(Boolean))] : null;
+    const finalizedOnly = filters.finalizedOnly !== false;
+    const groupBy = ['line', 'item', 'date', 'supplier', 'customer', 'price'].includes(filters.groupBy) ? filters.groupBy : 'item';
+    const sortBy = String(filters.sortBy || 'date');
+    const sortDir = String(filters.sortDir || 'desc').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+    const limit = Math.max(1, Math.min(Number(filters.limit) || 2000, 10000));
+    const saleDate = 'COALESCE(i.txn_date, ii.txn_date)';
+    const saleTime = 'COALESCE(i.end_time, i.created_at, ii.created_at)';
+    const saleCustomer = "COALESCE(NULLIF(i.customer_code, ''), ii.customer_code)";
+    const where = [finalizedOnly ? "i.inv_stat = 'active' AND i.status IN ('paid', 'partial')" : "((i.inv_stat = 'active' AND i.status IN ('paid', 'partial')) OR ii.invoice_id IS NULL)"];
+    const params = [];
+    if (fromDate) { where.push(`${saleDate} >= ?`); params.push(fromDate); }
+    if (toDate) { where.push(`${saleDate} <= ?`); params.push(toDate); }
+    if (supplierCode) { where.push('ii.supplier_code LIKE ?'); params.push(`%${supplierCode}%`); }
+    if (customerCode) { where.push(`${saleCustomer} LIKE ?`); params.push(`%${customerCode}%`); }
+    if (itemTerm) { where.push('(ii.item_code LIKE ? OR ii.description LIKE ?)'); params.push(`%${itemTerm}%`, `%${itemTerm}%`); }
+    if (itemCodes) {
+      if (itemCodes.length === 0) where.push('1 = 0');
+      else { where.push(`ii.item_code IN (${itemCodes.map(() => '?').join(', ')})`); params.push(...itemCodes); }
+    }
+
+    const grouping = {
+      line: { order: '0', label: "CONCAT(COALESCE(NULLIF(ii.supplier_code, ''), ''), CASE WHEN ii.supplier_code <> '' THEN '~' ELSE '' END, ii.item_code)" },
+      item: { order: 'ii.item_code ASC, ii.description ASC', label: "CONCAT(ii.item_code, CASE WHEN ii.description <> '' THEN ' ' ELSE '' END, ii.description)" },
+      date: { order: `${saleDate} ASC`, label: `DATE_FORMAT(${saleDate}, '%Y-%m-%d')` },
+      supplier: { order: 'ii.supplier_code ASC', label: "COALESCE(NULLIF(ii.supplier_code, ''), 'No supplier code')" },
+      customer: { order: `${saleCustomer} ASC`, label: `COALESCE(NULLIF(${saleCustomer}, ''), 'No customer code')` },
+      price: { order: 'ii.unit_price ASC', label: 'CAST(ii.unit_price AS CHAR)' }
+    }[groupBy];
+    const orderBy = {
+      date: saleDate, time: saleTime, item: 'ii.item_code', supplier: 'ii.supplier_code', customer: saleCustomer,
+      quantity: 'ii.quantity', kilos: 'COALESCE(ii.kilos, 0)', price: 'ii.unit_price', merchandise: 'ii.merchandise_total', bag: 'ii.bag_charge_total', wage: 'ii.wage_charge_total', total: 'ii.total', lines: 'ii.id'
+    }[sortBy] || 'i.txn_date';
+
+    return database.withConnection(async (connection) => {
+      const [rows] = await connection.execute(
+        `SELECT ${grouping.label} AS group_label,
+                ${saleDate} AS txn_date, DATE_FORMAT(${saleTime}, '%H:%i') AS txn_time,
+                ii.item_code, ii.description, ii.supplier_code, ${saleCustomer} AS customer_code,
+                CASE WHEN ii.invoice_id IS NULL THEN 'Pending' ELSE 'Finalized' END AS status,
+                1 AS line_count, 1 AS invoice_count,
+                ii.quantity, COALESCE(ii.kilos, 0) AS kilos, ii.unit_price,
+                ii.merchandise_total, ii.bag_charge_total, ii.wage_charge_total, ii.total
+         FROM invoice_items ii LEFT JOIN invoices i ON i.id = ii.invoice_id
+         WHERE ${where.join(' AND ')}
+         ORDER BY ${grouping.order}, ${orderBy} ${sortDir}, ii.id ASC
+         LIMIT ${limit}`,
+        params
+      );
+      const [summaryRows] = await connection.execute(
+        `SELECT COUNT(*) AS line_count, COUNT(DISTINCT i.id) AS invoice_count,
+                COALESCE(SUM(ii.quantity), 0) AS quantity, COALESCE(SUM(ii.kilos), 0) AS kilos,
+                COALESCE(SUM(ii.merchandise_total), 0) AS merchandise_total,
+                COALESCE(SUM(ii.bag_charge_total), 0) AS bag_charge_total,
+                COALESCE(SUM(ii.wage_charge_total), 0) AS wage_charge_total,
+                COALESCE(SUM(ii.total), 0) AS total
+         FROM invoice_items ii LEFT JOIN invoices i ON i.id = ii.invoice_id
+         WHERE ${where.join(' AND ')}`,
+        params
+      );
+      const mapped = rows.map((row) => ({
+        groupLabel: row.group_label, txnDate: dateText(row.txn_date), txnTime: row.txn_time || '', itemCode: row.item_code || '', description: row.description || '', supplierCode: row.supplier_code || '', customerCode: row.customer_code || '', status: row.status || 'Finalized',
+        lineCount: Number(row.line_count || 0), invoiceCount: Number(row.invoice_count || 0), quantity: Number(row.quantity || 0), kilos: Number(row.kilos || 0), unitPrice: money(row.unit_price), merchandiseTotal: money(row.merchandise_total), bagChargeTotal: money(row.bag_charge_total), wageChargeTotal: money(row.wage_charge_total), total: money(row.total)
+      }));
+      const summary = summaryRows[0] || {};
+      const totals = {
+        lineCount: Number(summary.line_count || 0), invoiceCount: Number(summary.invoice_count || 0), quantity: Number(summary.quantity || 0), kilos: Number(summary.kilos || 0),
+        merchandiseTotal: money(summary.merchandise_total), bagChargeTotal: money(summary.bag_charge_total), wageChargeTotal: money(summary.wage_charge_total), total: money(summary.total)
+      };
+      return { rows: mapped, totals: Object.fromEntries(Object.entries(totals).map(([key, value]) => [key, money(value)])), groupBy, fromDate, toDate };
+    });
+  }
+
+  async function salesItemOptions({ fromDate: rawFromDate = null, toDate: rawToDate = null, finalizedOnly = true } = {}) {
+    const fromDate = safeDate(rawFromDate);
+    const toDate = safeDate(rawToDate);
+    const saleDate = 'COALESCE(i.txn_date, ii.txn_date)';
+    const where = [finalizedOnly !== false ? "i.inv_stat = 'active' AND i.status IN ('paid', 'partial')" : "((i.inv_stat = 'active' AND i.status IN ('paid', 'partial')) OR ii.invoice_id IS NULL)"];
+    const params = [];
+    if (fromDate) { where.push(`${saleDate} >= ?`); params.push(fromDate); }
+    if (toDate) { where.push(`${saleDate} <= ?`); params.push(toDate); }
+    return database.withConnection(async (connection) => {
+      const [rows] = await connection.execute(
+        `SELECT ii.item_code, MAX(ii.description) AS description, COUNT(*) AS sales_count
+         FROM invoice_items ii LEFT JOIN invoices i ON i.id = ii.invoice_id
+         WHERE ${where.join(' AND ')}
+         GROUP BY ii.item_code
+         ORDER BY ii.item_code ASC`,
+        params
+      );
+      return rows.map((row) => ({ itemCode: row.item_code, description: row.description, salesCount: Number(row.sales_count || 0) }));
+    });
+  }
+
+  async function exportSalesWorkbook(filePath, filters = {}) {
+    const { writeWorkbook } = require('./xlsx-export.service');
+    const report = await salesReport(filters);
+    const selected = Array.isArray(filters.columns) ? filters.columns.filter((key) => SALES_COLUMNS[key]) : Object.keys(SALES_COLUMNS);
+    const columns = selected.length ? selected : ['date', 'item', 'supplier', 'customer', 'quantity', 'kilos', 'merchandise', 'bag', 'wage', 'total'];
+    const rows = [
+      ['DDEC Sales Report'],
+      ['Period', `${report.fromDate || 'All dates'} to ${report.toDate || 'All dates'}`],
+      ['Grouped by', report.groupBy],
+      [],
+      columns.map((key) => SALES_COLUMNS[key].label),
+      ...report.rows.map((row) => columns.map((key) => SALES_COLUMNS[key].value(row))),
+      [],
+      columns.map((key) => SALES_COLUMNS[key].label),
+      columns.map((key) => {
+        const totalKey = { lines: 'lineCount', invoices: 'invoiceCount', quantity: 'quantity', kilos: 'kilos', merchandise: 'merchandiseTotal', bag: 'bagChargeTotal', wage: 'wageChargeTotal', total: 'total' }[key];
+        return totalKey ? report.totals[totalKey] : '';
+      })
+    ];
+    return writeWorkbook(filePath, [{ name: 'Sales Report', rows }]);
+  }
+
+  async function exportDdecWorkbook(filePath, filters = {}) {
+    const { writeWorkbook } = require('./xlsx-export.service');
+    const [suppliers, inventory] = await Promise.all([supplierSummary(filters), inventoryMovementSummary(filters)]);
+    const { fromDate = null, toDate = null } = filters;
+    const source = await database.withConnection(async (connection) => {
+      const [payables] = await connection.execute(
+        `SELECT e.business_date, s.supplier_code, s.name AS supplier_name, e.entry_type, e.amount, e.reason, e.created_at
+         FROM supplier_payable_entries e JOIN suppliers s ON s.id = e.supplier_id
+         WHERE (? IS NULL OR e.business_date >= ?) AND (? IS NULL OR e.business_date <= ?)
+         ORDER BY e.business_date, e.id`, [fromDate, fromDate, toDate, toDate]
+      );
+      const [movements] = await connection.execute(
+        `SELECT m.business_date, p.sku, p.name AS product_name, m.movement_type, m.quantity, m.note, m.created_at
+         FROM stock_movements m JOIN products p ON p.id = m.product_id
+         WHERE (? IS NULL OR m.business_date >= ?) AND (? IS NULL OR m.business_date <= ?)
+         ORDER BY m.business_date, m.id`, [fromDate, fromDate, toDate, toDate]
+      );
+      return { payables, movements };
+    });
+    return writeWorkbook(filePath, [
+      { name: 'Supplier Summary', rows: [['Supplier Code', 'Supplier', 'Accruals', 'Balance'], ...suppliers.map((row) => [row.supplier_code || '', row.name, row.accruals, row.balance])]},
+      { name: 'Inventory Movement', rows: [['SKU', 'Product', 'Net Quantity'], ...inventory.map((row) => [row.sku, row.name, row.net_quantity]) ]},
+      { name: 'Source Payable Ledger', rows: [['Business Date', 'Supplier Code', 'Supplier', 'Entry Type', 'Amount', 'Reason', 'Recorded At'], ...source.payables.map((row) => [row.business_date, row.supplier_code || '', row.supplier_name, row.entry_type, row.amount, row.reason || '', row.created_at])]},
+      { name: 'Source Stock Ledger', rows: [['Business Date', 'SKU', 'Product', 'Movement', 'Quantity', 'Reason', 'Recorded At'], ...source.movements.map((row) => [row.business_date, row.sku, row.product_name, row.movement_type, row.quantity, row.note || '', row.created_at])]},
+      { name: 'Working Adjustments', rows: [['Draft only - enter approved changes in POS; this sheet does not update the ledger'], ['Date', 'Supplier', 'Adjustment Type', 'Amount', 'Reason', 'Approver'], ['', '', '', '', '', '']]}
+    ]);
+  }
+
+  return {
+    salesSummary,
+    salesReport,
+    salesItemOptions,
+    supplierSummary,
+    inventoryMovementSummary,
+    exportDdecWorkbook,
+    exportSalesWorkbook
+  };
+}
+
+module.exports = {
+  createReportService
+};

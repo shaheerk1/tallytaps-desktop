@@ -1,0 +1,58 @@
+<section class="invoice-history">
+  <header class="invoice-header"><h1>Invoice Archive <span>~ Historical Bills</span></h1><p>Find finalized sales, inspect their immutable details, reprint, or save a PDF copy.</p></header>
+  <div class="filters">
+    <label>Location<input [(ngModel)]="locCode" (change)="search()" /></label><label>Machine<input [(ngModel)]="macCode" (change)="search()" /></label><label>Billing date<input type="date" [(ngModel)]="txnDate" (change)="search()" /></label><label>Customer code<input [(ngModel)]="customerCode" (keyup.enter)="search()" placeholder="Customer code" /></label><label>Invoice or receipt<input [(ngModel)]="term" (keyup.enter)="search()" placeholder="Invoice or receipt #" /></label><button class="btn" (click)="search()">Search</button>
+  </div>
+  <p *ngIf="error" class="message error">{{ error }}</p><p *ngIf="info" class="message">{{ info }}</p>
+  <main>
+    <aside>
+      <div class="empty" *ngIf="!loading && rows.length === 0">No finalized invoices match these filters.</div>
+      <button class="invoice-row" *ngFor="let row of rows" (click)="select(row)" [class.active]="invoice?.id === row.id"><strong>{{ row.invoice_number }}</strong><b class="row-customer" *ngIf="row.customer_code">{{ row.customer_code }}</b><span *ngIf="$any(row).customer_name">{{ $any(row).customer_name }}</span><span>Receipt #{{ row.receipt_no }} · {{ formatSriLankanDate(row.txn_date) }}</span><span>{{ row.grandTotal | number:'1.2-2' }} · {{ row.status }}</span></button>
+    </aside>
+    <article *ngIf="invoice" class="invoice-detail">
+      <div class="detail-head"><div><span>FINALIZED INVOICE</span><h2>{{ invoice.invoice_number }}</h2><p>Receipt #{{ invoice.receipt_no }} · {{ invoice.loc_code }}/{{ invoice.mac_code }}</p><b class="detail-customer" *ngIf="invoice.customer_code">{{ invoice.customer_code }}</b></div><div class="actions"><button class="btn secondary" (click)="reprint()">Reprint</button><button class="btn" (click)="savePdf()">Save PDF</button></div></div>
+      <section class="customer-assignment">
+        <div class="assignment-current">
+          <span>REAL CUSTOMER ACCOUNT</span>
+          <strong>{{ invoice.customer?.name || 'Not linked' }}</strong>
+          <small *ngIf="invoice.customer">{{ invoice.customer.accountNumber }} · market code on this bill remains {{ invoice.customer_code }}</small>
+          <small *ngIf="!invoice.customer">This bill currently carries only the operational market/loading code.</small>
+        </div>
+        <div class="assignment-tools" *ngIf="session.hasPermission('customers.manage')">
+          <input [(ngModel)]="accountTerm" (input)="searchAccounts()" placeholder="Find by name, shop, phone, locality or code" />
+          <input [(ngModel)]="assignmentReason" placeholder="Reason required when changing an existing link" />
+          <div class="account-results" *ngIf="accountMatches.length"><button type="button" *ngFor="let account of accountMatches" (click)="assignCustomerAccount(account.id)"><strong>{{ account.name }}</strong><small>{{ account.account_number }} · {{ account.marketCodes?.join(', ') || 'no market code' }} · {{ account.locality || account.mobile || '' }}</small></button></div>
+          <button class="link-action" *ngIf="invoice.customer && invoice.balance <= 0.005" (click)="assignCustomerAccount(null)" [disabled]="assigningCustomer">Remove link</button>
+        </div>
+      </section>
+      <div class="header-values" *ngIf="headerValues().length"><span *ngFor="let item of headerValues()"><b>{{ item.label }}</b>{{ item.value }}</span></div>
+      <section class="archive-items-panel">
+        <div class="archive-items-scroll">
+          <div class="archive-item-row archive-item-head">
+            <span>Item Code</span><span>Description</span><span>Rate</span><span>Qty</span><span>Kilos</span><span>Wage</span><span>Value</span>
+          </div>
+          <div class="archive-item-row" *ngFor="let item of invoice.items">
+            <span class="archive-item-code">{{ itemCode(item) }}</span>
+            <strong class="archive-item-description">{{ item.description }}</strong>
+            <span class="archive-number">{{ item.unitPrice | number:'1.2-2' }}</span>
+            <span class="archive-number">{{ formatMeasure(item.qty) }}</span>
+            <span class="archive-number">{{ item.kilos === null || item.kilos === undefined ? '—' : formatMeasure(item.kilos) }}</span>
+            <span class="archive-number">{{ (item.wageChargeTotal || 0) | number:'1.2-2' }}</span>
+            <strong class="archive-number archive-value">{{ (item.merchandiseTotal ?? item.total) | number:'1.2-2' }}</strong>
+          </div>
+        </div>
+        <section class="item-measure-summary" *ngIf="invoice.items.length" aria-label="Quantity and weight totals by item">
+          <strong class="item-measure-summary-title">Item Totals</strong>
+          <div #archiveMeasureSummary class="item-measure-summary-scroll" tabindex="0" (wheel)="scrollItemMeasureSummary($event, archiveMeasureSummary)">
+            <span class="item-measure-summary-entry" *ngFor="let summary of itemMeasureSummaries; trackBy: trackItemMeasureSummary">
+              <b>{{ summary.description }}</b><span>({{ itemMeasureSummaryText(summary) }})</span>
+            </span>
+          </div>
+        </section>
+      </section>
+      <div class="totals"><span>Subtotal <b>{{ invoice.subtotal | number:'1.2-2' }}</b></span><span *ngIf="invoice.bag_charge_total">Bag charge <b>{{ invoice.bag_charge_total | number:'1.2-2' }}</b></span><span *ngIf="invoice.wage_charge_total">Wage charge <b>{{ invoice.wage_charge_total | number:'1.2-2' }}</b></span><span *ngIf="invoice.discountTotal">Discount <b>-{{ invoice.discountTotal | number:'1.2-2' }}</b></span><strong>TOTAL <b>{{ invoice.grandTotal | number:'1.2-2' }}</b></strong><span *ngFor="let payment of invoice.payments">{{ paymentLabel(payment) }} <b>{{ payment.amount | number:'1.2-2' }}</b></span><span *ngIf="invoice.balance > 0">Outstanding <b>{{ invoice.balance | number:'1.2-2' }}</b></span></div>
+      <section *ngIf="invoice.balance > 0" class="collection"><div><b>Collect outstanding balance</b><small>This records a customer-account collection and cash in the active shift automatically.</small></div><label>Amount<input type="number" min="0.01" [max]="invoice.balance" step="0.01" [(ngModel)]="collectionAmount"></label><label>Method<select [(ngModel)]="collectionMethod"><option *ngFor="let mode of paymentModes" [value]="mode.id">{{ mode.name }}</option></select></label><button class="btn" [disabled]="collecting || !collectionAmount || collectionAmount <= 0" (click)="collectBalance()">{{ collecting ? 'Collecting...' : 'Collect balance' }}</button></section>
+    </article>
+    <article *ngIf="!invoice" class="detail-empty">Select an invoice to view its original receipt data.</article>
+  </main>
+</section>

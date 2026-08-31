@@ -1,0 +1,274 @@
+<div class="im-container">
+  <div class="im-header">
+    <div class="header-left">
+      <h1>Item Management</h1>
+      <p class="subtitle">Maintain the item master used across billing (SKU, price, stock)</p>
+    </div>
+    <div class="header-right" *ngIf="canManage">
+      <button class="btn btn-primary" (click)="openCreateModal()">+ Add Item</button>
+    </div>
+  </div>
+
+  <div class="search-bar" *ngIf="!isLoading">
+    <input
+      class="search-input"
+      type="text"
+      [(ngModel)]="searchTerm"
+      (input)="onSearchChange()"
+      placeholder="Search by SKU, name, barcode, or category..."
+    />
+    <span class="search-stats">{{ filteredItems.length }} of {{ items.length }} items</span>
+  </div>
+
+  <div class="im-content" *ngIf="!isLoading">
+    <div class="error-banner" *ngIf="errorMessage && !showFormModal && !showDeleteModal">
+      {{ errorMessage }}
+    </div>
+    <div class="success-banner" *ngIf="successMessage && !showFormModal">
+      {{ successMessage }}
+    </div>
+
+    <div class="im-table">
+      <div class="im-row im-row-head">
+        <span class="col-sku">SKU</span>
+        <span class="col-name">Name</span>
+        <span class="col-cat">Category</span>
+        <span class="col-price">Price</span>
+        <span class="col-unit">Unit</span>
+        <span class="col-barcode">Barcode</span>
+        <span class="col-stock">Stock</span>
+        <span class="col-status">Status</span>
+        <span class="col-actions">Actions</span>
+      </div>
+
+      <div class="im-row" *ngFor="let item of filteredItems; trackBy: trackByItemId">
+        <span class="col-sku monospace">{{ item.sku }}</span>
+        <span class="col-name">{{ item.name }}</span>
+        <span class="col-cat">
+          <span class="cat-badge" *ngIf="item.category" [style.background]="categoryColor(item.category) + '1a'"
+                [style.color]="categoryColor(item.category)" [style.borderColor]="categoryColor(item.category) + '55'">
+            {{ item.category }}
+          </span>
+          <span class="cat-none" *ngIf="!item.category">—</span>
+        </span>
+        <span class="col-price monospace">{{ item.unit_price | number:'1.2-2' }}</span>
+        <span class="col-unit">{{ item.unit || '—' }}</span>
+        <span class="col-barcode monospace">{{ item.barcode || '—' }}</span>
+        <span class="col-stock">
+          <span class="stock-badge" [class]="stockBadge(item).cls">
+            {{ stockBadge(item).text }}
+          </span>
+          <span class="stock-qty monospace">{{ item.stock_qty | number:'1.0-3' }}</span>
+        </span>
+        <span class="col-status">
+          <span class="status-badge" [class.inactive]="!item.is_active || item.is_active === 0">
+            {{ item.is_active === 1 || item.is_active === true ? 'Active' : 'Inactive' }}
+          </span>
+        </span>
+        <span class="col-actions">
+          <button class="btn btn-sm" (click)="openEditModal(item)" title="Edit item">✏️ Edit</button>
+          <button class="btn btn-sm btn-danger-outline" (click)="openDeleteModal(item)" title="Delete item">🗑️ Delete</button>
+        </span>
+      </div>
+
+      <div class="empty-state" *ngIf="filteredItems.length === 0">
+        {{ searchTerm ? 'No items match your search.' : 'No items yet. Add your first item to start billing.' }}
+      </div>
+    </div>
+
+    <div class="im-footer" *ngIf="filteredItems.length > 0">
+      <span>Total Items: {{ items.length }}</span>
+      <span *ngIf="searchTerm">Filtered: {{ filteredItems.length }}</span>
+    </div>
+  </div>
+
+  <div class="im-loading" *ngIf="isLoading">
+    <div class="spinner"></div>
+    <span>Loading items...</span>
+  </div>
+</div>
+
+<!-- ── Add / Edit Item Modal ───────────────────────────── -->
+<div class="modal-overlay" *ngIf="showFormModal" (click)="closeFormModal()">
+  <div class="modal-box im-form-modal" (click)="$event.stopPropagation()">
+    <h3>{{ editingId ? 'Edit Item' : 'Add New Item' }}</h3>
+    <div class="im-form-scroll">
+      <div class="error-banner" *ngIf="errorMessage">{{ errorMessage }}</div>
+
+      <div class="form-grid">
+      <div class="form-field">
+        <label>SKU / PLU Code *</label>
+        <input class="form-input monospace" type="text" [(ngModel)]="form.sku" placeholder="e.g. A001" />
+        <span class="field-hint">Unique business key shown on receipts.</span>
+      </div>
+      <div class="form-field">
+        <label>Barcode</label>
+        <input class="form-input monospace" type="text" [(ngModel)]="form.barcode" placeholder="e.g. 4901234567890" />
+      </div>
+      <div class="form-field form-full">
+        <label>Name / Description *</label>
+        <input class="form-input" type="text" [(ngModel)]="form.name" placeholder="e.g. Carrot - 1kg pack" />
+      </div>
+      <div class="form-field">
+        <label>Category</label>
+        <input class="form-input" type="text" [(ngModel)]="form.category" placeholder="e.g. Vegetables" list="category-options" />
+        <datalist id="category-options">
+          <option *ngFor="let cat of categories" [value]="cat"></option>
+        </datalist>
+        <span class="field-hint">Free-form with suggestions from existing categories.</span>
+      </div>
+      <div class="form-field">
+        <label>Unit</label>
+        <input class="form-input" type="text" [(ngModel)]="form.unit" placeholder="e.g. each, kg, g, bag" />
+      </div>
+      <div class="form-field">
+        <label>Pricing Basis</label>
+        <select class="form-input" [(ngModel)]="form.pricingBasis">
+          <option value="qty">Price per quantity / bag</option>
+          <option value="kilos">Price per kilo</option>
+        </select>
+        <span class="field-hint">Leafy bundles normally use quantity; potato bags normally use kilos.</span>
+      </div>
+      <div class="form-field">
+        <label>Kilo Capture</label>
+        <label class="form-check-inline">
+          <input type="checkbox" [(ngModel)]="form.requiresKilos" [disabled]="form.pricingBasis === 'kilos'" />
+          <span>Ask for kilos when this item is billed</span>
+        </label>
+        <span class="field-hint">Kilo-priced items always require kilos. Quantity remains the bag count.</span>
+      </div>
+      <div class="form-field">
+        <label>Quantity Increment</label>
+        <input class="form-input monospace" type="number" [(ngModel)]="form.quantityStep" step="0.001" min="0.001" />
+        <span class="field-hint">Suggested increment for quantity entry, such as 1, 0.5, or 0.1.</span>
+      </div>
+      <div class="form-field">
+        <label>Zero Quantity</label>
+        <label class="form-check-inline">
+          <input type="checkbox" [(ngModel)]="form.allowZeroQuantity" [disabled]="!form.requiresKilos && form.pricingBasis !== 'kilos'" />
+          <span>Allow zero bags when kilos are entered</span>
+        </label>
+        <span class="field-hint">Useful for a small retail portion sold by kilos without a bag count.</span>
+      </div>
+      <div class="form-field">
+        <label>Bag Charge (per bag)</label>
+        <input class="form-input monospace" type="number" [(ngModel)]="form.bagCharge" step="0.01" min="0" />
+      </div>
+      <div class="form-field">
+        <label>Wage Charge</label>
+        <input class="form-input monospace" type="number" [(ngModel)]="form.wageCharge" step="0.01" min="0" />
+      </div>
+      <div class="form-field" *ngIf="form.wageCharge > 0">
+        <label>Wage Basis</label>
+        <select class="form-input" [(ngModel)]="form.wageBasis">
+          <option value="qty">Per bag / quantity</option>
+          <option value="kilos">Per kilo</option>
+        </select>
+      </div>
+      <div class="form-field">
+        <label>Unit Price *</label>
+        <input class="form-input monospace" type="number" [(ngModel)]="form.unitPrice" step="0.01" min="0" />
+        <span class="field-hint">Zero is allowed for products priced at the counter during billing.</span>
+      </div>
+      <div class="form-field form-full">
+        <label>Billing Price Override</label>
+        <label class="form-check-inline"><input type="checkbox" [(ngModel)]="form.priceOverrideAllowed" /><span>Allow the billing rate to change for this item</span></label>
+        <span class="field-hint">Zero-price items can always receive their rate at billing; use this for non-zero master prices.</span>
+      </div>
+      <div class="form-field" *ngIf="form.priceOverrideAllowed">
+        <label>Minimum Sell Price</label><input class="form-input monospace" type="number" [(ngModel)]="form.minimumSellPrice" step="0.01" min="0" placeholder="No minimum" />
+      </div>
+      <div class="form-field" *ngIf="form.priceOverrideAllowed">
+        <label>Maximum Sell Price</label><input class="form-input monospace" type="number" [(ngModel)]="form.maximumSellPrice" step="0.01" min="0" placeholder="No maximum" />
+      </div>
+      <div class="form-field" *ngIf="form.priceOverrideAllowed">
+        <label class="form-check-inline"><input type="checkbox" [(ngModel)]="form.priceOverrideReasonRequired" /><span>Require reason later</span></label>
+        <span class="field-hint">Stored now for the future approval/reason workflow.</span>
+      </div>
+      <div class="form-field">
+        <label>Stock Quantity</label>
+        <input class="form-input monospace" type="number" [(ngModel)]="form.stockQty" step="0.001" min="0" />
+      </div>
+      <div class="form-field">
+        <label>Status</label>
+        <select class="form-input" [(ngModel)]="form.isActive">
+          <option [ngValue]="true">Active</option>
+          <option [ngValue]="false">Inactive</option>
+        </select>
+        <span class="field-hint">Inactive items are hidden from billing lookups.</span>
+      </div>
+
+      <!-- Plugin-contributed item fields -->
+      <div class="form-field" *ngFor="let field of itemFormFields" [class.form-full]="field.type === 'text'">
+        <label>{{ field.label }}</label>
+        <ng-container [ngSwitch]="field.type">
+          <select
+            *ngSwitchCase="'select'"
+            class="form-input"
+            [(ngModel)]="itemFormValues[field.key]"
+            (ngModelChange)="onItemFormFieldChanged(field)"
+          >
+            <option value="">—</option>
+            <option *ngFor="let opt of field.options || []" [value]="opt.value">{{ opt.label }}</option>
+          </select>
+          <input
+            *ngSwitchCase="'checkbox'"
+            type="checkbox"
+            class="form-checkbox"
+            [(ngModel)]="itemFormValues[field.key]"
+            (ngModelChange)="onItemFormFieldChanged(field)"
+          />
+          <input
+            *ngSwitchCase="'number'"
+            type="number"
+            class="form-input monospace"
+            step="0.001"
+            min="0"
+            [placeholder]="field.placeholder || ''"
+            [(ngModel)]="itemFormValues[field.key]"
+            (ngModelChange)="onItemFormFieldChanged(field)"
+          />
+          <input
+            *ngSwitchDefault
+            type="text"
+            class="form-input"
+            [placeholder]="field.placeholder || ''"
+            [(ngModel)]="itemFormValues[field.key]"
+            (ngModelChange)="onItemFormFieldChanged(field)"
+          />
+        </ng-container>
+        <p *ngIf="field.description" class="form-hint">{{ field.description }}</p>
+      </div>
+      </div>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-cancel" (click)="closeFormModal()">Cancel</button>
+      <button class="btn btn-primary" (click)="submitForm()" [disabled]="isSubmitting">
+        {{ isSubmitting ? 'Saving...' : (editingId ? 'Update Item' : 'Add Item') }}
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Delete Confirmation Modal ─────────────────────────── -->
+<div class="modal-overlay" *ngIf="showDeleteModal" (click)="closeDeleteModal()">
+  <div class="modal-box modal-sm" (click)="$event.stopPropagation()">
+    <h3>Delete Item</h3>
+    <div class="error-banner" *ngIf="errorMessage">{{ errorMessage }}</div>
+    <p class="confirm-text">
+      Are you sure you want to delete <strong>{{ deleteTarget?.name }}</strong>
+      ({{ deleteTarget?.sku }})?
+    </p>
+    <p class="confirm-text">
+      Items with billing or stock movement history cannot be deleted — deactivate them instead
+      so past receipts stay intact.
+    </p>
+    <div class="modal-actions">
+      <button class="btn btn-cancel" (click)="closeDeleteModal()">Cancel</button>
+      <button class="btn btn-danger" (click)="submitDelete()" [disabled]="isSubmitting">
+        {{ isSubmitting ? 'Deleting...' : 'Delete Item' }}
+      </button>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,173 @@
+:host {
+  display: block;
+}
+.cash-page {
+  max-width: 1280px;
+  margin: auto;
+  padding: 30px;
+  color: var(--ui-ink);
+}
+.cash-page header {
+  margin-bottom: 18px;
+}
+.cash-page header h1 {
+  margin: 0 0 4px;
+  color: var(--ui-ops-title);
+  font:
+    23px/1.1 Georgia,
+    serif;
+}
+.cash-page header h1 span {
+  color: var(--ui-ops-title-accent);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+.cash-page header p {
+  margin: 0;
+  color: var(--ui-ink-muted);
+  font-size: 13px;
+}
+.open-card,
+.two-col article,
+.close-card,
+.movement-list,
+.history-card,
+.summary {
+  margin-top: 22px;
+  padding: 22px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius);
+  background: var(--ui-warm-surface);
+  box-shadow: var(--ui-shadow-sm);
+}
+.summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 16px;
+  background: var(--ui-primary-soft);
+}
+.summary span {
+  display: block;
+  font-size: 12px;
+  color: var(--ui-ink-muted);
+}
+.summary strong {
+  font-size: 18px;
+  text-transform: capitalize;
+}
+.denominations {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(105px, 1fr));
+  gap: 10px 3px;
+  margin: 16px 0;
+}
+.denominations label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.denominations input,
+input,
+select {
+  padding: 9px;
+  border: 1px solid var(--ui-border-strong);
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-surface);
+  color: var(--ui-ink);
+  width: 100%;
+}
+.two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+.two-col article {
+  display: grid;
+  gap: 10px;
+  margin-top: 22px;
+}
+.primary {
+  margin: 15px 0 0 5px;
+  padding: 10px 16px;
+  border: 0;
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-primary);
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
+}
+.primary:hover:not(:disabled) {
+  background: var(--ui-primary-hover);
+}
+.movement-list div {
+  display: grid;
+  grid-template-columns: 150px 1fr 120px;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--ui-border);
+}
+.history-list {
+  display: grid;
+  gap: 12px;
+}
+.history-item {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr 1fr;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--ui-border);
+}
+.history-item div {
+  display: grid;
+  gap: 4px;
+}
+.history-item span,
+.history-empty {
+  color: var(--ui-ink-muted);
+  font-size: 12px;
+}
+.out {
+  color: var(--ui-danger);
+}
+.alert {
+  padding: 10px;
+  border-radius: var(--ui-radius);
+}
+.error {
+  background: var(--ui-danger-soft);
+  color: var(--ui-danger);
+}
+.success {
+  background: var(--ui-success-soft);
+  color: var(--ui-success);
+}
+@media (max-width: 760px) {
+  .cash-page {
+    padding: 18px;
+  }
+  .two-col {
+    grid-template-columns: 1fr;
+  }
+  .history-item,
+  .movement-list div {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Same low-noise operational rhythm used by Business Day Control. */
+.cash-page { max-width:1280px; padding:30px; }
+.open-card, .two-col article, .close-card, .movement-list, .history-card, .summary { margin-top:14px; padding:16px; background:var(--ui-warm-surface); box-shadow:var(--ui-shadow-sm); }
+.open-card h2, .two-col h2, .close-card h2, .movement-list h2, .history-card h2 { margin:0 0 4px; color:var(--ui-navy); font-size:16px; }
+.open-card p, .two-col p, .close-card p { margin:0; color:var(--ui-ink-muted); font-size:13px; }
+.summary { gap:1px; padding:0; overflow:hidden; background:var(--ui-border); }
+.summary div { padding:13px 15px; background:var(--ui-surface); }.summary span { font-size:11px; text-transform:uppercase; letter-spacing:.04em; }.summary strong { margin-top:3px; font-size:18px; }
+.denominations { gap:8px; margin:14px 0; }.denominations input, input, select { min-height:36px; padding:8px 9px; }
+.two-col { gap:14px; }.two-col article { margin-top:14px; padding:16px; }
+.primary { min-height:36px; margin:0; padding:9px 13px; font-weight:750; }
+.open-card > .primary, .close-card > .primary { margin-top:12px; }.two-col .primary { margin-top:2px; }
+.movement-list div, .history-item { padding:9px 0; }.history-list { gap:0; }
+@media (max-width:760px) { .cash-page { padding:18px; } }

@@ -1,0 +1,13 @@
+/node_modules
+/.angular
+/dist
+/release
+/output
+*.zip
+/.env
+/.env.*
+/tmp
+/storage/*
+!/storage/.gitkeep
+/ddesdb
+*.log

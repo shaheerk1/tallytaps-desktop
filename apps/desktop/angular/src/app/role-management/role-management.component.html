@@ -1,0 +1,163 @@
+<div class="rm-container">
+  <div class="rm-header">
+    <div class="header-left">
+      <h1>Role Management</h1>
+      <p class="subtitle">Define roles and assign permissions</p>
+    </div>
+    <div class="header-right">
+      <input
+        class="search-input"
+        type="text"
+        placeholder="Search roles..."
+        [(ngModel)]="searchTerm"
+      />
+      <button class="btn btn-primary" (click)="openCreateModal()">+ New Role</button>
+    </div>
+  </div>
+
+  <div class="rm-content" *ngIf="!isLoading">
+    <div class="error-banner" *ngIf="errorMessage && !showCreateModal && !showEditModal && !showDeleteModal && !showPermissionsModal">
+      {{ errorMessage }}
+    </div>
+
+    <div class="role-cards">
+      <div class="role-card" *ngFor="let role of filteredRoles" [class.admin]="isAdminRole(role)">
+        <div class="card-header">
+          <div class="role-info">
+            <div class="role-icon" [class.admin]="isAdminRole(role)">
+              {{ role.name.charAt(0).toUpperCase() }}
+            </div>
+            <div>
+              <div class="role-name">{{ role.name }}</div>
+              <div class="role-key">{{ role.role_key }}</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card-stats">
+          <div class="stat">
+            <span class="stat-value">{{ role.permissionCount }}</span>
+            <span class="stat-label">permissions</span>
+          </div>
+          <div class="stat">
+            <span class="stat-value">{{ role.userCount }}</span>
+            <span class="stat-label">users</span>
+          </div>
+        </div>
+
+        <div class="card-actions">
+          <button class="btn btn-sm" (click)="openPermissionsModal(role)" title="Manage permissions">🔐 Permissions</button>
+          <button class="btn btn-sm" (click)="openEditModal(role)" title="Edit role" [disabled]="isAdminRole(role)">✏️ Edit</button>
+          <button class="btn btn-sm btn-danger-outline" (click)="openDeleteModal(role)" title="Delete role" [disabled]="isAdminRole(role)">🗑️ Delete</button>
+        </div>
+      </div>
+
+      <div class="empty-state" *ngIf="filteredRoles.length === 0">
+        No roles found.
+      </div>
+    </div>
+  </div>
+
+  <div class="rm-loading" *ngIf="isLoading">
+    <div class="spinner"></div>
+    <span>Loading roles...</span>
+  </div>
+</div>
+
+<!-- ── Create Role Modal ─────────────────────────────────── -->
+<div class="modal-overlay" *ngIf="showCreateModal" (click)="closeCreateModal()">
+  <div class="modal-box" (click)="$event.stopPropagation()">
+    <h3>Create New Role</h3>
+    <div class="error-banner" *ngIf="errorMessage">{{ errorMessage }}</div>
+
+    <div class="form-grid">
+      <div class="form-field">
+        <label>Role Key *</label>
+        <input class="form-input" type="text" [(ngModel)]="newRole.roleKey" placeholder="e.g. manager" />
+        <span class="field-hint">Lowercase letters, numbers, underscores, hyphens only</span>
+      </div>
+      <div class="form-field">
+        <label>Display Name *</label>
+        <input class="form-input" type="text" [(ngModel)]="newRole.name" placeholder="e.g. Manager" />
+      </div>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-cancel" (click)="closeCreateModal()">Cancel</button>
+      <button class="btn btn-primary" (click)="submitCreate()" [disabled]="!newRole.roleKey || !newRole.name">Create Role</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Edit Role Modal ───────────────────────────────────── -->
+<div class="modal-overlay" *ngIf="showEditModal" (click)="closeEditModal()">
+  <div class="modal-box" (click)="$event.stopPropagation()">
+    <h3>Edit Role</h3>
+    <div class="error-banner" *ngIf="errorMessage">{{ errorMessage }}</div>
+
+    <div class="form-field">
+      <label>Display Name</label>
+      <input class="form-input" type="text" [(ngModel)]="editRole.name" />
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-cancel" (click)="closeEditModal()">Cancel</button>
+      <button class="btn btn-primary" (click)="submitEdit()">Save Changes</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Delete Confirmation Modal ─────────────────────────── -->
+<div class="modal-overlay" *ngIf="showDeleteModal" (click)="closeDeleteModal()">
+  <div class="modal-box modal-sm" (click)="$event.stopPropagation()">
+    <h3>Delete Role</h3>
+    <div class="error-banner" *ngIf="errorMessage">{{ errorMessage }}</div>
+    <p class="confirm-text">
+      Are you sure you want to delete <strong>{{ deleteTarget?.name }}</strong>?
+      Users with this role will lose its permissions.
+    </p>
+    <div class="modal-actions">
+      <button class="btn btn-cancel" (click)="closeDeleteModal()">Cancel</button>
+      <button class="btn btn-danger" (click)="submitDelete()">Delete Role</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Permissions Modal ─────────────────────────────────── -->
+<div class="modal-overlay" *ngIf="showPermissionsModal" (click)="closePermissionsModal()">
+  <div class="modal-box modal-xl" (click)="$event.stopPropagation()">
+    <h3>Permissions — {{ permissionsTarget?.name }}</h3>
+    <div class="error-banner" *ngIf="errorMessage">{{ errorMessage }}</div>
+
+    <div class="permissions-body">
+      <div class="perm-group" *ngFor="let groupKey of permissionGroupKeys">
+        <div class="perm-group-header">
+          <label class="checkbox-item">
+            <input
+              type="checkbox"
+              [checked]="isGroupFullySelected(permissionGroups[groupKey])"
+              [class.indeterminate]="isGroupPartiallySelected(permissionGroups[groupKey])"
+              (change)="toggleGroupPermissions(permissionGroups[groupKey])"
+            />
+            <span class="group-label">{{ formatGroupLabel(groupKey) }}</span>
+            <span class="group-count">{{ permissionGroups[groupKey].length }} permissions</span>
+          </label>
+        </div>
+        <div class="perm-list">
+          <label class="checkbox-item perm-item" *ngFor="let perm of permissionGroups[groupKey]">
+            <input type="checkbox" [checked]="selectedPermissionIds.indexOf(perm.id) >= 0" (change)="togglePermission(perm.id)" />
+            <span class="perm-name">{{ perm.name }}</span>
+            <span class="perm-key">{{ perm.permission_key }}</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="empty-state" *ngIf="permissions.length === 0">No permissions available.</div>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-cancel" (click)="closePermissionsModal()">Cancel</button>
+      <button class="btn btn-primary" (click)="submitPermissions()">Save Permissions</button>
+    </div>
+  </div>
+</div>

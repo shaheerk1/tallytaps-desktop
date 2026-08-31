@@ -1,0 +1,155 @@
+<section class="refund-page">
+  <header class="refund-header">
+    <div>
+      <h1>Refund <span>~ Source-Linked Transactions</span></h1>
+      <p class="header-detail">Return only items from a completed sale. Finalized refunds are immutable.</p>
+    </div>
+    <div class="refund-actions" *ngIf="draft">
+      <button class="btn secondary" (click)="hold()">Hold Refund</button>
+      <button class="btn danger" (click)="clear()">Clear Refund</button>
+    </div>
+  </header>
+
+  <p class="alert error" *ngIf="error">{{ error }}</p>
+  <p class="alert success" *ngIf="info">{{ info }}</p>
+
+  <div class="refund-grid">
+    <aside class="source-panel">
+      <div class="panel-title">
+        <div>
+          <span>1. Find original sale</span>
+          <small>Defaults to this workstation. Adjust filters to find another completed sale.</small>
+        </div>
+      </div>
+      <div class="search-filters">
+        <label>Location<input [(ngModel)]="searchLocation" (keyup.enter)="search()" placeholder="Location" /></label>
+        <label>Machine<input [(ngModel)]="searchMachine" (keyup.enter)="search()" placeholder="Machine" /></label>
+        <label>Billing date<input type="date" [(ngModel)]="searchDate" (change)="search()" /></label>
+        <label>Customer code<input [(ngModel)]="searchCustomerCode" (keyup.enter)="search()" placeholder="Customer code" /></label>
+        <label>Invoice or receipt<input [(ngModel)]="searchTerm" (keyup.enter)="search()" placeholder="Invoice or receipt #" /></label>
+      </div>
+      <div class="search-row">
+        <button class="btn" (click)="search()">Search</button>
+      </div>
+      <div class="source-switch" *ngIf="pendingSourceInvoiceId">
+        <strong>Another refund is in progress.</strong>
+        <span>Hold it to resume later, or clear it before selecting this sale.</span>
+        <div>
+          <button class="btn secondary" (click)="cancelSourceSwitch()">Keep current</button>
+          <button class="btn" (click)="holdAndSelectSource()">Hold &amp; select</button>
+          <button class="btn danger" (click)="clearAndSelectSource()">Clear &amp; select</button>
+        </div>
+      </div>
+      <button class="source-result" *ngFor="let result of searchResults" (click)="selectSource(result.id)" [class.selected]="source?.id === result.id">
+        <strong>{{ result.invoice_number }}</strong>
+        <b class="result-customer" *ngIf="result.customer_code">{{ result.customer_code }}</b>
+        <span>Receipt #{{ result.receipt_no }} - {{ result.txn_date }}</span>
+        <span>Refundable: {{ result.refundableTotal | number:'1.2-2' }}</span>
+      </button>
+
+      <div class="held" *ngIf="activeDrafts.length">
+        <h3>Refund drafts</h3>
+        <small>Unfinished refunds for this workstation and billing date.</small>
+        <button *ngFor="let active of activeDrafts" (click)="resumeDraft(active)" [class.current]="draft?.id === active.id">
+          <strong><span class="draft-status" [class.open]="active.status === 'open'">{{ active.status === 'open' ? 'In progress' : 'Held' }}</span> R{{ active.refundNo }}</strong>
+          <span>{{ active.sourceInvoiceNumber }} - {{ active.itemCount }} line{{ active.itemCount === 1 ? '' : 's' }} - {{ active.grandTotal | number:'1.2-2' }}</span>
+        </button>
+      </div>
+    </aside>
+
+    <main class="refund-workspace">
+      <div class="empty" *ngIf="!source">Select a completed sale to begin a full or partial refund.</div>
+      <ng-container *ngIf="source">
+        <div class="source-summary">
+          <div>
+            <span>Original invoice</span>
+            <strong>{{ source.invoice_number }}</strong>
+          </div>
+          <div *ngIf="source.customer_code">
+            <span>Customer code</span>
+            <strong>{{ source.customer_code }}</strong>
+          </div>
+          <div>
+            <span>Original total</span>
+            <strong>{{ source.grandTotal | number:'1.2-2' }}</strong>
+          </div>
+          <div>
+            <span>Outstanding balance</span>
+            <strong>{{ source.balance | number:'1.2-2' }}</strong>
+          </div>
+          <div *ngIf="source.customer">
+            <span>Customer account outstanding</span>
+            <strong>{{ source.customer.outstandingBalance | number:'1.2-2' }}</strong>
+            <small>{{ source.customer.customerCode || source.customer.name }}</small>
+          </div>
+          <div *ngFor="let value of sourceHeaderValues()">
+            <span>{{ value.label }}</span>
+            <strong>{{ value.value }}</strong>
+          </div>
+          <button class="btn" (click)="refundAll()" [disabled]="isLoading">Refund All Remaining</button>
+        </div>
+
+        <div class="source-items">
+          <h2>Source Items</h2>
+          <article *ngFor="let item of source.items" class="source-item">
+            <div>
+              <strong>{{ itemCode(item) }} {{ item.description }}</strong>
+              <small *ngIf="item.kilos !== null">Sold: {{ formatMeasure(item.kilos) }} kg - Remaining: {{ formatMeasure(item.remainingKilos) }} kg</small>
+              <small *ngIf="item.kilos === null">Sold: {{ formatMeasure(item.qty) }} - Remaining: {{ formatMeasure(item.remainingQuantity) }}</small>
+              <small>Merchandise: {{ item.merchandiseTotal | number:'1.2-2' }} - Previously refunded: {{ item.refundedTotal | number:'1.2-2' }}</small>
+              <small *ngIf="item.bagChargeTotal">Bag charge: {{ item.bagChargeTotal | number:'1.2-2' }} - Remaining: {{ item.remainingBagChargeTotal | number:'1.2-2' }}</small>
+              <small *ngIf="item.wageChargeTotal">Wage charge: {{ item.wageChargeTotal | number:'1.2-2' }} - Remaining: {{ item.remainingWageChargeTotal | number:'1.2-2' }}</small>
+              <small class="plugin-value" *ngFor="let value of pluginValues(item)">{{ value.label }}: {{ value.value }}</small>
+            </div>
+            <button class="btn secondary" (click)="addItem(item)" [disabled]="(item.remainingKilos ?? item.remainingQuantity) <= 0">Add Return</button>
+          </article>
+        </div>
+
+        <section class="draft-section" *ngIf="draft">
+          <div class="draft-title">
+            <div>
+              <span>2. Refund draft #{{ draft.refundNo }}</span>
+              <small>Amounts are derived from the original sale values.</small>
+            </div>
+            <label>Reason <input [(ngModel)]="reason" placeholder="Required at completion" /></label>
+          </div>
+          <div class="draft-table">
+            <div class="draft-row heading"><span>Item</span><span>Return amount</span><span>Charge refund</span><span>Disposition</span><span>Total</span><span></span></div>
+            <div class="draft-row" *ngFor="let item of draft.items">
+              <span><strong>{{ itemCode(item) }} {{ item.description }}</strong><small>Source item #{{ item.source_invoice_item_id }}</small><small class="plugin-value" *ngFor="let value of pluginValues(item)">{{ value.label }}: {{ value.value }}</small></span>
+              <span *ngIf="item.returnKilos !== null"><input type="number" min="0.001" step="0.001" [(ngModel)]="item.returnKilos" (change)="updateItem(item)" /> kg</span>
+              <span *ngIf="item.returnKilos === null"><input type="number" min="0.001" step="0.001" [(ngModel)]="item.returnQuantity" (change)="updateItem(item)" /></span>
+              <span class="charge-controls">
+                <label *ngIf="hasBagCharge(item)">Bag
+                  <select [(ngModel)]="item.bagChargeMode" (change)="updateItem(item)"><option value="proportional">Proportional</option><option value="exclude">Do not refund</option><option value="custom">Custom</option></select>
+                  <input *ngIf="item.bagChargeMode === 'custom'" type="number" min="0" step="0.01" [(ngModel)]="item.bagChargeTotal" (change)="updateItem(item)" />
+                  <small>{{ item.bagChargeTotal | number:'1.2-2' }}</small>
+                </label>
+                <label *ngIf="hasWageCharge(item)">Wage
+                  <select [(ngModel)]="item.wageChargeMode" (change)="updateItem(item)"><option value="proportional">Proportional</option><option value="exclude">Do not refund</option><option value="custom">Custom</option></select>
+                  <input *ngIf="item.wageChargeMode === 'custom'" type="number" min="0" step="0.01" [(ngModel)]="item.wageChargeTotal" (change)="updateItem(item)" />
+                  <small>{{ item.wageChargeTotal | number:'1.2-2' }}</small>
+                </label>
+                <small *ngIf="!hasBagCharge(item) && !hasWageCharge(item)">No bag or wage charge</small>
+              </span>
+              <span><select [(ngModel)]="item.stock_disposition" (change)="updateItem(item)"><option value="sellable">Sellable (stock update pending)</option><option value="damaged">Damaged</option><option value="waste">Waste</option></select></span>
+              <strong>{{ item.total | number:'1.2-2' }}</strong>
+              <button class="icon-btn" (click)="removeItem(item)">Remove</button>
+            </div>
+          </div>
+          <div class="settlement-summary">
+            <div><span>Return value</span><strong>{{ grandTotal | number:'1.2-2' }}</strong></div>
+            <div><span>Applied to debt</span><strong>-{{ debtReduction | number:'1.2-2' }}</strong></div>
+            <div><span>Actual payout due</span><strong>{{ payoutDue | number:'1.2-2' }}</strong></div>
+          </div>
+          <div class="complete-row">
+            <label *ngIf="payoutDue > 0.005">Payout method <select [(ngModel)]="payoutMethod"><option *ngFor="let mode of paymentModes" [value]="mode.id">{{ mode.name }}</option></select></label>
+            <div *ngIf="payoutDue <= 0.005" class="debt-note">No cash payout: this return reduces the outstanding customer balance.</div>
+            <div><span>Refund Total</span><strong>{{ grandTotal | number:'1.2-2' }}</strong></div>
+            <button class="btn complete" (click)="complete()" [disabled]="isFinalizing || grandTotal <= 0">{{ isFinalizing ? 'Completing...' : 'Complete Refund' }}</button>
+          </div>
+        </section>
+      </ng-container>
+    </main>
+  </div>
+</section>

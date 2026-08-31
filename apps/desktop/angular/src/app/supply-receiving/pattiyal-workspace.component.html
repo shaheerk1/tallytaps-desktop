@@ -1,0 +1,174 @@
+<section class="pattiyal-shell">
+  <div class="evaluation-notice">
+    <div><strong>Evaluation only</strong><span>This supplier sales statement workspace stores its own documents and does not change the existing supplier payable ledger or settlement workflow.</span></div>
+    <span class="notice-state">Legacy ledger unchanged</span>
+  </div>
+
+  <div class="workspace-status error" *ngIf="error" role="alert"><strong>Action needs attention</strong><span>{{ error }}</span><button type="button" (click)="clearStatus()">Dismiss</button></div>
+  <div class="workspace-status success" *ngIf="info" role="status"><strong>Action completed</strong><span>{{ info }}</span><button type="button" (click)="clearStatus()">Dismiss</button></div>
+
+  <ng-container *ngIf="view === 'register'">
+    <div class="workspace-heading">
+      <div><h2>Supplier Sales Statements</h2><p>Build a supplier sold-price summary from source sales, corrected attributions, manual rows, or a mixture of all three.</p></div>
+      <button type="button" class="button-primary" (click)="newDraft()">Create statement</button>
+    </div>
+
+    <div class="register-toolbar">
+      <input [(ngModel)]="registerFilters.term" (keyup.enter)="applyRegisterFilters()" placeholder="Statement, supplier code, or name">
+      <select [(ngModel)]="registerFilters.supplierId" (change)="applyRegisterFilters()"><option [ngValue]="null">All suppliers</option><option *ngFor="let supplier of suppliers" [ngValue]="supplier.id">{{ supplier.supplier_code || supplier.name }} - {{ supplier.name }}</option></select>
+      <select [(ngModel)]="registerFilters.status" (change)="applyRegisterFilters()"><option value="">All statuses</option><option value="draft">Draft</option><option value="reviewed">Reviewed</option><option value="finalized">Finalized</option><option value="void">Void</option></select>
+      <label>From<input type="date" [(ngModel)]="registerFilters.fromDate" (change)="applyRegisterFilters()"></label>
+      <label>To<input type="date" [(ngModel)]="registerFilters.toDate" (change)="applyRegisterFilters()"></label>
+      <label>Show<select [(ngModel)]="registerPageSize" (change)="changeRegisterPageSize()"><option [ngValue]="10">10</option><option [ngValue]="25">25</option><option [ngValue]="50">50</option><option [ngValue]="100">100</option></select></label>
+      <button type="button" class="button-secondary" [disabled]="loading" (click)="applyRegisterFilters()">{{ loading ? 'Loading...' : 'Search' }}</button>
+    </div>
+
+    <div class="empty-state" *ngIf="!loading && !registerRows.length">No supplier sales statements match these filters.</div>
+    <div class="register-table" *ngIf="registerRows.length">
+      <div class="register-row register-head"><span>Statement</span><span>Supplier / source period</span><span>Lines</span><span>Qty / Kg</span><span>Subtotal</span><span>Commission</span><span>BL / Net</span><span>Status</span><span>Action</span></div>
+      <div class="register-row" *ngFor="let row of registerRows">
+        <div><strong>{{ row.statement_number }}</strong><small>{{ row.txn_date | date:'dd MMM yyyy' }} · {{ row.build_mode || 'assisted' }}</small></div>
+        <div><strong>{{ row.supplier_code || row.supplier_name }}</strong><small>{{ row.from_date | date:'dd MMM yyyy' }} to {{ row.to_date | date:'dd MMM yyyy' }}</small></div>
+        <span>{{ (row.source_line_count || 0) + (row.manual_line_count || 0) }}<small>{{ row.source_line_count || 0 }} source · {{ row.manual_line_count || 0 }} manual</small></span>
+        <span>{{ compactNumber(row.quantity_total) }}<small>{{ compactNumber(row.kilos_total) }} kg</small></span>
+        <b class="number">{{ row.merchandise_subtotal | number:'1.2-2' }}</b>
+        <span class="number">{{ row.commission_amount | number:'1.2-2' }}</span>
+        <b class="number">{{ row.net_payable | number:'1.2-2' }}</b>
+        <span class="status-chip" [class.finalized]="row.status === 'finalized'" [class.void]="row.status === 'void'">{{ row.status }}</span>
+        <button type="button" class="button-quiet" (click)="openStatement(row.id)">{{ row.status === 'draft' ? 'Edit' : 'View' }}</button>
+      </div>
+    </div>
+    <div class="pagination" *ngIf="registerTotal > registerPageSize"><span>{{ registerTotal }} documents</span><button type="button" class="button-quiet" [disabled]="registerPage === 1" (click)="changeRegisterPage(registerPage - 1)">Previous</button><button type="button" class="page-button" *ngFor="let page of registerPageNumbers" [class.active]="page === registerPage" (click)="changeRegisterPage(page)">{{ page }}</button><button type="button" class="button-quiet" [disabled]="registerPage === registerPageCount" (click)="changeRegisterPage(registerPage + 1)">Next</button></div>
+  </ng-container>
+
+  <ng-container *ngIf="view === 'editor'">
+    <div class="editor-heading">
+      <div><span>{{ draft.statementId ? 'DRAFT STATEMENT' : 'NEW STATEMENT' }}</span><h2>{{ draft.statementId ? detail?.statement?.['statement_number'] : 'Create Supplier Sales Statement' }}</h2><p>Add source-linked and manual rows, compare them with GRNs, then review the grouped supplier document.</p></div>
+      <button type="button" class="button-quiet" (click)="backToRegister()">Back to register</button>
+    </div>
+
+    <section class="editor-section configuration-card">
+      <div class="section-heading"><div><h3>1. Supplier and source period</h3><p>This supplier owns the statement. The source period controls finalized sale lines; GRN references are searched separately across the supplier's effective finalized history.</p></div><strong>{{ selectedSupplierName() }}</strong></div>
+      <div class="field-grid five">
+        <label>Supplier<select [(ngModel)]="draft.supplierId" (change)="supplierChanged()" [disabled]="saving"><option [ngValue]="null">Select supplier</option><option *ngFor="let supplier of suppliers" [ngValue]="supplier.id">{{ supplier.supplier_code || supplier.name }} - {{ supplier.name }}</option></select></label>
+        <label>Sales from<input type="date" [(ngModel)]="draft.fromDate" (change)="sourceDatesChanged()"></label>
+        <label>Sales to<input type="date" [(ngModel)]="draft.toDate" (change)="sourceDatesChanged()"></label>
+        <label>Commission %<input type="number" min="0" max="100" step="0.01" [(ngModel)]="draft.commissionRate"></label>
+        <label>Commission rounding<select [(ngModel)]="draft.commissionRounding"><option value="cents">Two decimals</option><option value="nearest_rupee">Nearest rupee</option><option value="floor_rupee">Round down</option><option value="ceil_rupee">Round up</option><option value="manual">Manual amount</option></select></label>
+      </div>
+      <div class="field-grid two manual-commission" *ngIf="draft.commissionRounding === 'manual'"><label>Manual commission<input type="number" min="0" step="0.01" [(ngModel)]="draft.commissionOverride"></label><label>Override reason<input [(ngModel)]="draft.commissionOverrideReason" placeholder="Required audit reason"></label></div>
+    </section>
+
+    <section class="editor-section source-card">
+      <div class="section-heading"><div><h3>2. Add finalized sale lines</h3><p>Suggested sales use the effective supplier. Search all sales when a cashier entered the wrong or an unknown supplier code.</p></div><div class="source-tabs"><button type="button" [class.active]="candidateScope === 'supplier'" (click)="setCandidateScope('supplier')">Suggested sales</button><button type="button" [class.active]="candidateScope === 'all'" (click)="setCandidateScope('all')">Search all sales</button></div></div>
+      <div class="source-toolbar"><input [(ngModel)]="candidateTerm" (keyup.enter)="applyCandidateSearch()" placeholder="Receipt, customer, item, or supplier"><label class="inline-check"><input type="checkbox" [(ngModel)]="includeUnavailableCandidates" (change)="availabilityFilterChanged()"> Include used lines</label><button type="button" class="button-secondary" [disabled]="!draft.supplierId || loading" (click)="applyCandidateSearch()">{{ loading ? 'Loading...' : 'Load sales' }}</button><span>{{ candidateTotal }} sale lines · {{ candidateTotals['merchandise'] || 0 | number:'1.2-2' }} available</span></div>
+      <div class="source-guidance" *ngIf="candidateScope === 'all'"><strong>Correction workspace</strong><span>You may add another supplier's line to this draft with an explanation, or permanently correct its effective supplier. A permanent correction retains the originally billed supplier code in the audit history.</span></div>
+      <div class="empty-state compact" *ngIf="draft.supplierId && !loading && !candidates.length">No eligible finalized sale lines match this scope and date range.</div>
+      <div class="candidate-table" *ngIf="candidates.length">
+        <div class="candidate-row candidate-head"><span></span><span>Date / receipt</span><span>Item</span><span>Recorded → effective supplier</span><span>Customer</span><span>Available Qty / Kg</span><span>Rate</span><span>Merchandise</span><span>Correction</span></div>
+        <div class="candidate-row" *ngFor="let candidate of visibleCandidates" [class.selected]="candidateSelected(candidate)" [class.cross-supplier]="isCrossSupplier(candidate)">
+          <input type="checkbox" [checked]="candidateSelected(candidate)" [disabled]="!candidateHasAvailableMeasure(candidate)" (change)="toggleCandidate(candidate, $any($event.target).checked)">
+          <div><strong>{{ candidate.txnDate | date:'dd MMM yyyy' }}</strong><small>#{{ candidate.receiptNo }} · {{ candidate.txnTime }}</small></div>
+          <div><strong>{{ candidate.itemCode }}</strong><small>{{ candidate.description }}</small></div>
+          <div><strong>{{ candidate.sourceSupplierCode || 'Unresolved' }} <span>→</span> {{ candidate.effectiveSupplierCode || 'Unresolved' }}</strong><small *ngIf="candidate.attributionId">Corrected: {{ candidate.attributionReason }}</small><small *ngIf="isCrossSupplier(candidate)">Does not currently belong to this statement supplier</small></div>
+          <span>{{ candidate.customerCode || '-' }}</span>
+          <span>{{ compactNumber(candidate.availableQuantity) }}<small>{{ compactNumber(candidate.availableKilos) }} kg</small><small class="draft-warning" *ngIf="candidate.draftStatementCount">Also used by {{ candidate.draftStatementCount }} other draft{{ candidate.draftStatementCount === 1 ? '' : 's' }}</small><small *ngIf="!candidateHasAvailableMeasure(candidate) && (candidate.committedQuantity || candidate.committedKilos || candidate.committedMerchandise)">Used by {{ candidate.committedStatementNumbers || 'another reviewed/finalized statement' }}</small></span>
+          <span class="number">{{ candidate.unitPrice | number:'1.2-2' }}</span>
+          <b class="number">{{ candidate.availableMerchandise | number:'1.2-2' }}</b>
+          <div class="attribution-action" *ngIf="isCrossSupplier(candidate); else attributionOkay"><input [ngModel]="attributionReason(candidate)" (ngModelChange)="setAttributionReason(candidate, $event)" placeholder="Correction reason"><button type="button" class="button-quiet" [disabled]="correctingAttributionId === candidate.invoiceItemId" (click)="correctAttribution(candidate)">{{ correctingAttributionId === candidate.invoiceItemId ? 'Saving...' : 'Correct supplier' }}</button></div>
+          <ng-template #attributionOkay><span class="source-match">{{ candidate.attributionId ? 'Corrected' : 'Matched' }}</span></ng-template>
+        </div>
+      </div>
+      <div class="candidate-pagination" *ngIf="candidateTotal > candidatePageSize"><span>{{ candidateTotal }} lines · Page {{ candidatePage }} of {{ candidatePageCount }}</span><button type="button" class="button-quiet" [disabled]="candidatePage === 1 || loading" (click)="changeCandidatePage(candidatePage - 1)">Previous</button><button type="button" class="button-quiet" [disabled]="candidatePage === candidatePageCount || loading" (click)="changeCandidatePage(candidatePage + 1)">Next</button></div>
+    </section>
+
+    <section class="editor-section selected-card">
+      <div class="section-heading"><div><h3>3. Selected source lines and partial allocation</h3><p>Adjust quantities or kilos when only part of a bill line belongs in this statement. Merchandise recalculates from the controlling measure and can still be corrected directly.</p></div><strong>{{ selectedAllocations.size }} selected</strong></div>
+      <div class="empty-state compact" *ngIf="!allocationRows.length">No source-linked sale lines selected.</div>
+      <div class="allocation-table" *ngIf="allocationRows.length">
+        <div class="allocation-row allocation-head"><span>Source</span><span>Item / supplier</span><span>Qty / Bags</span><span>Kg</span><span>Rate</span><span>Merchandise</span><span>Audit explanation</span><span></span></div>
+        <div class="allocation-row" *ngFor="let row of allocationRows">
+          <div><strong>{{ row.candidate.txnDate }} · #{{ row.candidate.receiptNo }}</strong><small>{{ row.candidate.invoiceNumber }}</small></div>
+          <div><strong>{{ row.candidate.itemCode }} · {{ row.candidate.description }}</strong><small>{{ row.candidate.sourceSupplierCode || 'Unresolved' }} → {{ row.candidate.effectiveSupplierCode || 'Unresolved' }}</small></div>
+          <input type="number" min="0" step="0.001" [(ngModel)]="row.allocatedQuantity" (change)="allocationChanged(row)">
+          <input type="number" min="0" step="0.001" [(ngModel)]="row.allocatedKilos" [disabled]="row.candidate.pricingBasis !== 'kilos'" (change)="allocationChanged(row)">
+          <span class="number">{{ row.candidate.unitPrice | number:'1.2-2' }}</span>
+          <input type="number" min="0" step="0.01" [(ngModel)]="row.merchandiseAmount">
+          <input [(ngModel)]="row.attributionReason" [class.required]="allocationNeedsExplanation(row) && !row.attributionReason" [placeholder]="isCrossSupplier(row.candidate) ? 'Required for other supplier' : 'Required if amount is overridden'">
+          <button type="button" class="button-quiet" (click)="removeAllocation(row.candidate.invoiceItemId)">Remove</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="editor-section manual-card">
+      <div class="section-heading"><div><h3>4. Manual and pasted summary rows</h3><p>These rows are stored separately and visibly marked as manual. They never pretend to be linked invoice sales.</p></div><strong>{{ manualLines.length }} manual</strong></div>
+      <div class="manual-columns">
+        <div class="manual-entry">
+          <h4>Add one structured row</h4>
+          <div class="field-grid two">
+            <label>Known item (optional)<select [(ngModel)]="manualEditor.productId" (change)="productSelectedForManual()"><option [ngValue]="null">Enter manually</option><option *ngFor="let product of products" [ngValue]="product.id">{{ product.sku }} - {{ product.name }}</option></select></label>
+            <label>Pricing basis<select [(ngModel)]="manualEditor.pricingBasis" (change)="updateManualAmount(manualEditor)"><option value="kilos">Kilos</option><option value="qty">Qty / Bags</option></select></label>
+            <label>Item code<input [(ngModel)]="manualEditor.itemCode"></label><label>Description<input [(ngModel)]="manualEditor.description"></label>
+            <label>Qty / Bags<input type="number" min="0" step="0.001" [(ngModel)]="manualEditor.quantity" (change)="updateManualAmount(manualEditor)"></label><label>Kilos<input type="number" min="0" step="0.001" [(ngModel)]="manualEditor.kilos" (change)="updateManualAmount(manualEditor)"></label>
+            <label>Unit rate<input type="number" min="0" step="0.01" [(ngModel)]="manualEditor.unitPrice" (change)="updateManualAmount(manualEditor)"></label><label>Line total<input type="number" min="0" step="0.01" [(ngModel)]="manualEditor.merchandiseAmount"></label>
+          </div>
+          <label>Reason<input [(ngModel)]="manualEditor.reason" placeholder="Required reason for a manual row"></label>
+          <button type="button" class="button-secondary" (click)="addManualLine()">Add manual row</button>
+        </div>
+        <div class="paste-entry">
+          <h4>Paste rows from a sheet</h4><p>Use the familiar Item, Bags, Kg, Rate, Line Total layout, or the detailed Item Code, Description, Qty, Kg, Rate, Line Total, Basis, Reason layout. Line total and basis are optional. Tabs or commas are accepted, and the common reason fills rows that omit one.</p>
+          <textarea [(ngModel)]="pasteText" rows="6" placeholder="0001&#9;B. Onion&#9;100&#9;1480.6&#9;120&#9;kilos&#9;Seller summary"></textarea>
+          <input [(ngModel)]="pasteReason" placeholder="Common reason for pasted rows">
+          <div class="row-actions"><button type="button" class="button-quiet" (click)="parsePaste()">Preview paste</button><button type="button" class="button-secondary" [disabled]="!parsedPasteLines.length" (click)="addParsedLines()">Add valid rows</button></div>
+        </div>
+      </div>
+      <div class="paste-preview" *ngIf="parsedPasteLines.length"><div *ngFor="let line of parsedPasteLines" [class.invalid]="line.error"><span>Row {{ line.row }}</span><strong>{{ line.itemCode }} · {{ line.description }}</strong><span>{{ compactNumber(line.quantity) }} qty / {{ compactNumber(line.kilos) }} kg × {{ line.unitPrice | number:'1.2-2' }}</span><b>{{ line.merchandiseAmount | number:'1.2-2' }}</b><small>{{ line.error || line.reason }}</small></div></div>
+      <div class="manual-table" *ngIf="manualLines.length"><div class="manual-row manual-head"><span>Item</span><span>Basis</span><span>Qty</span><span>Kg</span><span>Rate</span><span>Amount</span><span>Reason</span><span></span></div><div class="manual-row" *ngFor="let line of manualLines; let i = index"><div><strong>{{ line.itemCode }}</strong><small>{{ line.description }}</small></div><span>{{ line.pricingBasis }}</span><span>{{ compactNumber(line.quantity) }}</span><span>{{ compactNumber(line.kilos) }}</span><span class="number">{{ line.unitPrice | number:'1.2-2' }}</span><b class="number">{{ line.merchandiseAmount | number:'1.2-2' }}</b><span>{{ line.reason }}</span><button type="button" class="button-quiet" (click)="removeManualLine(i)">Remove</button></div></div>
+    </section>
+
+    <section class="editor-section grn-card">
+      <div class="section-heading"><div><h3>5. Optional GRN comparison</h3><p>GRNs are reconciliation references only. They do not claim that an individual sale physically came from a particular lot.</p></div><strong>{{ selectedGrnIds.size }} linked</strong></div>
+      <div class="source-toolbar"><input [(ngModel)]="grnTerm" (keyup.enter)="loadCandidateGrns()" placeholder="GRN or item"><button type="button" class="button-quiet" [disabled]="!draft.supplierId" (click)="loadCandidateGrns()">Find GRNs</button></div>
+      <div class="grn-options" *ngIf="grnOptions.length"><label *ngFor="let grn of grnOptions" [class.selected]="grnSelected(grn.id)"><input type="checkbox" [checked]="grnSelected(grn.id)" (change)="toggleGrn(grn.id, $any($event.target).checked)"><span><strong>{{ grn.grnNumber }}</strong><small>{{ grn.businessDate | date:'dd MMM yyyy' }} · {{ grn.lines.length }} items</small></span><b>{{ compactNumber(grnQuantity(grn)) }} qty<small>{{ compactNumber(grnKilos(grn)) }} kg</small></b></label></div>
+      <div class="empty-state compact" *ngIf="draft.supplierId && !grnOptions.length">No effective finalized GRNs match this supplier and search.</div>
+      <div class="reconciliation-table" *ngIf="draftReconciliation.length"><div class="reconciliation-row reconciliation-head"><span>Item</span><span>Received qty</span><span>Selected sold qty</span><span>Difference</span><span>Received kg</span><span>Selected sold kg</span><span>Difference</span></div><div class="reconciliation-row" *ngFor="let row of draftReconciliation"><div><strong>{{ row.itemCode }}</strong><small>{{ row.description }}</small></div><span>{{ compactNumber(row.receivedQuantity) }}</span><span>{{ compactNumber(row.soldQuantity) }}</span><b [class.negative]="row.quantityDifference < 0">{{ compactNumber(row.quantityDifference) }}</b><span>{{ compactNumber(row.receivedKilos) }}</span><span>{{ compactNumber(row.soldKilos) }}</span><b [class.negative]="row.kilosDifference < 0">{{ compactNumber(row.kilosDifference) }}</b></div></div>
+    </section>
+
+    <section class="editor-section financial-card">
+      <div class="section-heading"><div><h3>6. Supplier credits and deductions</h3><p>Adjustments belong to this statement only. They do not create legacy supplier charge entries.</p></div><strong>{{ adjustmentTotal | number:'1.2-2' }}</strong></div>
+      <div class="adjustment-entry"><select [(ngModel)]="adjustmentEditor.adjustmentType"><option value="deduction">Deduction</option><option value="credit">Credit</option></select><input [(ngModel)]="adjustmentEditor.label" placeholder="Label"><input type="number" min="0.01" step="0.01" [(ngModel)]="adjustmentEditor.amount" placeholder="Amount"><input [(ngModel)]="adjustmentEditor.note" placeholder="Optional note"><button type="button" class="button-secondary" (click)="addAdjustment()">Add</button></div>
+      <div class="adjustment-list" *ngIf="adjustments.length"><div *ngFor="let row of adjustments; let i = index"><span class="type" [class.credit]="row.adjustmentType === 'credit'">{{ row.adjustmentType }}</span><strong>{{ row.label }}</strong><span>{{ row.note || '-' }}</span><b>{{ row.adjustmentType === 'credit' ? '+' : '-' }}{{ row.amount | number:'1.2-2' }}</b><button type="button" class="button-quiet" (click)="removeAdjustment(i)">Remove</button></div></div>
+    </section>
+
+    <section class="editor-section preview-card">
+      <div class="section-heading"><div><h3>7. Grouped statement preview</h3><p>Source and manual rows are grouped by item, pricing basis, and exact unit rate for the supplier-facing document.</p></div><span class="build-mode">{{ selectedAllocations.size && manualLines.length ? 'Hybrid' : manualLines.length ? 'Manual' : 'Assisted' }}</span></div>
+      <div class="empty-state compact" *ngIf="!groupedDraftLines.length">Add source or manual rows to build the preview.</div>
+      <div class="preview-table" *ngIf="groupedDraftLines.length"><div class="preview-row preview-head"><span>Item</span><span>Sources</span><span>Qty / Bags</span><span>Kg</span><span>Rate</span><span>Line total</span></div><div class="preview-row" *ngFor="let row of groupedDraftLines"><div><strong>{{ row.itemCode }} · {{ row.description }}</strong><small>{{ row.pricingBasis }} pricing <ng-container *ngIf="row.overrideCount">· {{ row.overrideCount }} corrected/override</ng-container></small></div><span>{{ row.sourceCount }} sale / {{ row.manualCount }} manual</span><span>{{ compactNumber(row.quantity) }}</span><span>{{ compactNumber(row.kilos) }}</span><span class="number">{{ row.unitPrice | number:'1.2-2' }}</span><b class="number">{{ row.merchandiseAmount | number:'1.2-2' }}</b></div></div>
+      <div class="totals-box"><div><span>Total qty / bags</span><b>{{ compactNumber(draftQuantityTotal) }}</b><small>{{ compactNumber(draftKilosTotal) }} kg</small></div><div><span>Merchandise subtotal</span><b>{{ merchandiseSubtotal | number:'1.2-2' }}</b></div><div><span>Commission ({{ compactNumber(draft.commissionRate) }}%)</span><b>-{{ commissionAmount | number:'1.2-2' }}</b></div><div><span>Credits / deductions</span><b [class.negative]="adjustmentTotal < 0">{{ adjustmentTotal | number:'1.2-2' }}</b></div><div class="net"><span>BL / Net payable</span><b>{{ netPayable | number:'1.2-2' }}</b></div></div>
+      <label class="notes-field">Internal notes<textarea [(ngModel)]="draft.notes" rows="2" placeholder="Optional review note"></textarea></label>
+    </section>
+
+    <div class="editor-actions"><div><strong>{{ draftLineCount }} source/manual lines · {{ selectedGrnIds.size }} linked GRNs</strong><small>Review rechecks source availability and reserves these sale allocations until the statement is reopened or voided.</small></div><div class="row-actions"><button type="button" class="button-quiet" [disabled]="saving" (click)="saveDraft()">Save draft</button><button type="button" class="button-primary" [disabled]="saving || !draftLineCount" (click)="reviewDraft()">{{ saving ? 'Working...' : 'Save and review' }}</button></div></div>
+  </ng-container>
+
+  <ng-container *ngIf="view === 'detail' && detail as document">
+    <div class="editor-heading detail-heading"><div><span>{{ document.statement['status'] | uppercase }} SUPPLIER SALES STATEMENT</span><h2>{{ document.statement['statement_number'] }}</h2><p>{{ document.statement['supplier_code'] || document.statement['supplier_name'] }} · {{ document.statement['from_date'] | date:'dd MMM yyyy' }} to {{ document.statement['to_date'] | date:'dd MMM yyyy' }}</p></div><button type="button" class="button-quiet" (click)="backToRegister()">Back to register</button></div>
+    <div class="detail-summary"><div><span>Build mode</span><strong>{{ document.statement['build_mode'] }}</strong></div><div><span>Source lines</span><strong>{{ document.allocations.length }}</strong></div><div><span>Manual lines</span><strong>{{ document.manualLines.length }}</strong></div><div><span>Linked GRNs</span><strong>{{ document.grns.length }}</strong></div><div><span>Status</span><strong>{{ document.statement['status'] }}</strong></div></div>
+
+    <section class="editor-section preview-card">
+      <div class="section-heading"><div><h3>Grouped supplier statement</h3><p>This is the stored document snapshot used by thermal print and downloadable files.</p></div><div class="row-actions"><button type="button" class="button-quiet" (click)="printPattiyal()">Thermal</button><button type="button" class="button-quiet" (click)="savePattiyalPdf()">Save PDF</button><button type="button" class="button-quiet" *ngIf="document.statement['status'] === 'finalized'" (click)="savePattiyalXlsx()">Save Excel</button><button type="button" class="button-quiet" *ngIf="document.statement['status'] === 'finalized'" (click)="savePattiyalDocx()">Save Word</button></div></div>
+      <div class="preview-table"><div class="preview-row preview-head"><span>Item</span><span>Sources</span><span>Qty / Bags</span><span>Kg</span><span>Rate</span><span>Line total</span></div><div class="preview-row" *ngFor="let row of document.groupedLines"><div><strong>{{ row['itemCode'] }} · {{ row['description'] }}</strong><small>{{ row['pricingBasis'] }} pricing <ng-container *ngIf="row['overrideCount']">· {{ row['overrideCount'] }} corrected/override</ng-container></small></div><span>{{ row['sourceCount'] }} sale / {{ row['manualCount'] }} manual</span><span>{{ compactNumber(row['quantity']) }}</span><span>{{ compactNumber(row['kilos']) }}</span><span class="number">{{ row['unitPrice'] | number:'1.2-2' }}</span><b class="number">{{ row['merchandiseAmount'] | number:'1.2-2' }}</b></div></div>
+      <div class="totals-box detail-totals"><div><span>Total qty / bags</span><b>{{ compactNumber(detailQuantityTotal()) }}</b></div><div><span>Total kilos</span><b>{{ compactNumber(detailKilosTotal()) }}</b></div><div><span>Merchandise subtotal</span><b>{{ document.statement['merchandise_subtotal'] | number:'1.2-2' }}</b></div><div><span>Commission ({{ compactNumber(document.statement['commission_rate']) }}%)</span><b>-{{ document.statement['commission_amount'] | number:'1.2-2' }}</b></div><div><span>Credits / deductions</span><b>{{ document.statement['adjustment_total'] | number:'1.2-2' }}</b></div><div class="net"><span>BL / Net payable</span><b>{{ document.statement['net_payable'] | number:'1.2-2' }}</b></div></div>
+    </section>
+
+    <section class="editor-section grn-card" *ngIf="document.reconciliation.length"><div class="section-heading"><div><h3>GRN reconciliation</h3><p>Received-versus-selected differences are informational because physical stock can be mixed.</p></div></div><div class="reconciliation-table"><div class="reconciliation-row reconciliation-head"><span>Item</span><span>Received qty</span><span>Sold qty</span><span>Difference</span><span>Received kg</span><span>Sold kg</span><span>Difference</span></div><div class="reconciliation-row" *ngFor="let row of document.reconciliation"><div><strong>{{ row['itemCode'] }}</strong><small>{{ row['description'] }}</small></div><span>{{ compactNumber(row['receivedQuantity']) }}</span><span>{{ compactNumber(row['soldQuantity']) }}</span><b [class.negative]="row['quantityDifference'] < 0">{{ compactNumber(row['quantityDifference']) }}</b><span>{{ compactNumber(row['receivedKilos']) }}</span><span>{{ compactNumber(row['soldKilos']) }}</span><b [class.negative]="row['kilosDifference'] < 0">{{ compactNumber(row['kilosDifference']) }}</b></div></div></section>
+
+    <section class="editor-section audit-card"><div class="section-heading"><div><h3>Document audit</h3><p>Lifecycle changes are retained in sequence.</p></div></div><div class="audit-list"><div *ngFor="let event of document.events"><span>{{ event['created_at'] | date:'dd MMM yyyy, HH:mm' }}</span><strong>{{ event['event_type'] }}</strong><span>{{ event['reason'] || '-' }}</span></div></div></section>
+
+    <div class="detail-actions">
+      <div><strong>Evaluation document</strong><small>Finalizing this supplier sales statement does not post to the legacy supplier payable ledger.</small></div>
+      <div class="row-actions"><button type="button" class="button-secondary" *ngIf="document.statement['status'] === 'reviewed'" [disabled]="saving" (click)="startReasonAction('reopen')">Reopen draft</button><button type="button" class="button-primary" *ngIf="document.statement['status'] === 'reviewed'" [disabled]="saving" (click)="finalizeStatement()">Finalize statement</button><button type="button" class="button-danger" *ngIf="document.statement['status'] !== 'void'" [disabled]="saving" (click)="startReasonAction('void')">Void</button></div>
+    </div>
+    <div class="reason-panel" *ngIf="reasonAction"><div><strong>{{ reasonAction === 'reopen' ? 'Reopen reviewed statement' : 'Void statement' }}</strong><span>{{ reasonAction === 'reopen' ? 'This returns the document to an editable draft.' : 'The document remains visible with a void status and audit reason.' }}</span></div><input [(ngModel)]="lifecycleReason" placeholder="Required audit reason"><button type="button" class="button-primary" [disabled]="saving" (click)="confirmReasonAction()">Confirm</button><button type="button" class="button-quiet" (click)="cancelReasonAction()">Cancel</button></div>
+  </ng-container>
+</section>

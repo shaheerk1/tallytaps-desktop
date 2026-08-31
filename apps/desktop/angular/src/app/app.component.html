@@ -1,0 +1,72 @@
+<ng-container *ngIf="isReady">
+  <!-- Login page: full screen, no shell -->
+  <router-outlet *ngIf="!showSidebar"></router-outlet>
+
+  <!-- Authenticated: collapsible sidebar + workspace shell -->
+  <main
+    class="app-shell"
+    *ngIf="showSidebar"
+    [class.sidebar-collapsed]="sidebarCollapsed"
+    [class.sidebar-hidden]="sidebarHidden"
+    [class.position-right]="sidebarPosition === 'right'"
+  >
+    <aside
+      class="sidebar"
+      [class.collapsed]="sidebarCollapsed"
+      [class.hidden]="sidebarHidden"
+      (mouseenter)="onSidebarMouseEnter()"
+      (mouseleave)="onSidebarMouseLeave()"
+    >
+      <div class="sidebar-header">
+        <span class="brand" *ngIf="!sidebarCollapsed">TallyTaps</span>
+        <button class="toggle-btn" (click)="toggleSidebar()" title="Toggle sidebar">
+          {{ sidebarCollapsed ? '☰' : '✕' }}
+        </button>
+      </div>
+
+      <nav class="sidebar-nav">
+        <a
+          *ngFor="let item of allMenu"
+          [routerLink]="item.route"
+          routerLinkActive="active"
+          [routerLinkActiveOptions]="{ exact: item.route === '/' }"
+          class="nav-item"
+          [title]="sidebarCollapsed ? item.label : ''"
+          [attr.aria-label]="sidebarCollapsed ? item.label : null"
+          (click)="onNavClick()"
+        >
+          <span class="nav-icon"><img [src]="item.icon" alt="" /></span>
+          <span class="nav-label" *ngIf="!sidebarCollapsed">{{ item.label }}</span>
+        </a>
+      </nav>
+
+      <div class="sidebar-footer" [class.footer-collapsed]="sidebarCollapsed" *ngIf="userName">
+        <div class="user-info" [title]="userName">
+          <div class="user-avatar">{{ userName.charAt(0).toUpperCase() }}</div>
+          <div class="user-details" *ngIf="!sidebarCollapsed">
+            <div class="user-name">{{ userName }}</div>
+            <div class="user-role" *ngIf="userRole">{{ userRole }}</div>
+          </div>
+        </div>
+        <button class="logout-btn" (click)="onLogout()" [title]="sidebarCollapsed ? 'Sign Out' : ''">
+          <span *ngIf="!sidebarCollapsed">Sign Out</span>
+          <span *ngIf="sidebarCollapsed">⏻</span>
+        </button>
+      </div>
+    </aside>
+
+    <button
+      *ngIf="sidebarAutoHide"
+      class="sidebar-tab"
+      [class.tab-open]="!sidebarHidden"
+      (click)="toggleSidebarHidden()"
+      [title]="sidebarHidden ? 'Open sidebar' : 'Close sidebar'"
+    >
+      <span class="tab-glyph">{{ sidebarTabGlyph }}</span>
+    </button>
+
+    <section class="workspace">
+      <router-outlet></router-outlet>
+    </section>
+  </main>
+</ng-container>

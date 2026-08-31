@@ -1,0 +1,892 @@
+<div class="pos-container">
+  <!-- Info Pane -->
+  <header class="info-pane">
+    <div class="info-item">
+      <span>User:</span>
+      <strong>{{ userName || 'Loading...' }}</strong>
+    </div>
+    <div class="info-item">
+      <span>Date:</span>
+      <strong>{{ billingDate | date:'dd-MM-yyyy' }}</strong>
+    </div>
+    <div class="info-item">
+      <span>Machine:</span>
+      <strong>{{ machineCode || '---' }}</strong>
+    </div>
+    <div class="info-item">
+      <span>Receipt No.:</span>
+      <strong>{{ receiptNo }}</strong>
+    </div>
+    <div class="info-item">
+      <span>Location:</span>
+      <strong>{{ locationCode || '---' }}</strong>
+    </div>
+  </header>
+
+  <!-- Input Row -->
+  <div class="input-section">
+    <div class="plugin-bill-header-fields" *ngIf="billHeaderFields.length > 0">
+      <div class="field-col" *ngFor="let field of billHeaderFields; let i = index">
+        <label>{{ field.label }}</label>
+        <select *ngIf="field.type === 'select'" #billHeaderInput class="field-input" [ngModel]="billHeaderValue(field)" (ngModelChange)="setBillHeaderValue(field, $event)" (change)="saveBillHeader()" (keydown)="onBillHeaderInputKeyDown($event, i)">
+          <option value="">-</option>
+          <option *ngFor="let opt of field.options || []" [value]="opt.value">{{ opt.label }}</option>
+        </select>
+        <input *ngIf="field.type === 'checkbox'" #billHeaderInput type="checkbox" class="field-checkbox" [ngModel]="billHeaderValue(field)" (ngModelChange)="setBillHeaderValue(field, $event)" (change)="saveBillHeader()" (keydown)="onBillHeaderInputKeyDown($event, i)" />
+        <input *ngIf="field.type === 'number'" #billHeaderInput type="number" class="field-input text-right" step="0.001" [ngModel]="billHeaderValue(field)" (ngModelChange)="setBillHeaderValue(field, $event)" (change)="saveBillHeader()" (keydown)="onBillHeaderInputKeyDown($event, i)" [placeholder]="field.placeholder || ''" />
+        <ng-container *ngIf="field.type === 'text' && field.purpose === 'customer_identifier'; else standardBillHeaderText"><input #billHeaderInput type="text" class="field-input" [ngModel]="billHeaderValue(field)" (ngModelChange)="searchCustomerIdentifier(field, $event)" (change)="saveBillHeader()" (keydown)="onCustomerIdentifierKeyDown($event, field, i)" [placeholder]="field.placeholder || 'Search customer code'" /><div class="customer-suggestions" *ngIf="customerMatches[field.key]?.length"><button type="button" *ngFor="let customer of customerMatches[field.key]; let matchIndex = index" [class.active]="customerDropdownIndex[field.key] === matchIndex" (mousedown)="$event.preventDefault()" (click)="chooseCustomerAndAdvance(field, customer.customer_code || '', i)"><b>{{ customer.customer_code }}</b><span>{{ customer.name }}</span></button></div></ng-container><ng-template #standardBillHeaderText><input *ngIf="field.type === 'text'" #billHeaderInput type="text" class="field-input" [ngModel]="billHeaderValue(field)" (ngModelChange)="setBillHeaderValue(field, $event)" (change)="saveBillHeader()" (keydown)="onBillHeaderInputKeyDown($event, i)" [placeholder]="field.placeholder || ''" /></ng-template>
+        <small *ngIf="field.description">{{ field.description }}</small>
+      </div>
+    </div>
+    <div class="bill-customer-row">
+      <div class="field-col customer-account-field">
+        <label>Customer *</label>
+        <div class="customer-code-wrap">
+          <input #customerCodeInput type="text" class="field-input" [ngModel]="customerCode" (ngModelChange)="onCustomerCodeChange($event)" (blur)="onCustomerCodeBlur()" (keydown)="onCustomerCodeKeyDown($event)" placeholder="Market / loading code" autocomplete="off" />
+          <div class="customer-account-dropdown" *ngIf="customerAccountMatches.length">
+            <button type="button" *ngFor="let account of customerAccountMatches; let i = index"
+              [class.active]="i === customerAccountDropdownIndex"
+              (mousedown)="$event.preventDefault()" (click)="chooseCustomerAccount(account, true)">
+              <span><strong>{{ account.name }}</strong><small>{{ account.shop_name || account.locality || account.mobile || account.account_number }}</small></span>
+              <span class="account-match-meta"><b>{{ account.marketCodes?.join(', ') || 'No saved code' }}</b><small>{{ account.outstandingBalance | number:'1.2-2' }} due</small></span>
+            </button>
+          </div>
+        </div>
+        <div class="linked-customer" *ngIf="linkedCustomer">
+          <span>Linked account <strong>{{ linkedCustomer.name }}</strong><small>{{ linkedCustomer.shop_name || linkedCustomer.locality || linkedCustomer.account_number }}</small></span>
+          <button type="button" (click)="unlinkCustomerAccount()">Unlink</button>
+        </div>
+        <small class="unlinked-customer" *ngIf="customerCode && !linkedCustomer">Operational code only. A real account is required only for credit or cheque.</small>
+      </div>
+    </div>
+    <div class="input-row">
+    <div class="input-grid">
+      <div class="field-col">
+        <label>Supplier *</label>
+        <input #supplierCodeInput type="text" class="field-input" [ngModel]="supplierCode" (ngModelChange)="onSupplierCodeChange($event)" (keydown)="onSupplierCodeKeyDown($event)" placeholder="Supplier code" autocomplete="off" />
+      </div>
+      <div class="field-col">
+        <label>Item</label>
+        <div class="relative">
+          <input
+            #itemCodeInput
+            type="text"
+            [(ngModel)]="itemCode"
+            (keydown)="onItemCodeKeyDown($event)"
+            (input)="onItemCodeInput()"
+            (focus)="onItemCodeFocus()"
+            (blur)="onItemCodeBlur()"
+            placeholder="Scan / type code"
+            class="field-input"
+          />
+          <div
+            *ngIf="showItemDropdown && filteredProducts.length > 0"
+            class="dropdown"
+          >
+            <div
+              *ngFor="let p of filteredProducts; let i = index"
+              [id]="'item-dropdown-option-' + i"
+              (click)="selectProduct(p)"
+              [class.dropdown-selected]="i === selectedDropdownIndex"
+              class="dropdown-item"
+            >
+              <span class="dropdown-code">{{ p.sku }}</span>
+              <span class="dropdown-name">{{ p.name }}</span>
+              <span class="dropdown-price">{{ p.unit_price | number:'1.2-2' }}</span>
+            </div>
+          </div>
+          <div class="selected-item-description" *ngIf="selectedProductId && description">
+            <span>Selected</span><strong>{{ description }}</strong>
+          </div>
+        </div>
+      </div>
+      <div class="field-col" *ngIf="showKilosField">
+        <label>Kilos<span *ngIf="selectedProductRequiresKilos"> *</span></label>
+        <input #kilosInput type="number" [(ngModel)]="kilos" (input)="updateValue()" (keydown)="onKilosKeyDown($event)" min="0.001" step="0.001" class="field-input text-right" />
+      </div>
+      <div class="field-col">
+        <label>Rate</label>
+        <input
+          #rateInput
+          type="number"
+          [(ngModel)]="rate"
+          (input)="onRateInput()"
+          (keydown)="onRateKeyDown($event)"
+          step="0.01"
+          min="0"
+          [disabled]="selectedProductId !== null && !isSelectedProductPriceChangeable"
+          class="field-input text-right"
+        />
+      </div>
+      <div class="field-col">
+        <label>Qty</label>
+        <input
+          #qtyInput
+          id="new-item-qty"
+          type="number"
+          [(ngModel)]="qty"
+          (keydown)="onQtyKeyDown($event)"
+          (input)="onQtyChange()"
+          min="0"
+          [step]="selectedProductQuantityStep"
+          class="field-input text-right"
+        />
+      </div>
+    </div>
+      <button
+        #addBtn
+        class="btn-add-circle"
+        (click)="addItemToBill()"
+        (keydown.enter)="addItemToBill()"
+        title="Add Item"
+        [disabled]="isSubmitting"
+      >
+        <span aria-hidden="true">+</span>
+      </button>
+    </div>
+
+    <!-- Plugin-contributed line-entry fields -->
+    <div class="plugin-line-fields" *ngIf="lineFields.length > 0">
+      <ng-container *ngFor="let field of lineFields; let i = index">
+        <div class="field-col" *ngIf="lineFieldVisible(field)">
+          <label>{{ field.label }}</label>
+          <ng-container [ngSwitch]="field.type">
+            <select
+              *ngSwitchCase="'select'"
+              class="field-input"
+              #lineInput
+              [disabled]="!lineFieldEnabled(field)"
+              [(ngModel)]="lineFieldValues[field.key]"
+              (keydown)="onLineInputKeyDown($event, i)"
+            >
+              <option value="">—</option>
+              <option *ngFor="let opt of field.options || []" [value]="opt.value">{{ opt.label }}</option>
+            </select>
+            <input
+              *ngSwitchCase="'checkbox'"
+              type="checkbox"
+              class="field-checkbox"
+              #lineInput
+              [disabled]="!lineFieldEnabled(field)"
+              [(ngModel)]="lineFieldValues[field.key]"
+              (keydown)="onLineInputKeyDown($event, i)"
+            />
+            <input
+              *ngSwitchCase="'number'"
+              type="number"
+              class="field-input text-right"
+              #lineInput
+              step="0.001"
+              min="0"
+              [disabled]="!lineFieldEnabled(field)"
+              [(ngModel)]="lineFieldValues[field.key]"
+              (input)="onLineFieldChanged()"
+              (keydown)="onLineInputKeyDown($event, i)"
+            />
+            <input
+              *ngSwitchDefault
+              type="text"
+              class="field-input"
+              #lineInput
+              [disabled]="!lineFieldEnabled(field)"
+              [(ngModel)]="lineFieldValues[field.key]"
+              (keydown)="onLineInputKeyDown($event, i)"
+            />
+          </ng-container>
+        </div>
+      </ng-container>
+    </div>
+    <div *ngIf="lineError" class="line-error">{{ lineError }}</div>
+  </div>
+
+  <!-- Main: Billed Items + Action Panel -->
+  <div class="main-area">
+    <div class="items-panel">
+      <div class="items-header" [style.grid-template-columns]="itemsGridTemplate">
+        <span class="hdr-code">Item Code</span>
+        <span class="hdr-desc">Description</span>
+        <span class="hdr-rate">Rate</span>
+        <span class="hdr-qty">Qty</span>
+        <span class="hdr-qty">Kilos</span>
+        <span class="hdr-qty">Wage</span>
+        <span class="hdr-value">Value</span>
+        <span class="hdr-plugin" *ngFor="let field of visibleTableFields">{{ field.label }}</span>
+        <span class="hdr-action"></span>
+      </div>
+
+      <div class="items-body">
+        <div class="item-row" *ngFor="let item of billItems; let i = index" [style.grid-template-columns]="itemsGridTemplate">
+          <span class="col-code">{{ item.supplierCode ? item.supplierCode + '~' : '' }}{{ item.itemCode }}</span>
+          <span class="col-desc">{{ item.description }}</span>
+          <span class="col-rate"><input *ngIf="canOverrideLinePrice(item); else lockedRate" type="number" class="qty-input" [value]="item.unitPrice" min="0" step="0.01" (change)="updateItemPrice(i, +$any($event.target).value)" /><ng-template #lockedRate>{{ item.unitPrice | number:'1.2-2' }}</ng-template></span>
+          <span class="col-qty">
+            <input
+              type="number"
+              [value]="item.qty"
+              (change)="updateItemQty(i, +$any($event.target).value)"
+              min="0"
+              step="0.001"
+              class="qty-input"
+            />
+          </span>
+          <span class="col-qty">
+            <input *ngIf="item.requiresKilos; else noKilos" type="number" class="qty-input" [value]="item.kilos" (change)="updateItemKilos(i, +$any($event.target).value)" min="0.001" step="0.001" />
+            <ng-template #noKilos>—</ng-template>
+          </span>
+          <span class="col-qty">{{ lineWageChargeTotal(item) | number:'1.2-2' }}</span>
+          <span class="col-value">{{ lineMerchandiseTotal(item) | number:'1.2-2' }}</span>
+          <span class="col-plugin" *ngFor="let field of visibleTableFields">
+            <input
+              *ngIf="field.editable"
+              type="{{ field.type === 'number' ? 'number' : 'text' }}"
+              [value]="rawTableField(item, field)"
+              (change)="updateItemField(i, field, $event)"
+              step="0.001"
+              min="0"
+              class="qty-input"
+            />
+            <span *ngIf="!field.editable" class="plugin-readonly">{{ formatTableField(item, field) }}</span>
+          </span>
+          <span class="col-action">
+            <button class="btn-icon" (click)="removeItem(i)" title="Remove">&times;</button>
+          </span>
+        </div>
+
+        <div class="empty-state" *ngIf="billItems.length === 0">
+          No items added yet. Scan or type an item code above.
+        </div>
+      </div>
+    </div>
+
+ 
+  </div>
+    <!-- Action Panel -->
+    <aside class="action-panel">
+      <button class="btn-action btn-finalize" (click)="showPaymentPopup()">
+        Finalize (F2)
+      </button>
+      <button class="btn-action" (click)="startNewBill()" [disabled]="isFinalizing">
+        New Bill (F10)
+      </button>
+      <button class="btn-action" (click)="holdBill()" [disabled]="billItems.length === 0">
+        Hold Bill
+      </button>
+      <button class="btn-action" (click)="confirmAbandon()" [disabled]="billItems.length === 0">
+        Clear Bill
+      </button>
+      <button class="btn-action" (click)="loadRecallBills()">
+        Recall Bill
+      </button>
+      <button class="btn-action btn-cancel" (click)="exitBilling()">
+        Exit Billing
+      </button>
+      <section class="pending-bills-panel" aria-label="Pending bills">
+        <div class="pending-bills-heading">
+          <span>Pending Bills</span>
+          <span class="pending-bills-count" *ngIf="pendingBills.length">{{ pendingBills.length }}</span>
+        </div>
+        <div class="pending-bills-list" [class.is-loading]="isPendingBillsLoading">
+          <button
+            type="button"
+            class="pending-bill"
+            *ngFor="let bill of pendingBills"
+            [class.pending-bill--new]="newlyPendingReceiptNo === bill.receiptNo"
+            [disabled]="isPendingBillsLoading"
+            (click)="recallPendingBill(bill)"
+            [title]="'Recall pending bill #' + bill.receiptNo"
+          >
+            <span class="pending-bill-customer">{{ bill.customerCode || '—' }}</span>
+            <span class="pending-bill-lines">{{ bill.itemCount }} {{ bill.itemCount === 1 ? 'line' : 'lines' }}</span>
+            <strong class="pending-bill-total">{{ bill.netAmt | number:'1.2-2' }}</strong>
+          </button>
+          <p class="pending-bills-empty" *ngIf="!isPendingBillsLoading && pendingBills.length === 0">No pending bills</p>
+          <p class="pending-bills-empty" *ngIf="isPendingBillsLoading && pendingBills.length === 0">Updating…</p>
+        </div>
+      </section>
+    </aside>
+  <section class="item-measure-summary" *ngIf="billItems.length" aria-label="Quantity and weight totals by item">
+    <strong class="item-measure-summary-title">Item Totals</strong>
+    <div
+      #billMeasureSummary
+      class="item-measure-summary-scroll"
+      tabindex="0"
+      (wheel)="scrollItemMeasureSummary($event, billMeasureSummary)"
+    >
+      <span class="item-measure-summary-entry" *ngFor="let summary of itemMeasureSummaries; trackBy: trackItemMeasureSummary">
+        <b>{{ summary.description }}</b>
+        <span>({{ itemMeasureSummaryText(summary) }})</span>
+      </span>
+    </div>
+  </section>
+  <!-- Total Summary -->
+  <div class="total-summary">
+    <div class="right-totals">
+      <div class="summary-item">
+        <span class="label">Gross Total</span>
+        <span class="value">{{ grossTotal | number:'1.2-2' }}</span>
+      </div>
+      <div class="summary-item">
+        <span class="label">Discount</span>
+        <span class="value">{{ totalDiscount | number:'1.2-2' }}</span>
+      </div>
+      <div class="summary-item" *ngIf="bagChargeTotal > 0">
+        <span class="label">Bag Charges</span>
+        <span class="value">{{ bagChargeTotal | number:'1.2-2' }}</span>
+      </div>
+      <div class="summary-item" *ngIf="wageChargeTotal > 0">
+        <span class="label">Wage Charges</span>
+        <span class="value">{{ wageChargeTotal | number:'1.2-2' }}</span>
+      </div>
+      <div class="summary-item net-total">
+        <span class="label">Net Total</span>
+        <span class="value">{{ netTotal | number:'1.2-2' }}</span>
+      </div>
+      <div class="summary-item" *ngFor="let field of totalsFields">
+        <span class="label">{{ field.label }}</span>
+        <span class="value">{{ fieldTotal(field.key) | number:'1.2-2' }}</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Payment Popup -->
+<div class="modal-overlay" *ngIf="isPaymentPopupVisible">
+  <div class="modal-box payment-modal" (click)="$event.stopPropagation()">
+    <!-- Success summary -->
+    <div *ngIf="paymentSuccess && settledReceipt" class="pm-success">
+      <div class="pm-success-banner">
+        <div class="pm-success-icon">✓</div>
+        <div>
+          <h3>Receipt Settled</h3>
+          <p class="pm-success-subtitle">
+            Receipt #{{ settledReceipt.receiptNo }}
+            <!-- Full invoice number intentionally omitted; receipt, terminal, and date identify the sale. -->
+          </p>
+        </div>
+      </div>
+
+      <div class="pm-success-layout">
+        <!-- 80mm thermal receipt preview -->
+        <div class="thermal-receipt-wrap">
+          <div class="thermal-receipt-label">Receipt Preview · 80mm</div>
+          <article class="thermal-receipt" aria-label="Receipt preview">
+            <header class="tr-store">
+              <img *ngIf="receiptConfig.logoDataUrl" class="tr-store-logo" [src]="receiptConfig.logoDataUrl" alt="Store logo" />
+              <div class="tr-store-name tr-store-primary">{{ receiptConfig.storeName }}</div>
+              <div class="tr-store-address" *ngFor="let line of receiptConfig.addressLines">{{ line }}</div>
+              <div class="tr-store-phone" *ngIf="receiptConfig.phone">{{ receiptLabel('phone') }}: {{ receiptConfig.phone }}</div>
+              <div class="tr-store-extra" *ngFor="let line of receiptConfig.headers">{{ line }}</div>
+              <div class="tr-store-identity" *ngIf="receiptConfig.tagline || settledReceipt.customerCode">
+                <span>{{ receiptConfig.tagline }}</span>
+                <span>{{ settledReceipt.customerCode }}</span>
+              </div>
+            </header>
+
+            <div class="tr-rule"></div>
+
+            <section class="tr-meta">
+              <div class="tr-meta-row">
+                <span>{{ receiptLabel('receipt') }}</span>
+                <span>#{{ settledReceipt.receiptNo }}</span>
+              </div>
+              <!-- Full invoice number intentionally omitted from the customer receipt preview.
+              <div class="tr-meta-row" *ngIf="settledReceipt.invoiceNumber">
+                <span>{{ receiptLabel('invoice') }}</span>
+                <span>{{ settledReceipt.invoiceNumber }}</span>
+              </div> -->
+              <div class="tr-meta-row">
+                <span>{{ receiptLabel('date') }}</span>
+                <span>{{ formatReceiptDateTime(settledReceipt.settledAt) }}</span>
+              </div>
+              <div class="tr-meta-row">
+                <span>{{ receiptLabel('terminal') }}</span>
+                <span>{{ settledReceipt.locationCode }}/{{ settledReceipt.machineCode }}</span>
+              </div>
+              <div class="tr-meta-row">
+                <span>{{ receiptLabel('cashier') }}</span>
+                <span>{{ settledReceipt.cashierName }}</span>
+              </div>
+            </section>
+
+            <div class="tr-rule tr-rule--dashed"></div>
+
+            <section class="tr-items">
+              <div class="tr-items-head">
+                <span>{{ receiptLabel('item') }}</span>
+              </div>
+              <div class="tr-measure-head">
+                <span>{{ receiptLabel('qty') }}</span>
+                <span></span>
+                <span>{{ receiptLabel('kg') }}</span>
+                <span></span>
+                <span>{{ receiptLabel('rate') }}</span>
+                <span>{{ receiptLabel('amount') }}</span>
+              </div>
+              <div class="tr-item" *ngFor="let item of settledReceipt.items">
+                <div class="tr-item-desc">
+                  <span class="tr-item-code" *ngIf="receiptItemCode(item)">{{ receiptItemCode(item) }}</span>
+                  {{ item.description }}
+                </div>
+                <div class="tr-measure-row">
+                  <span>{{ receiptMeasure(item).qty }}</span>
+                  <span>{{ receiptMeasure(item).kilos ? '/' : '' }}</span>
+                  <span>{{ receiptMeasure(item).kilos || '' }}</span>
+                  <span>x</span>
+                  <span>{{ receiptMeasure(item).rate }}</span>
+                  <span>{{ formatReceiptCurrency(lineMerchandiseTotal(item)) }}</span>
+                </div>
+                <div class="tr-item-extra" *ngFor="let extra of receiptItemExtras(item)">
+                  {{ extra.label }}: {{ extra.value }}
+                </div>
+                <div class="tr-item-disc" *ngIf="item.discount > 0">
+                  {{ receiptLabel('discount') }}: -{{ formatReceiptCurrency(item.discount) }}
+                </div>
+              </div>
+            </section>
+
+            <div class="tr-rule tr-rule--dashed"></div>
+
+            <section class="tr-totals">
+              <div class="tr-total-row">
+                <span>{{ receiptLabel('qtyTotal') }}: {{ receiptQuantityTotal(settledReceipt.items) }}</span>
+                <span>{{ formatReceiptCurrency(settledReceipt.grossTotal) }}</span>
+              </div>
+              <div class="tr-total-row" *ngIf="settledReceipt.bagChargeTotal > 0">
+                <span>{{ receiptLabel('bagCharge') }}</span><span>{{ formatReceiptCurrency(settledReceipt.bagChargeTotal) }}</span>
+              </div>
+              <div class="tr-total-row" *ngIf="settledReceipt.wageChargeTotal > 0">
+                <span>{{ receiptLabel('wageCharge') }}</span><span>{{ formatReceiptCurrency(settledReceipt.wageChargeTotal) }}</span>
+              </div>
+              <div class="tr-total-row" *ngIf="settledReceipt.totalDiscount > 0">
+                <span>{{ receiptLabel('discount') }}</span>
+                <span>-{{ formatReceiptCurrency(settledReceipt.totalDiscount) }}</span>
+              </div>
+              <div class="tr-total-row" *ngFor="let field of settledReceipt.pluginTotals" [hidden]="field.value === 0">
+                <span>{{ field.label }}</span>
+                <span>{{ formatReceiptCurrency(field.value) }}</span>
+              </div>
+              <div class="tr-total-row tr-total-row--grand">
+                <span>{{ receiptLabel('total') }}</span>
+                <span>{{ formatReceiptCurrency(settledReceipt.grandTotal) }}</span>
+              </div>
+            </section>
+
+            <div class="tr-rule"></div>
+
+            <section class="tr-payments">
+              <div class="tr-total-row" *ngFor="let payment of settledReceipt.payments">
+                <span>{{ receiptPaymentLabel(payment) }}</span>
+                <span>{{ formatReceiptCurrency(payment.amount) }}</span>
+              </div>
+              <div class="tr-total-row tr-total-row--change" *ngIf="settledReceipt.changeAmt > 0">
+                <span>{{ receiptLabel('change') }}</span>
+                <span>{{ formatReceiptCurrency(settledReceipt.changeAmt) }}</span>
+              </div>
+              <div class="tr-total-row tr-total-row--pending" *ngIf="settledReceipt.status === 'partial'">
+                <span>{{ receiptLabel('pendingBalance') }}</span>
+                <span>{{ formatReceiptCurrency(settledReceipt.balance) }}</span>
+              </div>
+            </section>
+
+            <div class="tr-rule tr-rule--dashed"></div>
+
+            <footer class="tr-footer">
+              <div *ngFor="let line of receiptConfig.footers">{{ line }}</div>
+            </footer>
+          </article>
+        </div>
+
+        <!-- Settlement summary -->
+        <div class="pm-success-side">
+          <div class="pm-success-grid">
+            <div class="pm-success-item">
+              <span>Total</span>
+              <strong>{{ formatReceiptCurrency(settledReceipt.grandTotal) }}</strong>
+            </div>
+            <div class="pm-success-item">
+              <span>Paid</span>
+              <strong>{{ formatReceiptCurrency(settledReceipt.paidTotal) }}</strong>
+            </div>
+            <div class="pm-success-item" *ngIf="settledReceipt.status === 'partial'">
+              <span>Pending</span>
+              <strong class="text-warn">{{ formatReceiptCurrency(settledReceipt.balance) }}</strong>
+            </div>
+            <div class="pm-success-item" *ngIf="settledReceipt.changeAmt > 0">
+              <span>Change</span>
+              <strong class="text-success">{{ formatReceiptCurrency(settledReceipt.changeAmt) }}</strong>
+            </div>
+          </div>
+
+          <p *ngIf="settledReceipt.status === 'partial'" class="pm-success-note">
+            This receipt settled with a pending balance of {{ formatReceiptCurrency(settledReceipt.balance) }}.
+          </p>
+
+          <div class="pm-actions">
+            <button class="btn-action" (click)="reprintReceipt()">Reprint Receipt</button>
+            <button class="btn-action btn-finalize" (click)="doneWithPayment()">Done — New Receipt</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Payment entry -->
+    <div *ngIf="!paymentSuccess">
+      <div class="pm-header">
+        <h3>Payment Completion</h3>
+        <button class="pm-close" (click)="hidePaymentPopup()">&times;</button>
+      </div>
+
+      <div class="pm-grid">
+        <!-- Paymode list -->
+        <div class="pm-modes">
+          <div class="pm-section-title">Payment Modes</div>
+          <div class="pm-mode-list">
+            <div
+              *ngFor="let mode of paymentModes"
+              class="pm-mode-item"
+              [class.active]="selectedModeId === mode.id"
+              [class.used]="isModeUsed(mode.id)"
+              (click)="selectMode(mode.id)"
+            >
+              <div class="pm-mode-icon">{{ mode.icon }}</div>
+              <div class="pm-mode-name">
+                {{ mode.name }}
+                <span *ngIf="mode.type === 'credit'" class="pm-mode-tag">credit</span>
+              </div>
+              <span *ngIf="isModeUsed(mode.id)" class="pm-mode-added">Added</span>
+            </div>
+            <div *ngIf="isPaymentModesLoading" class="pm-loading">Loading modes...</div>
+          </div>
+        </div>
+
+        <!-- Totals + breakdown -->
+        <div class="pm-center">
+          <div class="pm-total-row">
+            <span>Total Amount</span>
+            <strong class="pm-total-value">{{ netTotal | number:'1.2-2' }}</strong>
+          </div>
+
+          <div class="pm-summary-box">
+            <div class="pm-summary-line">
+              <span>Paid</span>
+              <strong>{{ tenderTotal | number:'1.2-2' }}</strong>
+            </div>
+            <div class="pm-summary-line" *ngIf="creditTotal > 0">
+              <span>Pending / Credit</span>
+              <strong class="text-warn">{{ creditTotal | number:'1.2-2' }}</strong>
+            </div>
+            <div class="pm-summary-line">
+              <span>Balance</span>
+              <strong [class.text-success]="outstanding <= 0" [class.text-warn]="outstanding > 0">
+                {{ outstanding | number:'1.2-2' }}
+              </strong>
+            </div>
+            <div class="pm-progress">
+              <div class="pm-progress-track">
+                <div class="pm-progress-fill" [style.width.%]="paymentProgressPct"></div>
+              </div>
+              <span class="pm-progress-label">{{ paymentProgressPct }}%</span>
+            </div>
+          </div>
+
+          <section class="pm-account-link" [class.linked]="linkedCustomer">
+            <div class="pm-account-heading">
+              <div>
+                <span>Customer Account</span>
+                <small>Optional for cash/card · required for cheque or pending credit</small>
+              </div>
+              <button type="button" *ngIf="linkedCustomer && !paymentAccountSearchOpen" (click)="openPaymentAccountSearch()">Change</button>
+            </div>
+
+            <div class="pm-linked-account" *ngIf="linkedCustomer && !paymentAccountSearchOpen">
+              <span class="pm-account-check">✓</span>
+              <span><strong>{{ linkedCustomer.name }}</strong><small>{{ linkedCustomer.shop_name || linkedCustomer.locality || linkedCustomer.mobile || linkedCustomer.account_number }}</small></span>
+              <b>{{ customerCode }}</b>
+            </div>
+
+            <div class="pm-account-search" *ngIf="paymentAccountSearchOpen || !linkedCustomer">
+              <div class="pm-account-search-row">
+                <input type="text" [(ngModel)]="paymentAccountTerm" (input)="onPaymentAccountTermChange()" placeholder="Find by name, shop, phone, locality, account or market code" autocomplete="off" />
+                <button type="button" *ngIf="linkedCustomer" (click)="closePaymentAccountSearch()">Cancel</button>
+              </div>
+              <div class="pm-account-results" *ngIf="paymentAccountMatches.length">
+                <button type="button" *ngFor="let account of paymentAccountMatches" (click)="choosePaymentCustomerAccount(account)">
+                  <span><strong>{{ account.name }}</strong><small>{{ account.shop_name || account.locality || account.mobile || account.account_number }}</small></span>
+                  <span><b>{{ account.marketCodes?.join(', ') || 'No saved code' }}</b><small>{{ account.outstandingBalance | number:'1.2-2' }} due</small></span>
+                </button>
+              </div>
+              <small class="pm-account-status" *ngIf="isPaymentAccountSearching">Searching customer accounts…</small>
+              <small class="pm-account-status" *ngIf="paymentAccountTerm && !isPaymentAccountSearching && !paymentAccountMatches.length">No matching account. The loading code remains {{ customerCode }}.</small>
+            </div>
+          </section>
+
+          <div class="pm-breakdown">
+            <div class="pm-section-title">Payment Breakdown</div>
+            <table class="pm-table">
+              <thead>
+                <tr>
+                  <th>Mode</th>
+                  <th class="text-right">Amount</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr *ngFor="let payment of payments; let i = index">
+                  <td>
+                    {{ receiptPaymentLabel(payment) }}
+                    <span *ngIf="isModeCredit(payment.method)" class="pm-mode-tag">credit</span>
+                    <small *ngIf="paymentDetailsLabel(payment)" class="pm-payment-detail">{{ paymentDetailsLabel(payment) }}</small>
+                  </td>
+                  <td class="text-right">{{ payment.amount | number:'1.2-2' }}</td>
+                  <td class="text-right">
+                    <button class="btn-icon" (click)="removePayment(i)" title="Remove">&times;</button>
+                  </td>
+                </tr>
+                <tr *ngIf="payments.length === 0">
+                  <td colspan="3" class="pm-empty">No payments added yet.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="pm-change" *ngIf="changeAmount > 0">
+            Change: <strong class="text-success">{{ changeAmount | number:'1.2-2' }}</strong>
+          </div>
+        </div>
+
+        <!-- Amount entry -->
+        <div class="pm-entry">
+          <div class="pm-section-title">Amount for {{ selectedMode?.name }}</div>
+          <input
+            type="text"
+            #pmAmountInput
+            class="pm-amount-input"
+            [(ngModel)]="enteredAmount"
+            (keydown)="onAmountKeydown($event)"
+            placeholder="0.00"
+          />
+          <div *ngIf="isChequeModeSelected" class="pm-cheque-launch">
+            <button *ngIf="!hasChequeDetails" type="button" class="btn-action pm-cheque-launch-btn" (click)="toggleChequeDetailsEditor()">Enter Cheque Details</button>
+            <button *ngIf="hasChequeDetails" type="button" class="pm-cheque-summary" (click)="toggleChequeDetailsEditor()">
+              <span><strong>{{ chequeDetailsSummary }}</strong><small>Cheque details entered</small></span>
+              <b>Edit</b>
+            </button>
+          </div>
+          <div class="pm-numpad">
+            <button *ngFor="let key of numpadKeys" class="pm-key" (click)="onNumpadClick(key)">
+              {{ key }}
+            </button>
+          </div>
+          <p *ngIf="paymentError" class="pm-error">{{ paymentError }}</p>
+          <div class="pm-actions">
+            <button class="btn-action btn-add" (click)="addPayment()">Add Payment</button>
+            <button class="btn-action" (click)="clearAllPayments()">Clear All</button>
+            <button
+              class="btn-action btn-finalize"
+              (click)="completePayment()"
+              [disabled]="isFinalizing || !canCompletePayment"
+            >
+              {{ isFinalizing ? 'Processing...' : 'Complete Payment' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="cheque-details-overlay" *ngIf="showChequeDetailsEditor" (click)="closeChequeDetailsEditor()">
+      <section class="cheque-details-dialog" (click)="$event.stopPropagation()" aria-label="Cheque details">
+        <header>
+          <div><h3>Cheque Details</h3><p>All fields are optional. Record what is available on the cheque.</p></div>
+          <button type="button" (click)="closeChequeDetailsEditor()" aria-label="Close cheque details">&times;</button>
+        </header>
+        <div class="pm-cheque-grid">
+          <label>Cheque no.<input #chequeNumberInput type="text" [(ngModel)]="chequeDetails.number" maxlength="80" autocomplete="off" /></label>
+          <label>Cheque date<input type="date" [(ngModel)]="chequeDetails.date" /></label>
+          <label>Bank<input type="text" [(ngModel)]="chequeDetails.bankName" maxlength="160" autocomplete="off" /></label>
+          <label>Branch<input type="text" [(ngModel)]="chequeDetails.branchName" maxlength="160" autocomplete="off" /></label>
+          <label>Drawer / account name<input type="text" [(ngModel)]="chequeDetails.drawerName" maxlength="160" autocomplete="off" /></label>
+          <label>Account reference<input type="text" [(ngModel)]="chequeDetails.accountReference" maxlength="100" autocomplete="off" /></label>
+          <label class="pm-cheque-notes">Notes<input type="text" [(ngModel)]="chequeDetails.notes" maxlength="255" autocomplete="off" /></label>
+        </div>
+        <footer><button type="button" class="btn-action btn-finalize" (click)="closeChequeDetailsEditor()">Done</button></footer>
+      </section>
+    </div>
+  </div>
+</div>
+
+<!-- Keyboard-first item lookup. It is opened only when Enter is pressed in an empty Item field. -->
+<div class="modal-overlay item-picker-overlay" *ngIf="isItemPickerVisible" (click)="closeItemPicker()">
+  <section class="modal-box item-picker-box" (click)="$event.stopPropagation()" aria-label="Item lookup">
+    <header class="item-picker-header">
+      <div>
+        <h3>Find Item</h3>
+        <p>Search by item code, name, or barcode. Use ↑ ↓ and Enter to select.</p>
+      </div>
+      <button type="button" class="item-picker-close" (click)="closeItemPicker()" title="Close item lookup" aria-label="Close">&times;</button>
+    </header>
+
+    <div class="item-picker-search-wrap">
+      <input
+        #itemPickerSearchInput
+        type="text"
+        class="field-input item-picker-search"
+        [(ngModel)]="itemPickerQuery"
+        (input)="onItemPickerQueryChange()"
+        (keydown)="onItemPickerKeyDown($event)"
+        placeholder="Search items…"
+        autocomplete="off"
+      />
+      <span class="item-picker-count" *ngIf="!isItemPickerLoading">{{ itemPickerProducts.length }} matches</span>
+      <span class="item-picker-count" *ngIf="isItemPickerLoading">Searching…</span>
+    </div>
+
+    <div class="item-picker-list" role="listbox">
+      <button
+        type="button"
+        class="item-picker-row"
+        *ngFor="let product of itemPickerProducts; let i = index"
+        [id]="'item-picker-option-' + i"
+        [class.selected]="i === itemPickerIndex"
+        (click)="selectPickerProduct(product)"
+        role="option"
+        [attr.aria-selected]="i === itemPickerIndex"
+      >
+        <span class="item-picker-code">{{ product.sku }}</span>
+        <span class="item-picker-name">
+          <b>{{ product.name }}</b>
+          <small>{{ product.pricing_basis === 'kilos' ? 'Priced by kilo' : 'Priced by quantity' }}<span *ngIf="product.requires_kilos"> · kilos required</span></small>
+        </span>
+        <span class="item-picker-rate" [class.flexible]="itemPickerPrice(product) === 'Set at sale'">{{ itemPickerPrice(product) }}</span>
+      </button>
+      <div class="item-picker-empty" *ngIf="!isItemPickerLoading && itemPickerProducts.length === 0">
+        No active items match this search.
+      </div>
+    </div>
+
+    <footer class="item-picker-footer">
+      <span>Enter selects the highlighted item</span>
+      <span>Esc closes</span>
+    </footer>
+  </section>
+</div>
+
+<!-- Recall Bill Popup -->
+<div class="modal-overlay" *ngIf="isRecallPopupVisible" (click)="hideRecallPopup()">
+  <div class="modal-box recall-box" (click)="$event.stopPropagation()">
+    <div class="recall-header">
+      <h3>Recall Unfinalized Bill</h3>
+      <button class="recall-close" (click)="hideRecallPopup()" title="Close">&times;</button>
+    </div>
+
+    <div *ngIf="isLoading" class="loading-text">Loading held bills...</div>
+
+    <ng-container *ngIf="!isLoading">
+      <div class="recall-search">
+        <input
+          type="text"
+          [(ngModel)]="searchTerm"
+          (input)="onSearch()"
+          placeholder="Search by receipt number..."
+          class="recall-search-input"
+        />
+        <span class="recall-count">{{ filteredBills.length }} of {{ unfinalizedBills.length }} bills</span>
+      </div>
+
+      <div *ngIf="unfinalizedBills.length === 0" class="recall-empty">
+        No held bills found.
+      </div>
+
+      <div class="recall-grid" *ngIf="unfinalizedBills.length > 0">
+        <!-- Left: bills list -->
+        <div class="recall-col">
+          <h4>Unfinalized Bills</h4>
+          <div class="recall-list">
+            <div
+              class="recall-item"
+              *ngFor="let bill of filteredBills"
+              [class.selected]="selectedBill?.receiptNo === bill.receiptNo"
+              (click)="selectRecallBill(bill)"
+            >
+              <div class="recall-item-top">
+                <span class="recall-receipt">Receipt #{{ bill.receiptNo }}</span>
+                <span class="recall-date">{{ bill.created_at | date:'dd-MM-yy HH:mm' }}</span>
+              </div>
+              <div class="recall-customer" *ngIf="bill.customerCode">{{ bill.customerCode }}</div>
+              <div class="recall-item-stats">
+                <span>{{ bill.itemCount }} items</span>
+                <span>Gross {{ bill.grossAmt | number:'1.2-2' }}</span>
+                <span>Disc {{ bill.discountTotal | number:'1.2-2' }}</span>
+                <span class="recall-net">Net {{ bill.netAmt | number:'1.2-2' }}</span>
+              </div>
+            </div>
+            <div *ngIf="filteredBills.length === 0" class="recall-empty">No bills match your search.</div>
+          </div>
+        </div>
+
+        <!-- Right: selected bill details -->
+        <div class="recall-col recall-detail">
+          <ng-container *ngIf="selectedBill">
+            <h4>Bill Details - Receipt #{{ selectedBill.receiptNo }}</h4>
+            <div class="recall-summary">
+              <div><span>Items</span><strong>{{ selectedBill.itemCount }}</strong></div>
+              <div><span>Gross</span><strong>{{ selectedBill.grossAmt | number:'1.2-2' }}</strong></div>
+              <div><span>Discount</span><strong>{{ selectedBill.discountTotal | number:'1.2-2' }}</strong></div>
+              <div><span>Net</span><strong class="recall-net">{{ selectedBill.netAmt | number:'1.2-2' }}</strong></div>
+            </div>
+
+            <div *ngIf="isLoadingPreview" class="loading-text">Loading items...</div>
+            <div *ngIf="!isLoadingPreview" class="recall-preview">
+              <table *ngIf="previewItems.length > 0">
+                <thead>
+                  <tr>
+                    <th>Item</th>
+                    <th class="text-right">Rate</th>
+                    <th class="text-right">Qty</th>
+                    <th class="text-right">Disc.</th>
+                    <th class="text-right">Value</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr *ngFor="let item of previewItems">
+                    <td>
+                      <div class="pv-code">{{ item.itemCode }}</div>
+                      <div class="pv-desc">{{ item.description }}</div>
+                    </td>
+                    <td class="text-right">{{ item.unitPrice | number:'1.2-2' }}</td>
+                    <td class="text-right">{{ item.qty }}</td>
+                    <td class="text-right">{{ item.discount | number:'1.2-2' }}</td>
+                    <td class="text-right pv-value">{{ item.total | number:'1.2-2' }}</td>
+                  </tr>
+                </tbody>
+              </table>
+              <div *ngIf="previewItems.length === 0" class="recall-empty">No items found for this bill.</div>
+            </div>
+
+            <button class="btn-action btn-add recall-recall-btn" (click)="recallSelectedBill()">Recall This Bill</button>
+          </ng-container>
+
+          <div *ngIf="!selectedBill" class="recall-empty recall-placeholder">
+            Select a bill to view its details
+          </div>
+        </div>
+      </div>
+    </ng-container>
+  </div>
+</div>
+
+<!-- Abandon Bill Confirm Popup -->
+<div class="modal-overlay" *ngIf="isAbandonConfirmVisible" (click)="hideAbandonConfirm()">
+  <div class="modal-box" (click)="$event.stopPropagation()">
+    <h3>Clear Current Bill</h3>
+    <p class="loading-text">
+      Are you sure you want to abandon receipt #{{ receiptNo }}? This permanently
+      removes all its items and cannot be undone.
+    </p>
+    <div class="modal-actions">
+      <button class="btn-action btn-finalize" (click)="performAbandon()">
+        Yes, Clear Bill
+      </button>
+      <button class="btn-action btn-cancel" (click)="hideAbandonConfirm()">No, Keep Bill</button>
+    </div>
+  </div>
+</div>

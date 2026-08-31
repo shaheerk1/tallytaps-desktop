@@ -1,0 +1,49 @@
+<section class="info-panel">
+  <div class="panel-header">
+    <h1>Welcome, {{ userName }}</h1>
+    <p class="panel-subtitle">Your current market POS session</p>
+  </div>
+
+  <div class="info-grid">
+    <article class="info-card">
+      <h2>User Profile</h2>
+      <dl class="info-list">
+        <div class="info-row"><dt>Display Name</dt><dd>{{ userName }}</dd></div>
+        <div class="info-row"><dt>Username</dt><dd>{{ userUsername }}</dd></div>
+        <div class="info-row" *ngIf="userEmail"><dt>Email</dt><dd>{{ userEmail }}</dd></div>
+        <div class="info-row" *ngIf="userPhone"><dt>Phone</dt><dd>{{ userPhone }}</dd></div>
+        <div class="info-row"><dt>Role(s)</dt><dd><span class="badge" *ngFor="let role of userRoles">{{ role }}</span></dd></div>
+        <div class="info-row"><dt>Last Login</dt><dd>{{ lastLoginAt }}</dd></div>
+      </dl>
+    </article>
+
+    <article class="info-card" *ngIf="wsSession">
+      <h2>Workstation</h2>
+      <dl class="info-list">
+        <div class="info-row"><dt>Station</dt><dd>{{ wsSession.workstationName }}</dd></div>
+        <div class="info-row"><dt>Location</dt><dd>{{ wsSession.locationCode }}</dd></div>
+        <div class="info-row"><dt>Machine</dt><dd>{{ wsSession.machineCode }}</dd></div>
+        <div class="info-row">
+          <dt>Business Date</dt>
+          <dd class="highlight">
+            {{ wsSession.billingDate }}
+            <button class="date-change-btn" type="button" routerLink="/business-day" *ngIf="userPermissions.includes('business-day.view')">Manage</button>
+          </dd>
+        </div>
+        <div class="info-row"><dt>Opening Balance</dt><dd>{{ wsSession.openingBalance | number:'1.2-2' }}</dd></div>
+        <div class="info-row"><dt>Next Receipt #</dt><dd class="highlight">{{ wsSession.currentReceiptNo }}</dd></div>
+        <div class="info-row"><dt>Status</dt><dd><span class="status-badge" [class.open]="wsSession.status === 'open'">{{ wsSession.status | uppercase }}</span></dd></div>
+      </dl>
+    </article>
+
+    <article class="info-card warning-card" *ngIf="!wsSession">
+      <h2>No Workstation</h2>
+      <p>No workstation session is active. Billing requires a configured workstation.</p>
+    </article>
+
+    <article class="info-card">
+      <h2>Permissions</h2>
+      <div class="permissions-list"><span class="perm-tag" *ngFor="let permission of userPermissions">{{ permission }}</span></div>
+    </article>
+  </div>
+</section>

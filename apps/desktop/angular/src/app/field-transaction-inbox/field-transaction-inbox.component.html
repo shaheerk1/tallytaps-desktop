@@ -1,0 +1,146 @@
+<main class="inbox-page">
+  <header class="inbox-header">
+    <div>
+      <h1>Field Transaction Inbox</h1>
+      <p>Review transactions recorded away from the counter without changing POS accounts or stock.</p>
+    </div>
+    <div class="header-context" *ngIf="hostId">
+      <span>Host</span>
+      <strong>{{ hostId }}</strong>
+    </div>
+  </header>
+
+  <section class="status-message error" *ngIf="error">
+    <strong>Could not complete the action</strong>
+    <span>{{ error }}</span>
+  </section>
+
+  <section class="inbox-toolbar">
+    <div class="filter-row">
+      <label class="date-filter">Billing date
+        <input type="date" [(ngModel)]="selectedDate" (change)="loadRecords()" [disabled]="loading" />
+      </label>
+      <label>Device
+        <select [(ngModel)]="deviceFilter">
+          <option value="all">All devices</option>
+          <option *ngFor="let device of devices" [value]="device.value">{{ device.label }}</option>
+        </select>
+      </label>
+      <label>Type
+        <select [(ngModel)]="typeFilter">
+          <option value="all">All types</option>
+          <option *ngFor="let type of types" [value]="type">{{ type | titlecase }}</option>
+        </select>
+      </label>
+      <label>Direction
+        <select [(ngModel)]="directionFilter">
+          <option value="all">All directions</option>
+          <option *ngFor="let direction of directions" [value]="direction">{{ direction | titlecase }}</option>
+        </select>
+      </label>
+      <label>Item
+        <select [(ngModel)]="itemFilter">
+          <option value="all">All items</option>
+          <option *ngFor="let item of items" [value]="item">{{ item }}</option>
+        </select>
+      </label>
+      <label>Status
+        <select [(ngModel)]="statusFilter">
+          <option value="all">All statuses</option>
+          <option value="open">Open only</option>
+          <option value="resolved">Resolved only</option>
+        </select>
+      </label>
+      <label class="search-filter">Search
+        <input [(ngModel)]="searchTerm" placeholder="Note, item, device or ID" />
+      </label>
+    </div>
+    <div class="toolbar-actions">
+      <span *ngIf="refreshedAt">Fetched {{ displayTime(refreshedAt) }} SLST / filters apply locally</span>
+      <button type="button" class="button-quiet" (click)="clearFilters()">Clear filters</button>
+      <button type="button" class="button-primary" (click)="loadRecords()" [disabled]="loading">
+        {{ loading ? 'Loading...' : 'Refresh from server' }}
+      </button>
+    </div>
+  </section>
+
+  <section class="summary-grid">
+    <article><span>Records</span><b>{{ records.length }}</b><small>{{ filteredRecords.length }} currently shown</small></article>
+    <article class="open"><span>Open</span><b>{{ openCount }}</b><small>still to review locally</small></article>
+    <article><span>Resolved</span><b>{{ resolvedCount }}</b><small>marked on this POS</small></article>
+    <article class="money-flow"><span>Received &amp; paid</span><div class="money-flow-values"><div class="received"><small>Received</small><b>{{ receivedAmount | number:'1.2-2' }}</b></div><div class="paid"><small>Paid</small><b>{{ paidAmount | number:'1.2-2' }}</b></div></div><small>cash and card records only</small></article>
+  </section>
+
+  <section class="ledger-card">
+    <header>
+      <div><h2>Day transactions</h2><p>Times are displayed in Sri Lanka Standard Time (UTC+05:30).</p></div>
+      <span>{{ filteredRecords.length }}</span>
+    </header>
+    <div class="ledger-scroll">
+      <table>
+        <thead><tr><th>Time</th><th>Device</th><th>Type / direction</th><th>Transaction</th><th>Note</th><th class="number">Amount</th><th>Media</th><th>Status</th><th>Action</th></tr></thead>
+        <tbody>
+          <tr *ngFor="let record of filteredRecords" [class.resolved-row]="record.resolved" (click)="openDetails(record)">
+            <td class="time-cell"><b>{{ displayTime(record.createdAt) }}</b><small>SLST</small></td>
+            <td><b>{{ deviceLabel(record) }}</b><small>{{ record.device.model || record.device.name || 'Unknown model' }}</small></td>
+            <td><span class="type-badge" [attr.data-type]="record.type">{{ record.type }}</span><small>{{ record.direction | titlecase }}</small></td>
+            <td><b>{{ record.item || 'General transaction' }}</b><small>{{ displayQuantity(record) }}</small></td>
+            <td class="note-cell">{{ record.note || '-' }}</td>
+            <td class="number amount-cell">{{ record.amount | number:'1.2-2' }}</td>
+            <td>{{ record.media.length || '-' }}</td>
+            <td><span class="status-pill" [class.resolved]="record.resolved">{{ record.resolved ? 'Resolved' : 'Open' }}</span></td>
+            <td><button type="button" class="row-action" (click)="openDetails(record); $event.stopPropagation()">Details</button><button *ngIf="canResolve" type="button" class="row-action resolve" (click)="toggleResolved(record, $event)" [disabled]="resolvingIds.has(record.id)">{{ record.resolved ? 'Reopen' : 'Resolve' }}</button></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="empty-state" *ngIf="!loading && !filteredRecords.length">{{ records.length ? 'No records match the current local filters.' : 'No field transactions were returned for this date.' }}</div>
+  </section>
+</main>
+
+<div class="drawer-backdrop" *ngIf="selectedRecord" (click)="closeDetails()"></div>
+<aside class="detail-drawer" *ngIf="selectedRecord as record">
+  <header>
+    <div><span>Record {{ record.id }}</span><h2>{{ record.item || (record.type | titlecase) + ' transaction' }}</h2></div>
+    <button type="button" class="close-button" (click)="closeDetails()" aria-label="Close details">×</button>
+  </header>
+  <div class="drawer-body">
+    <section class="detail-status" [class.resolved]="record.resolved">
+      <div><b>{{ record.resolved ? 'Resolved locally' : 'Open for review' }}</b><small>This marker stays only on this POS and makes no server or accounting entry.<ng-container *ngIf="record.resolvedAt"> Marked {{ displayDateTime(record.resolvedAt) }}.</ng-container></small></div>
+      <button *ngIf="canResolve" type="button" (click)="toggleResolved(record)" [disabled]="resolvingIds.has(record.id)">{{ record.resolved ? 'Reopen' : 'Mark resolved' }}</button>
+    </section>
+
+    <section class="detail-grid">
+      <div><span>Created (Sri Lanka)</span><b>{{ displayDateTime(record.createdAt) }}</b></div>
+      <div><span>Server received (Sri Lanka)</span><b>{{ displayDateTime(record.receivedAt) }}</b></div>
+      <div><span>Sync delay</span><b>{{ syncDelay(record) }}</b></div>
+      <div><span>Type</span><b>{{ record.type | titlecase }}</b></div>
+      <div><span>Direction</span><b>{{ record.direction | titlecase }}</b></div>
+      <div><span>Amount</span><b>{{ record.amount | number:'1.2-2' }}</b></div>
+      <div><span>Item</span><b>{{ record.item || '-' }}</b></div>
+      <div><span>Quantity</span><b>{{ displayQuantity(record) }}</b></div>
+    </section>
+
+    <section class="detail-section"><h3>Note</h3><p>{{ record.note || 'No note was recorded.' }}</p></section>
+    <section class="detail-section"><h3>Source device</h3><div class="device-card"><b>{{ deviceLabel(record) }}</b><span>{{ deviceDetails(record) }}</span><small>Device ID: {{ record.device.id || '-' }}</small></div></section>
+    <section class="detail-section identifiers"><h3>Record identifiers</h3><div><span>Server record</span><code>{{ record.id }}</code></div><div><span>Client record</span><code>{{ record.clientRecordId || '-' }}</code></div></section>
+
+    <section class="detail-section"><h3>Attachments <span>{{ record.media.length }}</span></h3>
+      <div class="media-grid" *ngIf="record.media.length; else noMedia">
+        <article class="media-card" *ngFor="let media of record.media">
+          <header><b>{{ media.type | titlecase }}</b><small>{{ formatBytes(media.sizeBytes) }}</small></header>
+          <div class="media-loading" *ngIf="isMediaLoading(media.id)">Loading securely...</div>
+          <div class="media-error" *ngIf="mediaError(media.id)"><span>{{ mediaError(media.id) }}</span><button type="button" (click)="loadMedia(media)">Retry</button></div>
+          <div class="image-preview" *ngIf="media.type === 'image' && mediaSource(media.id)"><img [src]="mediaSource(media.id)" alt="Transaction attachment" (click)="openFullSizeImage(media)" /><button type="button" (click)="openFullSizeImage(media)">View full size</button></div>
+          <audio *ngIf="media.type === 'audio' && mediaSource(media.id)" [src]="mediaSource(media.id)" controls preload="metadata"></audio>
+        </article>
+      </div>
+      <ng-template #noMedia><p class="no-media">No images or audio were attached.</p></ng-template>
+    </section>
+  </div>
+</aside>
+
+<div class="image-viewer" *ngIf="fullSizeImage as image" (click)="closeFullSizeImage()">
+  <header (click)="$event.stopPropagation()"><div><b>Image attachment</b><span>{{ formatBytes(image.sizeBytes) }}</span></div><button type="button" (click)="closeFullSizeImage()">Close</button></header>
+  <div class="image-viewer-stage"><img [src]="mediaSource(image.id)" alt="Full-size transaction attachment" (click)="$event.stopPropagation()" /></div>
+</div>

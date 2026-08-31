@@ -1,0 +1,115 @@
+<section class="day-page" *ngIf="canView; else denied">
+  <header>
+    <h1>Business Day <span>~ Operational Close</span></h1>
+    <p>Control the transaction date for {{ locationCode }}, reconcile the day, and retain an auditable close history.</p>
+  </header>
+
+  <p class="alert error" *ngIf="error">{{ error }}</p>
+  <p class="alert success" *ngIf="info">{{ info }}</p>
+
+  <section class="status-strip" *ngIf="day">
+    <div><span>Business date</span><strong>{{ day.businessDate }}</strong></div>
+    <div><span>Status</span><strong class="status" [class.closing]="day.status === 'closing'">{{ day.status }}</strong></div>
+    <div><span>Location</span><strong>{{ day.locationCode }}</strong></div>
+    <div><span>Reopened</span><strong>{{ day.reopenCount }} time(s)</strong></div>
+  </section>
+
+  <section class="no-day" *ngIf="!day">
+    <div>
+      <h2>No active business day</h2>
+      <p>Transaction entry remains locked until the next day is opened.</p>
+    </div>
+    <label>Next business date <input type="date" [(ngModel)]="nextDate" /></label>
+    <button class="primary" (click)="openNextDay()" [disabled]="loading || !canOpen">Open Business Day</button>
+  </section>
+
+  <ng-container *ngIf="day">
+    <section class="metrics" *ngIf="summary">
+      <div><span>Sales</span><strong>{{ summary.salesTotal | number:'1.2-2' }}</strong><small>{{ summary.invoiceCount }} invoices</small></div>
+      <div><span>Tender received</span><strong>{{ summary.paidTotal | number:'1.2-2' }}</strong><small>{{ summary.collectionTotal | number:'1.2-2' }} from collections</small></div>
+      <div><span>Refunds</span><strong>{{ summary.refundTotal | number:'1.2-2' }}</strong><small>{{ summary.refundCount }} refunds</small></div>
+      <div><span>Credit outstanding</span><strong>{{ summary.creditTotal | number:'1.2-2' }}</strong><small>Created on this day</small></div>
+      <div><span>Drawer ledger</span><strong>{{ summary.cashNet | number:'1.2-2' }}</strong><small>{{ summary.closedShiftCount }}/{{ summary.shiftCount }} shifts closed</small></div>
+      <div><span>Over / short</span><strong [class.negative]="summary.varianceTotal < 0">{{ summary.varianceTotal | number:'1.2-2' }}</strong><small>All reconciled shifts</small></div>
+    </section>
+
+    <div class="workspace">
+      <section class="panel blockers">
+        <div class="panel-head">
+          <div><h2>Closing readiness</h2><p>Every posted and pending workflow must be in a controlled state.</p></div>
+          <strong [class.ready]="activeBlockers.length === 0">{{ activeBlockers.length === 0 ? 'Ready' : activeBlockers.length + ' blockers' }}</strong>
+        </div>
+        <div class="check-row" *ngFor="let item of blockers" [class.clear]="item.count === 0">
+          <span class="marker">{{ item.count === 0 ? '✓' : '!' }}</span>
+          <div><strong>{{ item.label }}</strong><small>{{ item.count === 0 ? 'Clear' : item.action }}</small></div>
+          <b>{{ item.count }}</b>
+        </div>
+      </section>
+
+      <section class="panel action-panel">
+        <ng-container *ngIf="day.status === 'open'">
+          <h2>Close this business day</h2>
+          <p>First close and reconcile every cash shift, then resolve pending documents. Starting closing locks new transaction entry.</p>
+          <button class="primary" (click)="startClosing()" [disabled]="loading || !canClose || !canStartClose">Start Closing Review</button>
+          <small *ngIf="activeBlockers.length">The close action becomes available when all blockers are cleared.</small>
+        </ng-container>
+
+        <ng-container *ngIf="day.status === 'closing'">
+          <h2>Confirm business-day close</h2>
+          <p>The day is locked. Review the totals, then close it or record why trading must resume.</p>
+          <label>Optional closing note <input [(ngModel)]="closeNote" placeholder="Shift handover, banking note, or comment" /></label>
+          <button class="primary" (click)="closeDay()" [disabled]="loading || !canClose">Close Business Day</button>
+          <div class="resume">
+            <label>Reason to resume <input [(ngModel)]="resumeReason" placeholder="Required audit reason" /></label>
+            <button class="secondary" (click)="resumeTrading()" [disabled]="loading || !canClose">Cancel Closing</button>
+          </div>
+        </ng-container>
+      </section>
+    </div>
+
+    <section class="panel ledger" *ngIf="summary?.cashMovements?.length">
+      <h2>Cash movement summary</h2>
+      <div *ngFor="let movement of summary.cashMovements">
+        <span>{{ label(movement.type) }}</span><span>{{ movement.direction }}</span>
+        <strong>{{ movement.amount | number:'1.2-2' }}</strong>
+      </div>
+    </section>
+
+    <section class="panel events" *ngIf="state?.events?.length">
+      <h2>Current day audit</h2>
+      <div *ngFor="let event of state.events">
+        <time>{{ event.createdAt | date:'medium' }}</time>
+        <strong>{{ label(event.eventType) }}</strong>
+        <span>{{ event.userName }}<ng-container *ngIf="event.reason"> - {{ event.reason }}</ng-container></span>
+      </div>
+    </section>
+  </ng-container>
+
+  <section class="panel history">
+    <div class="panel-head"><div><h2>Business-day history</h2><p>Closed days are available for review. Reopening requires a recorded reason and no other active day.</p></div></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Date</th><th>Status</th><th>Closed by</th><th>Closed at</th><th>Sales</th><th></th></tr></thead>
+        <tbody>
+          <tr *ngFor="let item of history">
+            <td><strong>{{ item.businessDate }}</strong></td>
+            <td><span class="status-chip">{{ item.status }}</span></td>
+            <td>{{ item.closedByName || '-' }}</td>
+            <td>{{ item.closedAt ? (item.closedAt | date:'short') : '-' }}</td>
+            <td>{{ item.summarySnapshot?.salesTotal == null ? '-' : (item.summarySnapshot.salesTotal | number:'1.2-2') }}</td>
+            <td><button class="link" *ngIf="item.status === 'closed' && canReopen && !day" (click)="chooseReopen(item)">Reopen</button></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="reopen-box" *ngIf="reopenTarget">
+    <div><h2>Reopen {{ reopenTarget.businessDate }}</h2><p>This is an exceptional audited action. The day will become the active transaction date.</p></div>
+    <input [(ngModel)]="reopenReason" placeholder="Required reason" />
+    <button class="danger" (click)="reopenDay()" [disabled]="loading">Reopen Day</button>
+    <button class="secondary" (click)="reopenTarget = null">Cancel</button>
+  </section>
+</section>
+
+<ng-template #denied><p class="denied">You do not have permission to view Business Day Control.</p></ng-template>

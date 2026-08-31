@@ -1,0 +1,372 @@
+.app-shell {
+  --sidebar-w: 240px;
+  display: grid;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+  transition: grid-template-columns 0.25s ease;
+}
+.app-shell.sidebar-collapsed {
+  --sidebar-w: 56px;
+}
+.app-shell.sidebar-hidden {
+  --sidebar-w: 0px;
+}
+/* Explicit row/column placement keeps both panes side-by-side in a single row
+   for either position. Without grid-row pinned to 1, mirroring to the right
+   bumps the workspace onto a second row (sidebar alone on top). */
+.sidebar {
+  grid-row: 1;
+  grid-column: 1;
+}
+.workspace {
+  grid-row: 1;
+  grid-column: 2;
+}
+/* Right-side docking: workspace left, sidebar right. */
+.app-shell.position-right {
+  grid-template-columns: minmax(0, 1fr) var(--sidebar-w);
+}
+.app-shell.position-right .sidebar {
+  grid-column: 2;
+}
+.app-shell.position-right .workspace {
+  grid-column: 1;
+}
+
+/* ── Sidebar ── */
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  background: #181c20;
+  color: #ffffff;
+  overflow: hidden;
+  min-height: 0;
+  transition: width 0.25s ease;
+  width: var(--sidebar-w);
+}
+.sidebar.hidden {
+  width: var(--sidebar-w);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 12px;
+  border-bottom: 1px solid #2d333b;
+  min-height: 56px;
+}
+.brand {
+  font-size: 16px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.sidebar.collapsed .sidebar-header {
+  justify-content: center;
+}
+.toggle-btn {
+  background: transparent;
+  border: 1px solid #4b5563;
+  color: #d8dde3;
+  border-radius: 6px;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  min-width: 30px;
+}
+.toggle-btn:hover {
+  background: #374151;
+  color: #fff;
+}
+
+/* ── Navigation ── */
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 8px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.sidebar-nav::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  color: #d8dde3;
+  text-decoration: none;
+  border-radius: 6px;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+.nav-item:hover {
+  background: #2d333b;
+  color: #ffffff;
+}
+.nav-item.active {
+  background: #2f6fed;
+  color: #ffffff;
+}
+.nav-icon {
+  font-size: 18px;
+  min-width: 24px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.nav-label {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+/* ── Footer ── */
+.sidebar-footer {
+  padding: 12px;
+  border-top: 1px solid #2d333b;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.sidebar-footer.footer-collapsed {
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+.sidebar-footer.footer-collapsed .user-info {
+  flex: none;
+  width: 100%;
+  justify-content: center;
+}
+.sidebar-footer.footer-collapsed .logout-btn {
+  padding: 4px 8px;
+  font-size: 15px;
+}
+.user-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+.user-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #2f6fed;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.user-details {
+  min-width: 0;
+  overflow: hidden;
+}
+.user-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e2e8f0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.user-role {
+  font-size: 11px;
+  color: #64748b;
+  margin-top: 2px;
+}
+.logout-btn {
+  padding: 6px 10px;
+  background: transparent;
+  color: #d8dde3;
+  border: 1px solid #4b5563;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.logout-btn:hover {
+  background: #374151;
+  color: #ffffff;
+}
+
+/* ── Workspace ── */
+.workspace {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  background: #f0f2f5;
+}
+
+/* ── Floating expand tab (auto-hide mode) ──
+   Mirrors per position: left edge by default, right edge when docked right.
+   A future top/bottom launcher is a separate mode and will not reuse this. */
+.sidebar-tab {
+  position: fixed;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 40;
+  width: 22px;
+  height: 46px;
+  padding: 0;
+  border: 1px solid #2d333b;
+  border-left: none;
+  border-radius: 0 6px 6px 0;
+  background: #181c20;
+  color: #d8dde3;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s;
+}
+.sidebar-tab:hover {
+  background: #2f6fed;
+  color: #fff;
+}
+.app-shell.position-right .sidebar-tab {
+  left: auto;
+  right: 0;
+  border-left: 1px solid #2d333b;
+  border-right: none;
+  border-radius: 6px 0 0 6px;
+}
+
+/* Shared operations-shell finish. Layout behavior remains unchanged. */
+.app-shell {
+  --sidebar-w: 264px;
+  background: var(--ui-canvas);
+}
+
+.app-shell.sidebar-collapsed {
+  --sidebar-w: 68px;
+}
+
+/* Auto-hide must release the compact rail as well as the full sidebar. */
+.app-shell.sidebar-collapsed.sidebar-hidden {
+  --sidebar-w: 0px;
+}
+
+.sidebar {
+  /* background: linear-gradient(180deg, #12233f 0%, #172b4d 48%, #102039 100%); */
+  background: #04071a;
+  box-shadow: 8px 0 28px rgba(23, 43, 77, 0.1);
+}
+
+.sidebar-header {
+  min-height: 72px;
+  padding: 18px 16px;
+  border-bottom-color: rgba(255, 255, 255, 0.11);
+}
+
+.brand {
+  letter-spacing: -0.02em;
+  font-size: 17px;
+}
+
+.toggle-btn,
+.logout-btn {
+  border-color: rgba(255, 255, 255, 0.2);
+  border-radius: 8px;
+}
+
+.toggle-btn:hover,
+.logout-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.sidebar-nav {
+  gap: 5px;
+  padding: 16px 10px;
+}
+
+.nav-item {
+  min-height: 44px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: #c7d5e8;
+}
+
+.nav-item:hover {
+  background: rgba(255, 255, 255, 0.09);
+  color: #ffffff;
+}
+
+.nav-item.active {
+  background: linear-gradient(90deg, #05112c, #0b1e3a);
+  border-color: rgba(255, 255, 255, 0.16);
+  box-shadow: 0 6px 18px rgba(0, 39, 93, 0.28);
+}
+
+.nav-icon {
+  display: inline-grid;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  place-items: center;
+}
+
+.nav-icon img {
+  display: block;
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+}
+
+.nav-label {
+  font-size: 13px;
+  letter-spacing: 0.01em;
+}
+
+.sidebar-footer {
+  padding: 14px 12px;
+  border-top-color: rgba(255, 255, 255, 0.11);
+}
+
+.user-avatar {
+  width: 36px;
+  height: 36px;
+  background: #3b8cff;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+.user-role {
+  color: #91a8c5;
+}
+
+.workspace {
+  background:
+    radial-gradient(circle at top right, rgba(23, 105, 224, 0.06), transparent 30rem),
+    var(--ui-canvas);
+}
+
+.sidebar-tab {
+  width: 26px;
+  height: 52px;
+  border-color: rgba(255, 255, 255, 0.16);
+  background: #172b4d;
+  box-shadow: 4px 4px 14px rgba(23, 43, 77, 0.18);
+}
+
+.sidebar-tab:hover {
+  background: var(--ui-primary);
+}

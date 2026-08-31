@@ -1,0 +1,157 @@
+:root {
+  color-scheme: light;
+  --ui-canvas: #f4f7fb;
+  --ui-surface: #ffffff;
+  --ui-surface-muted: #f8fafc;
+  --ui-ink: #172033;
+  --ui-ink-muted: #64748b;
+  --ui-border: #dbe3ee;
+  --ui-border-strong: #c5d1e0;
+  --ui-navy: #172b4d;
+  --ui-primary: #4284f1;
+  --ui-primary-hover: #2c6be0;
+  --ui-primary-soft: #e8f0ff;
+  --ui-success: #37c565;
+  --ui-success-soft: #e5f5ee;
+  --ui-warning: #f5702c;
+  --ui-warning-soft: #fff3e2;
+  --ui-danger: #eb3f49;
+  --ui-danger-soft: #fff0f2;
+  --ui-radius-sm: 6px;
+  --ui-radius: 8px;
+  --ui-radius-lg: 18px;
+  --ui-shadow-sm: 0 1px 2px rgba(23, 43, 77, 0.05), 0 2px 8px rgba(23, 43, 77, 0.04);
+  --ui-shadow: 0 10px 28px rgba(23, 43, 77, 0.1);
+  --ui-focus: 0 0 0 3px rgba(23, 105, 224, 0.22);
+  /* Warm operational accents used by transactional workspaces. */
+  --ui-warm-surface: #fffdf8;
+  --ui-warm-surface-muted: #fff8ea;
+  --ui-ops-title: #1f5a4c;
+  --ui-ops-title-accent: #bb5c1c;
+  font-family: "IBM Plex Sans", "Aptos", "Segoe UI", sans-serif;
+  background: var(--ui-canvas);
+  color: var(--ui-ink);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top right, rgba(23, 105, 224, 0.06), transparent 28rem),
+    var(--ui-canvas);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button,
+input,
+select,
+textarea {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button {
+  min-height: 36px;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+a:focus-visible {
+  outline: none;
+  box-shadow: var(--ui-focus);
+}
+
+::selection {
+  background: #cfe0ff;
+  color: var(--ui-navy);
+}
+
+/* Shared presentation rules for the desktop management workspaces. Component
+   styles continue to own layout; these only align repeated UI primitives. */
+pos-item-management .im-header,
+pos-plugin-manager .pm-header,
+pos-role-management .rm-header,
+pos-user-management .um-header,
+pos-workstation-management .ws-header {
+  min-height: 82px;
+  padding-top: 18px;
+  padding-bottom: 18px;
+  background: rgba(255, 255, 255, 0.9);
+  border-bottom-color: var(--ui-border);
+  box-shadow: 0 1px 0 rgba(23, 43, 77, 0.03);
+}
+
+pos-item-management .im-header h1,
+pos-plugin-manager .pm-header h1,
+pos-role-management .rm-header h1,
+pos-user-management .um-header h1,
+pos-workstation-management .ws-header h1 {
+  letter-spacing: -0.025em;
+}
+
+/* Keep management workspaces compact while sharing the transactional title tone. */
+pos-item-management .im-header h1,
+pos-role-management .rm-header h1,
+pos-user-management .um-header h1,
+pos-settings .st-header h1 {
+  color: var(--ui-ops-title);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 1.45rem;
+  line-height: 1.1;
+}
+
+pos-item-management .btn,
+pos-plugin-manager .btn,
+pos-role-management .btn,
+pos-user-management .btn,
+pos-workstation-management .btn {
+  min-height: 38px;
+  border-radius: 8px;
+}
+
+pos-item-management .btn-primary,
+pos-plugin-manager .btn-primary,
+pos-role-management .btn-primary,
+pos-user-management .btn-primary,
+pos-workstation-management .btn-primary {
+  box-shadow: 0 5px 12px rgba(23, 105, 224, 0.18);
+}
+
+pos-item-management .search-input,
+pos-plugin-manager .search-input,
+pos-role-management .search-input,
+pos-user-management .search-input,
+pos-workstation-management .search-input,
+pos-item-management .form-input,
+pos-plugin-manager .modal-input,
+pos-role-management .modal-input,
+pos-user-management .modal-input,
+pos-workstation-management .modal-input {
+  border-color: var(--ui-border-strong);
+  border-radius: 8px;
+}
+
+pos-item-management .im-table,
+pos-plugin-manager .plugin-table,
+pos-workstation-management .ws-table {
+  border-color: var(--ui-border);
+  border-radius: var(--ui-radius);
+  box-shadow: var(--ui-shadow-sm);
+}
+
+pos-item-management .im-row-head,
+pos-plugin-manager .plugin-table th,
+pos-workstation-management .ws-table th {
+  background: #f6f9fd;
+}

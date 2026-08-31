@@ -1,0 +1,56 @@
+<div class="pm-container">
+  <header class="pm-header">
+    <div>
+      <h2>Printer Management</h2>
+      <p>Configure the ESC/POS thermal receipt printer for this workstation.</p>
+    </div>
+    <button class="btn" (click)="loadData()" [disabled]="isLoading">
+      {{ isLoading ? 'Refreshing...' : 'Refresh Printers' }}
+    </button>
+  </header>
+
+  <div *ngIf="errorMessage" class="alert alert-error">{{ errorMessage }}</div>
+  <div *ngIf="infoMessage" class="alert alert-info">{{ infoMessage }}</div>
+  <div *ngIf="resultMessage" class="alert" [class.alert-error]="resultIsError" [class.alert-info]="!resultIsError">
+    {{ resultMessage }}
+  </div>
+
+  <div *ngIf="isLoading" class="loading-text">Detecting USB printers...</div>
+
+  <div *ngIf="!isLoading && printers.length === 0" class="empty-state">
+    <p>No ESC/POS USB printers detected.</p>
+    <p class="hint">
+      Connect a thermal receipt printer and install the WinUSB driver (e.g. with Zadig).
+      The printing dependencies must also be installed: <code>npm install escpos escpos-usb</code>.
+    </p>
+  </div>
+
+  <div *ngIf="printers.length > 0" class="printer-list">
+    <div class="printer-card" *ngFor="let printer of printers">
+      <div class="printer-info">
+        <div class="printer-name">
+          {{ printer.name }}
+          <span *ngIf="printer.isDefault" class="badge badge-default">Default</span>
+        </div>
+        <div class="printer-meta">
+          VID: {{ printer.vendorId?.toString(16) || '—' }} · PID: {{ printer.productId?.toString(16) || '—' }}
+        </div>
+      </div>
+      <div class="printer-actions">
+        <button
+          class="btn"
+          (click)="setAsDefault(printer.id)"
+          [disabled]="isSaving || printer.isDefault"
+        >
+          {{ printer.isDefault ? 'Default' : 'Set as Default' }}
+        </button>
+        <button class="btn" (click)="printTest(printer.id)">Test Page</button>
+        <button class="btn" (click)="printSampleReceipt(printer.id)">Sample Receipt</button>
+      </div>
+    </div>
+  </div>
+
+  <footer class="pm-footer">
+    <a routerLink="/">← Back to Dashboard</a>
+  </footer>
+</div>

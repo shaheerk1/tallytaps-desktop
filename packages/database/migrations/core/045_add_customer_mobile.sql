@@ -1,0 +1,2 @@
+ALTER TABLE customers
+  ADD COLUMN mobile VARCHAR(60) NULL AFTER phone;
