@@ -184,6 +184,17 @@ export class SettingsComponent implements OnInit {
   fieldInboxTesting = false;
   fieldInboxMessage = '';
   fieldInboxMessageError = false;
+  cloudSyncEnabled = false;
+  cloudSyncIntervalMinutes = 15;
+  cloudSyncBatchSize = 100;
+  cloudSyncMaxBatches = 4;
+  cloudSyncNickname = '';
+  cloudSyncPendingCount = 0;
+  cloudSyncLastSuccess: string | null = null;
+  cloudSyncLastError: string | null = null;
+  cloudSyncBusy = false;
+  cloudSyncMessage = '';
+  cloudSyncMessageError = false;
 
   constructor(
     private session: SessionService,
@@ -197,6 +208,59 @@ export class SettingsComponent implements OnInit {
     await this.loadPriorityLists();
     await this.loadUiSidebar();
     await this.loadFieldInboxConfiguration();
+    await this.loadCloudSyncConfiguration();
+  }
+
+  private async loadCloudSyncConfiguration(): Promise<void> {
+    if (!window.posApi) return;
+    try {
+      const result = await window.posApi.cloudSync.getConfiguration(this.session.getActor());
+      if (!result.success) throw new Error(result.error);
+      this.applyCloudSync(result.data);
+    } catch (error) {
+      this.cloudSyncMessage = error instanceof Error ? error.message : 'Could not load cloud backup settings.';
+      this.cloudSyncMessageError = true;
+    }
+  }
+
+  async saveCloudSyncConfiguration(): Promise<void> {
+    if (!window.posApi || this.cloudSyncBusy) return;
+    this.cloudSyncBusy = true; this.cloudSyncMessage = ''; this.cloudSyncMessageError = false;
+    try {
+      const result = await window.posApi.cloudSync.saveConfiguration({
+        enabled: this.cloudSyncEnabled, intervalMinutes: this.cloudSyncIntervalMinutes,
+        batchSize: this.cloudSyncBatchSize, maxBatchesPerRun: this.cloudSyncMaxBatches,
+        nickname: this.cloudSyncNickname
+      }, this.session.getActor());
+      if (!result.success) throw new Error(result.error);
+      this.applyCloudSync(result.data);
+      this.cloudSyncMessage = this.cloudSyncEnabled ? 'Cloud backup schedule saved.' : 'Cloud backup is disabled; local POS operation is unchanged.';
+    } catch (error) {
+      this.cloudSyncMessage = error instanceof Error ? error.message : 'Could not save cloud backup settings.';
+      this.cloudSyncMessageError = true;
+    } finally { this.cloudSyncBusy = false; }
+  }
+
+  async runCloudSyncNow(): Promise<void> {
+    if (!window.posApi || this.cloudSyncBusy || !this.fieldInboxConfigured) return;
+    this.cloudSyncBusy = true; this.cloudSyncMessage = 'Preparing changed records…'; this.cloudSyncMessageError = false;
+    try {
+      const result = await window.posApi.cloudSync.runNow(this.session.getActor());
+      if (!result.success) throw new Error(result.error);
+      this.applyCloudSync(result.data);
+      this.cloudSyncMessage = `Backup complete. ${result.data.uploaded || 0} record changes uploaded${result.data.catalogPublished ? ' and the item catalog was refreshed' : ''}.`;
+    } catch (error) {
+      this.cloudSyncMessage = error instanceof Error ? error.message : 'Cloud backup failed.';
+      this.cloudSyncMessageError = true;
+      await this.loadCloudSyncConfiguration();
+    } finally { this.cloudSyncBusy = false; }
+  }
+
+  private applyCloudSync(data: { enabled: boolean; intervalMinutes: number; batchSize: number; maxBatchesPerRun: number; nickname: string; pendingCount: number; lastSuccessAt: string | null; lastError: string | null }): void {
+    this.cloudSyncEnabled = data.enabled; this.cloudSyncIntervalMinutes = data.intervalMinutes;
+    this.cloudSyncBatchSize = data.batchSize; this.cloudSyncMaxBatches = data.maxBatchesPerRun;
+    this.cloudSyncNickname = data.nickname; this.cloudSyncPendingCount = data.pendingCount;
+    this.cloudSyncLastSuccess = data.lastSuccessAt; this.cloudSyncLastError = data.lastError;
   }
 
   private async loadFieldInboxConfiguration(): Promise<void> {

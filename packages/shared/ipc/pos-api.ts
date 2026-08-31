@@ -21,6 +21,22 @@ export type FieldInboxConfiguration = {
   apiBaseUrl: string;
 };
 
+export type CloudSyncConfiguration = {
+  configured: boolean;
+  enabled: boolean;
+  intervalMinutes: number;
+  batchSize: number;
+  maxBatchesPerRun: number;
+  nickname: string;
+  nodeId: string | null;
+  pendingCount: number;
+  lastSuccessAt: string | null;
+  lastAttemptAt: string | null;
+  lastError: string | null;
+  nextRetryAt: string | null;
+  apiBaseUrl: string;
+};
+
 export type FieldInboxMedia = {
   id: string;
   type: string;
@@ -1537,6 +1553,14 @@ export interface PosApi {
       mediaId: string,
       actor?: ActorContext | null
     ) => Promise<IpcResult<{ mediaId: string; contentType: string; sizeBytes: number; dataBase64: string }>>;
+  };
+  cloudSync: {
+    getConfiguration: (actor?: ActorContext | null) => Promise<IpcResult<CloudSyncConfiguration>>;
+    saveConfiguration: (
+      configuration: { enabled: boolean; intervalMinutes: number; batchSize: number; maxBatchesPerRun: number; nickname?: string },
+      actor?: ActorContext | null
+    ) => Promise<IpcResult<CloudSyncConfiguration>>;
+    runNow: (actor?: ActorContext | null) => Promise<IpcResult<CloudSyncConfiguration & { uploaded?: number; catalogPublished?: boolean }>>;
   };
   users: {
     list: (actor?: { id: string; permissions: string[] } | null) => Promise<IpcResult<ManageUser[]>>;

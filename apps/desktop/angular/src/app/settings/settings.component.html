@@ -500,6 +500,52 @@
           <button class="btn" type="button" (click)="testFieldInboxConnection()" [disabled]="fieldInboxTesting || !fieldInboxConfigured">{{ fieldInboxTesting ? 'Testing...' : 'Test saved connection' }}</button>
           <button class="btn btn-primary" type="button" (click)="saveFieldInboxConfiguration()" [disabled]="fieldInboxBusy || !fieldInboxHostId.trim()">{{ fieldInboxBusy ? 'Saving...' : 'Save connection' }}</button>
         </div>
+
+        <hr class="settings-divider" />
+        <h2>POS Cloud Backup</h2>
+        <p class="section-hint">Optionally archive finalized POS activity and this POS's item catalog in the connected host. Sales always finish locally first; network problems never block billing.</p>
+
+        <div class="integration-status" [class.connected]="cloudSyncEnabled && fieldInboxConfigured">
+          <div>
+            <strong>{{ cloudSyncEnabled ? 'Automatic backup enabled' : 'Automatic backup disabled' }}</strong>
+            <span>Pending changes: {{ cloudSyncPendingCount }} · Last success: {{ cloudSyncLastSuccess ? (cloudSyncLastSuccess | date:'medium') : 'Not yet synced' }}</span>
+          </div>
+          <span class="connection-badge">{{ cloudSyncEnabled ? 'BACKGROUND' : 'MANUAL' }}</span>
+        </div>
+
+        <div class="form-grid">
+          <div class="form-field">
+            <label class="toggle-row"><input type="checkbox" [(ngModel)]="cloudSyncEnabled" [disabled]="!fieldInboxConfigured" /><span>Run backups automatically</span></label>
+            <span class="field-hint">Manual Sync now remains available while automatic backup is off.</span>
+          </div>
+          <div class="form-field">
+            <label>POS name shown on server</label>
+            <input class="form-input" [(ngModel)]="cloudSyncNickname" placeholder="e.g. Main counter database" maxlength="120" />
+          </div>
+          <div class="form-field">
+            <label>Sync frequency</label>
+            <select class="form-input" [(ngModel)]="cloudSyncIntervalMinutes">
+              <option [ngValue]="5">Every 5 minutes</option><option [ngValue]="15">Every 15 minutes</option>
+              <option [ngValue]="30">Every 30 minutes</option><option [ngValue]="60">Every hour</option>
+              <option [ngValue]="180">Every 3 hours</option><option [ngValue]="720">Every 12 hours</option><option [ngValue]="1440">Daily</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label>Records per request</label>
+            <input class="form-input" type="number" min="10" max="500" [(ngModel)]="cloudSyncBatchSize" />
+            <span class="field-hint">100 is recommended for low terminal impact.</span>
+          </div>
+          <div class="form-field">
+            <label>Requests per background run</label>
+            <input class="form-input" type="number" min="1" max="20" [(ngModel)]="cloudSyncMaxBatches" />
+          </div>
+        </div>
+        <p class="alert alert-error" *ngIf="cloudSyncLastError">Last background error: {{ cloudSyncLastError }}</p>
+        <div class="st-actions integration-actions">
+          <span class="save-msg" [class.save-error]="cloudSyncMessageError">{{ cloudSyncMessage }}</span>
+          <button class="btn" type="button" (click)="runCloudSyncNow()" [disabled]="cloudSyncBusy || !fieldInboxConfigured">{{ cloudSyncBusy ? 'Working…' : 'Sync now' }}</button>
+          <button class="btn btn-primary" type="button" (click)="saveCloudSyncConfiguration()" [disabled]="cloudSyncBusy || !fieldInboxConfigured">Save backup settings</button>
+        </div>
       </section>
 
       <!-- ── Printers (embedded) ─────────────────────────── -->

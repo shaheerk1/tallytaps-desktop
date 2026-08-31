@@ -14,6 +14,7 @@ const { createWorkstationRepository } = require('../../../../packages/database/r
 const { createUserManagementRepository } = require('../../../../packages/database/repositories/user-management.repository');
 const { createPriorityListRepository } = require('../../../../packages/database/repositories/priority-list.repository');
 const { createFieldInboxRepository } = require('../../../../packages/database/repositories/field-inbox.repository');
+const { createCloudSyncRepository } = require('../../../../packages/database/repositories/cloud-sync.repository');
 const { createDocumentSequenceRepository } = require('../../../../packages/database/repositories/document-sequence.repository');
 const { createBusinessDayRepository } = require('../../../../packages/database/repositories/business-day.repository');
 const { createSupplierSaleStatementRepository } = require('../../../../packages/database/repositories/supplier-sale-statement.repository');
@@ -40,6 +41,8 @@ const { createUserManagementService } = require('../../../../packages/core/user-
 const { createPriorityListService } = require('../../../../packages/core/priority-lists/priority-list.service');
 const { createIpcAuthorizationService } = require('../../../../packages/core/security/ipc-authorization.service');
 const { createFieldInboxService } = require('../../../../packages/core/field-inbox/field-inbox.service');
+const { createCloudSyncService } = require('../../../../packages/core/cloud-sync/cloud-sync.service');
+const { createCloudSyncScheduler } = require('../../../../packages/core/cloud-sync/cloud-sync.scheduler');
 const { createBusinessDayService } = require('../../../../packages/core/business-days/business-day.service');
 const { createSupplierSaleStatementService } = require('../../../../packages/core/supplier-sale-statements/supplier-sale-statement.service');
 const { safeStorage } = require('electron');
@@ -61,7 +64,7 @@ function createSecretProtector() {
       try {
         return safeStorage.decryptString(Buffer.from(String(ciphertext), 'base64'));
       } catch {
-        throw new Error('The saved transaction inbox API key cannot be decrypted. Save it again in Settings.');
+        throw new Error('A saved cloud credential cannot be decrypted. Save the connection again in Settings.');
       }
     }
   };
@@ -88,6 +91,7 @@ async function createServiceContainer() {
   const userManagementRepository = createUserManagementRepository({ database });
   const priorityListRepository = createPriorityListRepository({ database });
   const fieldInboxRepository = createFieldInboxRepository({ database });
+  const cloudSyncRepository = createCloudSyncRepository({ database });
   const supplierSaleStatementRepository = createSupplierSaleStatementRepository({ database, documentSequenceRepository, businessDayRepository });
 
   const eventBus = createEventBus();
@@ -125,11 +129,14 @@ async function createServiceContainer() {
   const reportService = createReportService({ database });
   const userManagementService = createUserManagementService({ userManagementRepository });
   const priorityListService = createPriorityListService({ priorityListRepository, userManagementRepository });
+  const secretProtector = createSecretProtector();
   const fieldInboxService = createFieldInboxService({
     fieldInboxRepository,
     documentSequenceRepository,
-    secretProtector: createSecretProtector()
+    secretProtector
   });
+  const cloudSyncService = createCloudSyncService({ repository: cloudSyncRepository, secretProtector });
+  const cloudSyncScheduler = createCloudSyncScheduler({ service: cloudSyncService });
   const supplierSaleStatementService = createSupplierSaleStatementService({ repository: supplierSaleStatementRepository });
 
   return {
@@ -150,6 +157,7 @@ async function createServiceContainer() {
     userManagementRepository,
     priorityListRepository,
     fieldInboxRepository,
+    cloudSyncRepository,
     ipcAuthorizationService,
     authService,
     workstationService,
@@ -168,6 +176,8 @@ async function createServiceContainer() {
     userManagementService,
     priorityListService,
     fieldInboxService,
+    cloudSyncService,
+    cloudSyncScheduler,
     businessDayService,
     paymentModes,
     eventBus,

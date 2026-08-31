@@ -1062,6 +1062,14 @@ function registerIpcHandlers(services) {
   wrapIpcHandler('fieldInbox.media.get', async (payload) => {
     return services.fieldInboxService.getMedia({ mediaId: payload?.mediaId });
   }, { authorize: requireFieldInboxView });
+
+  wrapIpcHandler('cloudSync.configuration.get', async () => services.cloudSyncService.getConfiguration(), { authorize: requireSettingsManage });
+  wrapIpcHandler('cloudSync.configuration.save', async (payload) => {
+    const result = await services.cloudSyncService.saveConfiguration(payload?.configuration || {});
+    services.cloudSyncScheduler.refresh();
+    return result;
+  }, { authorize: requireSettingsManage });
+  wrapIpcHandler('cloudSync.runNow', async () => services.cloudSyncService.runNow({ force: true }), { authorize: requireSettingsManage });
 }
 
 module.exports = {

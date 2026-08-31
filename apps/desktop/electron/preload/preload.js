@@ -183,6 +183,11 @@ contextBridge.exposeInMainWorld('posApi', {
       ipcRenderer.invoke('fieldInbox.records.resolve', { recordId, clientRecordId, resolved, actor }),
     getMedia: (mediaId, actor) => ipcRenderer.invoke('fieldInbox.media.get', { mediaId, actor })
   },
+  cloudSync: {
+    getConfiguration: (actor) => ipcRenderer.invoke('cloudSync.configuration.get', { actor }),
+    saveConfiguration: (configuration, actor) => ipcRenderer.invoke('cloudSync.configuration.save', { configuration, actor }),
+    runNow: (actor) => ipcRenderer.invoke('cloudSync.runNow', { actor })
+  },
   users: {
     list: (actor) => ipcRenderer.invoke('users.list', { actor }),
     get: (id, actor) => ipcRenderer.invoke('users.get', { id, actor }),

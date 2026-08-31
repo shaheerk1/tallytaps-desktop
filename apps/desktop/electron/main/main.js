@@ -131,6 +131,7 @@ app.on('ready', async () => {
     Menu.setApplicationMenu(null);
     services = await createServiceContainer();
     registerIpcHandlers(services);
+    services.cloudSyncScheduler.start();
 
     await createWindow();
   } catch (err) {
@@ -143,6 +144,10 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
   }
+});
+
+app.on('before-quit', () => {
+  services?.cloudSyncScheduler?.stop();
 });
 
 app.on('activate', () => {
