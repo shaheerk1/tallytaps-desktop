@@ -1070,6 +1070,8 @@ function registerIpcHandlers(services) {
     return result;
   }, { authorize: requireSettingsManage });
   wrapIpcHandler('cloudSync.runNow', async () => services.cloudSyncService.runNow({ force: true }), { authorize: requireSettingsManage });
+  wrapIpcHandler('cloudSync.mobileBills.list', async (payload) => services.cloudSyncService.listMobileBills(payload || {}), { authorize: requireFieldInboxView });
+  wrapIpcHandler('cloudSync.mobileBills.status', async (payload) => services.cloudSyncService.setMobileBillStatus(payload || {}), { authorize: requireFieldInboxView });
 }
 
 module.exports = {

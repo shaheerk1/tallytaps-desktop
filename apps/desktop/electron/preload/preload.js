@@ -186,7 +186,9 @@ contextBridge.exposeInMainWorld('posApi', {
   cloudSync: {
     getConfiguration: (actor) => ipcRenderer.invoke('cloudSync.configuration.get', { actor }),
     saveConfiguration: (configuration, actor) => ipcRenderer.invoke('cloudSync.configuration.save', { configuration, actor }),
-    runNow: (actor) => ipcRenderer.invoke('cloudSync.runNow', { actor })
+    runNow: (actor) => ipcRenderer.invoke('cloudSync.runNow', { actor }),
+    listMobileBills: (since, until, actor) => ipcRenderer.invoke('cloudSync.mobileBills.list', { since, until, actor }),
+    setMobileBillStatus: (billId, status, actor) => ipcRenderer.invoke('cloudSync.mobileBills.status', { billId, status, actor })
   },
   users: {
     list: (actor) => ipcRenderer.invoke('users.list', { actor }),

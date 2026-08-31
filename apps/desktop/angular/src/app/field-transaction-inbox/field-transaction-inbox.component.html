@@ -18,7 +18,7 @@
   <section class="inbox-toolbar">
     <div class="filter-row">
       <label class="date-filter">Billing date
-        <input type="date" [(ngModel)]="selectedDate" (change)="loadRecords()" [disabled]="loading" />
+        <input type="date" [(ngModel)]="selectedDate" (change)="refreshAll()" [disabled]="loading || billsLoading" />
       </label>
       <label>Device
         <select [(ngModel)]="deviceFilter">
@@ -58,8 +58,8 @@
     <div class="toolbar-actions">
       <span *ngIf="refreshedAt">Fetched {{ displayTime(refreshedAt) }} SLST / filters apply locally</span>
       <button type="button" class="button-quiet" (click)="clearFilters()">Clear filters</button>
-      <button type="button" class="button-primary" (click)="loadRecords()" [disabled]="loading">
-        {{ loading ? 'Loading...' : 'Refresh from server' }}
+      <button type="button" class="button-primary" (click)="refreshAll()" [disabled]="loading || billsLoading">
+        {{ loading || billsLoading ? 'Loading...' : 'Refresh from server' }}
       </button>
     </div>
   </section>
@@ -95,6 +95,30 @@
       </table>
     </div>
     <div class="empty-state" *ngIf="!loading && !filteredRecords.length">{{ records.length ? 'No records match the current local filters.' : 'No field transactions were returned for this date.' }}</div>
+  </section>
+
+  <section class="ledger-card mobile-bill-card">
+    <header>
+      <div><h2>Mobile bills</h2><p>Standalone field sales routed to this POS. Printing uses this terminal's current receipt header and footer.</p></div>
+      <span>{{ mobileBills.length }}</span>
+    </header>
+    <div class="status-message error" *ngIf="billError"><span>{{ billError }}</span></div>
+    <div class="ledger-scroll" *ngIf="mobileBills.length">
+      <table>
+        <thead><tr><th>Time</th><th>Field device</th><th>Customer</th><th>Items</th><th class="number">Total</th><th>Payment</th><th>Status</th><th>Action</th></tr></thead>
+        <tbody><tr *ngFor="let bill of mobileBills" (click)="openBill(bill)">
+          <td class="time-cell"><b>{{ displayTime(bill.createdAt) }}</b><small>SLST</small></td>
+          <td><b>{{ bill.device.nickname || bill.device.name || 'Field device' }}</b><small>{{ bill.deliveryScope === 'all' ? 'Sent to all POS systems' : 'Sent to this POS' }}</small></td>
+          <td><b>{{ bill.customerName || 'Walk-in customer' }}</b><small>{{ bill.customerMobile || '-' }}</small></td>
+          <td><b>{{ bill.lines.length }}</b><small>{{ bill.lines.length ? bill.lines[0].description : '-' }}</small></td>
+          <td class="number amount-cell">{{ bill.grandTotal | number:'1.2-2' }}</td>
+          <td>{{ bill.payments.length ? (bill.payments[0].method | titlecase) : 'Unpaid' }}</td>
+          <td><span class="status-pill" [class.resolved]="bill.deliveryStatus === 'printed'">{{ bill.deliveryStatus | titlecase }}</span></td>
+          <td><button type="button" class="row-action" (click)="openBill(bill); $event.stopPropagation()">Details</button><button type="button" class="row-action resolve" (click)="printMobileBill(bill); $event.stopPropagation()" [disabled]="billActionId === bill.id">{{ billActionId === bill.id ? 'Printing...' : 'Print bill' }}</button></td>
+        </tr></tbody>
+      </table>
+    </div>
+    <div class="empty-state" *ngIf="!billsLoading && !mobileBills.length && !billError">No mobile bills were routed to this POS for this date.</div>
   </section>
 </main>
 
@@ -137,6 +161,17 @@
       </div>
       <ng-template #noMedia><p class="no-media">No images or audio were attached.</p></ng-template>
     </section>
+  </div>
+</aside>
+
+<div class="drawer-backdrop" *ngIf="selectedBill" (click)="closeBill()"></div>
+<aside class="detail-drawer" *ngIf="selectedBill as bill">
+  <header><div><span>Mobile bill</span><h2>{{ bill.customerName || 'Walk-in customer' }}</h2></div><button type="button" class="close-button" (click)="closeBill()">×</button></header>
+  <div class="drawer-body">
+    <section class="detail-status" [class.resolved]="bill.deliveryStatus === 'printed'"><div><b>{{ bill.deliveryStatus | titlecase }}</b><small>Created {{ displayDateTime(bill.createdAt) }} by {{ bill.device.nickname || bill.device.name || 'field device' }}.</small></div><button type="button" (click)="printMobileBill(bill)" [disabled]="billActionId === bill.id">{{ billActionId === bill.id ? 'Printing...' : 'Print with shop header' }}</button></section>
+    <section class="detail-grid"><div><span>Grand total</span><b>{{ bill.grandTotal | number:'1.2-2' }}</b></div><div><span>Paid</span><b>{{ bill.paidTotal | number:'1.2-2' }}</b></div><div><span>Balance</span><b>{{ bill.balance | number:'1.2-2' }}</b></div><div><span>Destination</span><b>{{ bill.deliveryScope === 'all' ? 'All POS systems' : 'Selected POS' }}</b></div></section>
+    <section class="detail-section"><h3>Items <span>{{ bill.lines.length }}</span></h3><div class="device-card" *ngFor="let line of bill.lines"><b>{{ line.description }}</b><span>{{ line.pricingBasis === 'kilos' ? line.kilos + ' kg' : line.quantity + ' qty' }} × {{ line.unitPrice | number:'1.2-2' }}</span><small>Line total {{ line.lineTotal | number:'1.2-2' }}<ng-container *ngIf="line.bagChargeTotal || line.wageChargeTotal"> · Charges {{ line.bagChargeTotal + line.wageChargeTotal | number:'1.2-2' }}</ng-container></small></div></section>
+    <section class="detail-section"><h3>Customer / note</h3><p>{{ bill.customerName || 'Walk-in customer' }}<ng-container *ngIf="bill.customerMobile"> · {{ bill.customerMobile }}</ng-container></p><p>{{ bill.note || 'No note.' }}</p></section>
   </div>
 </aside>
 

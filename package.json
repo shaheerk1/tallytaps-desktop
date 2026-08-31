@@ -1,6 +1,6 @@
 {
   "name": "pos-platform",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Modular Angular + Electron POS platform foundation",
   "main": "apps/desktop/electron/main/main.js",
   "private": true,

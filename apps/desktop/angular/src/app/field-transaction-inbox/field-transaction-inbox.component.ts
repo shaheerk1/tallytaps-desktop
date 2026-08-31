@@ -1,6 +1,7 @@
 import { Component, HostListener, OnInit } from '@angular/core';
 import { SessionService } from '../services/session.service';
-import type { FieldInboxMedia, FieldInboxRecord, FieldInboxRecordList } from '../../../../../../packages/shared/ipc/pos-api';
+import { PrintingService } from '../services/printing.service';
+import type { FieldInboxMedia, FieldInboxRecord, FieldInboxRecordList, MobileInboxBill, PrintDocument, ReceiptPrintSettings } from '../../../../../../packages/shared/ipc/pos-api';
 
 type StatusFilter = 'all' | 'open' | 'resolved';
 
@@ -31,6 +32,11 @@ export class FieldTransactionInboxComponent implements OnInit {
   mediaLoading = new Set<string>();
   mediaErrors = new Map<string, string>();
   fullSizeImage: FieldInboxMedia | null = null;
+  mobileBills: MobileInboxBill[] = [];
+  selectedBill: MobileInboxBill | null = null;
+  billsLoading = false;
+  billActionId = '';
+  billError = '';
 
   private readonly sriLankaDateTime = new Intl.DateTimeFormat('en-LK', {
     timeZone: 'Asia/Colombo',
@@ -43,11 +49,55 @@ export class FieldTransactionInboxComponent implements OnInit {
     hourCycle: 'h23'
   });
 
-  constructor(private session: SessionService) {}
+  constructor(private session: SessionService, private printing: PrintingService) {}
 
   async ngOnInit(): Promise<void> {
     this.selectedDate = this.session.getBillingDate() || this.todayInSriLanka();
-    await this.loadRecords();
+    await Promise.all([this.loadRecords(), this.loadMobileBills()]);
+  }
+
+  async loadMobileBills(): Promise<void> {
+    if (!window.posApi || !this.selectedDate || this.billsLoading) return;
+    this.billsLoading = true;
+    this.billError = '';
+    try {
+      const { since, until } = this.mobileBillDayRange(this.selectedDate);
+      const result = await window.posApi.cloudSync.listMobileBills(since, until, this.session.getActor());
+      if (!result.success) throw new Error(result.error);
+      this.mobileBills = [...result.data.bills].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+    } catch (error) {
+      this.billError = error instanceof Error ? error.message : 'Could not load mobile bills.';
+      this.mobileBills = [];
+    } finally { this.billsLoading = false; }
+  }
+
+  async refreshAll(): Promise<void> {
+    await Promise.all([this.loadRecords(), this.loadMobileBills()]);
+  }
+
+  async openBill(bill: MobileInboxBill): Promise<void> {
+    this.selectedBill = bill;
+    if (bill.deliveryStatus === 'pending' && window.posApi) {
+      const result = await window.posApi.cloudSync.setMobileBillStatus(bill.id, 'viewed', this.session.getActor());
+      if (result.success) bill.deliveryStatus = 'viewed';
+    }
+  }
+
+  closeBill(): void { this.selectedBill = null; }
+
+  async printMobileBill(bill: MobileInboxBill): Promise<void> {
+    if (!window.posApi || this.billActionId) return;
+    this.billActionId = bill.id; this.error = '';
+    try {
+      const settings = await window.posApi.settings.getReceipt();
+      if (!settings.success) throw new Error(settings.error);
+      const printed = await this.printing.printDocument(this.mobileBillDocument(bill, settings.data));
+      if (!printed.success) throw new Error(printed.error || 'Print failed.');
+      const status = await window.posApi.cloudSync.setMobileBillStatus(bill.id, 'printed', this.session.getActor());
+      if (!status.success) throw new Error(status.error);
+      bill.deliveryStatus = 'printed';
+    } catch (error) { this.error = error instanceof Error ? error.message : 'Could not print the mobile bill.'; }
+    finally { this.billActionId = ''; }
   }
 
   get canResolve(): boolean {
@@ -171,6 +221,7 @@ export class FieldTransactionInboxComponent implements OnInit {
       return;
     }
     if (this.selectedRecord) this.closeDetails();
+    else if (this.selectedBill) this.closeBill();
   }
 
   async toggleResolved(record: FieldInboxRecord, event?: Event): Promise<void> {
@@ -305,5 +356,55 @@ export class FieldTransactionInboxComponent implements OnInit {
     }).formatToParts(new Date());
     const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
     return `${value['year']}-${value['month']}-${value['day']}`;
+  }
+
+  private mobileBillDayRange(date: string): { since: string; until: string } {
+    const start = new Date(`${date}T00:00:00+05:30`);
+    return { since: start.toISOString(), until: new Date(start.getTime() + 86400000).toISOString() };
+  }
+
+  private mobileBillDocument(bill: MobileInboxBill, cfg: ReceiptPrintSettings): PrintDocument {
+    const money = (value: number) => `${cfg.currencySymbol} ${Number(value || 0).toFixed(2)}`;
+    return {
+      documentTitle: 'Field Sales Invoice',
+      brand: { name: cfg.storeName, tagline: cfg.tagline, addressLines: cfg.addressLines, phone: cfg.phone },
+      logoDataUrl: cfg.logoDataUrl || undefined,
+      secondaryHeaderLines: cfg.headers.map((text) => ({ text, align: 'center' })),
+      meta: [
+        { label: 'Receipt', value: bill.clientBillId.slice(0, 12).toUpperCase() },
+        { label: 'Date', value: this.displayDateTime(bill.createdAt) },
+        { label: 'Source', value: bill.device.nickname || bill.device.name || 'Field device' },
+        ...(bill.customerName ? [{ label: 'Customer', value: bill.customerName }] : []),
+        ...(bill.customerMobile ? [{ label: 'Phone', value: bill.customerMobile }] : [])
+      ],
+      itemLayout: 'invoice-measures',
+      receiptLanguage: cfg.language,
+      rasterHeaderLayout: 'billing',
+      items: bill.lines.map((line) => ({
+        description: `${line.sku ? `${line.sku} ` : ''}${line.description}`,
+        qty: line.pricingBasis === 'kilos' ? `${line.kilos || 0}` : `${line.quantity}`,
+        measure: {
+          qty: `${line.quantity}`,
+          ...(line.pricingBasis === 'kilos' ? { kilos: `${line.kilos || 0}` } : {}),
+          rate: money(line.unitPrice)
+        },
+        amount: money(line.lineTotal),
+        extras: [
+          ...(line.bagChargeTotal ? [{ label: 'Bag', value: money(line.bagChargeTotal) }] : []),
+          ...(line.wageChargeTotal ? [{ label: 'Wage', value: money(line.wageChargeTotal) }] : [])
+        ]
+      })),
+      totals: [
+        { label: 'Subtotal', value: money(bill.subtotal) },
+        ...(bill.bagChargeTotal ? [{ label: 'Bag Charges', value: money(bill.bagChargeTotal) }] : []),
+        ...(bill.wageChargeTotal ? [{ label: 'Wage Charges', value: money(bill.wageChargeTotal) }] : []),
+        ...(bill.discountTotal ? [{ label: 'Discount', value: `-${money(bill.discountTotal)}` }] : []),
+        { label: 'TOTAL', value: money(bill.grandTotal), bold: true },
+        ...bill.payments.map((payment) => ({ label: payment.method.toUpperCase(), value: money(payment.amount) })),
+        ...(bill.balance ? [{ label: 'Pending Balance', value: money(bill.balance) }] : [])
+      ],
+      preLines: bill.note ? [{ text: bill.note, align: 'left' }] : [],
+      footerLines: cfg.footers
+    };
   }
 }

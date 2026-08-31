@@ -37,6 +37,18 @@ export type CloudSyncConfiguration = {
   apiBaseUrl: string;
 };
 
+export type MobileInboxBill = {
+  id: string; clientBillId: string; catalogPosNodeId: string; deliveryScope: 'all' | 'selected';
+  deliveryStatus: 'pending' | 'viewed' | 'printed'; customerName: string | null; customerMobile: string | null;
+  note: string | null; subtotal: number; discountTotal: number; taxTotal: number; bagChargeTotal: number;
+  wageChargeTotal: number; grandTotal: number; paidTotal: number; balance: number; createdAt: string; receivedAt: string;
+  device: { nickname: string | null; name: string | null };
+  lines: Array<{ lineNo: number; sourceProductKey: string | null; sku: string | null; barcode: string | null;
+    description: string; quantity: number; kilos: number | null; pricingBasis: 'qty' | 'kilos'; unitPrice: number;
+    discount: number; tax: number; merchandiseTotal: number; bagChargeTotal: number; wageChargeTotal: number; lineTotal: number; attributes: Record<string, unknown> }>;
+  payments: Array<{ paymentNo: number; method: string; amount: number; reference: string | null }>;
+};
+
 export type FieldInboxMedia = {
   id: string;
   type: string;
@@ -1561,6 +1573,8 @@ export interface PosApi {
       actor?: ActorContext | null
     ) => Promise<IpcResult<CloudSyncConfiguration>>;
     runNow: (actor?: ActorContext | null) => Promise<IpcResult<CloudSyncConfiguration & { uploaded?: number; catalogPublished?: boolean }>>;
+    listMobileBills: (since: string, until: string, actor?: ActorContext | null) => Promise<IpcResult<{ nodeId: string; cursor: string; bills: MobileInboxBill[] }>>;
+    setMobileBillStatus: (billId: string, status: 'viewed' | 'printed', actor?: ActorContext | null) => Promise<IpcResult<{ status: string }>>;
   };
   users: {
     list: (actor?: { id: string; permissions: string[] } | null) => Promise<IpcResult<ManageUser[]>>;

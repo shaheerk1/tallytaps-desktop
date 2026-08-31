@@ -30,6 +30,28 @@ function createCloudSyncService({ repository, secretProtector, fetchImpl = globa
     return running;
   }
 
+  async function listMobileBills({ since, until }) {
+    const config = await repository.ensureConfiguration();
+    if (!config.node_id || !config.node_key_ciphertext) throw new Error('Run POS Cloud Backup once to register this POS inbox.');
+    const query = new URLSearchParams({ since, ...(until ? { until } : {}) });
+    const response = await request(`${apiBaseUrl}/pos-sync/mobile-bills?${query}`, { method: 'GET', headers: nodeHeaders(config) }, 20_000);
+    const body = await responseJson(response);
+    if (!response.ok || !Array.isArray(body.bills)) throw new Error(apiError(body, response.status, 'Could not load mobile bills.'));
+    return body;
+  }
+
+  async function setMobileBillStatus({ billId, status }) {
+    const config = await repository.ensureConfiguration();
+    if (!config.node_id || !config.node_key_ciphertext) throw new Error('This POS inbox is not registered.');
+    if (!['viewed', 'printed'].includes(status)) throw new Error('Invalid mobile bill status.');
+    const response = await request(`${apiBaseUrl}/pos-sync/mobile-bills/${encodeURIComponent(String(billId))}/status`, {
+      method: 'POST', headers: nodeHeaders(config), body: JSON.stringify({ status }),
+    }, 15_000);
+    const body = await responseJson(response);
+    if (!response.ok) throw new Error(apiError(body, response.status, 'Could not update mobile bill status.'));
+    return body;
+  }
+
   async function execute(force) {
     let config = await repository.ensureConfiguration();
     if (!force && !config.enabled) return { skipped: true, reason: 'disabled', ...(await getConfiguration()) };
@@ -127,7 +149,7 @@ function createCloudSyncService({ repository, secretProtector, fetchImpl = globa
     finally { clearTimeout(timer); }
   }
 
-  return { getConfiguration,saveConfiguration,runNow };
+  return { getConfiguration,saveConfiguration,runNow,listMobileBills,setMobileBillStatus };
 }
 
 function snapshot(config, queue = {}) {
