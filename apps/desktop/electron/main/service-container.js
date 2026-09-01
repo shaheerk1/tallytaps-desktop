@@ -17,6 +17,7 @@ const { createFieldInboxRepository } = require('../../../../packages/database/re
 const { createCloudSyncRepository } = require('../../../../packages/database/repositories/cloud-sync.repository');
 const { createDocumentSequenceRepository } = require('../../../../packages/database/repositories/document-sequence.repository');
 const { createBusinessDayRepository } = require('../../../../packages/database/repositories/business-day.repository');
+const { createInventoryLedgerRepository } = require('../../../../packages/database/repositories/inventory-ledger.repository');
 const { createSupplierSaleStatementRepository } = require('../../../../packages/database/repositories/supplier-sale-statement.repository');
 const { seedAdminUser } = require('../../../../packages/database/seeders/seed-admin-user');
 const { seedDefaultSettings } = require('../../../../packages/database/seeders/seed-default-settings');
@@ -78,13 +79,14 @@ async function createServiceContainer() {
   const settingsRepository = createSettingsRepository({ database });
   const documentSequenceRepository = createDocumentSequenceRepository({ database });
   const businessDayRepository = createBusinessDayRepository({ database });
+  const inventoryLedgerRepository = createInventoryLedgerRepository({ database });
   const issuedChequeRepository = createIssuedChequeRepository({ database, documentSequenceRepository, businessDayRepository });
-  const catalogRepository = createCatalogRepository({ database, documentSequenceRepository, businessDayRepository, issuedChequeRepository });
+  const catalogRepository = createCatalogRepository({ database, documentSequenceRepository, businessDayRepository, issuedChequeRepository, inventoryLedgerRepository });
   const partyRepository = createPartyRepository({ database, businessDayRepository });
   const paymentModeRepository = createPaymentModeRepository({ database });
-  const billingRepository = createBillingRepository({ database, businessDayRepository, documentSequenceRepository });
+  const billingRepository = createBillingRepository({ database, businessDayRepository, documentSequenceRepository, inventoryLedgerRepository });
   const liveBillRepository = createLiveBillRepository({ database, documentSequenceRepository, businessDayRepository });
-  const refundRepository = createRefundRepository({ database, documentSequenceRepository, businessDayRepository });
+  const refundRepository = createRefundRepository({ database, documentSequenceRepository, businessDayRepository, inventoryLedgerRepository });
   const cashManagementRepository = createCashManagementRepository({ database, documentSequenceRepository, businessDayRepository });
   const authRepository = createAuthRepository({ database });
   const workstationRepository = createWorkstationRepository({ database, businessDayRepository });
@@ -179,6 +181,7 @@ async function createServiceContainer() {
     cloudSyncService,
     cloudSyncScheduler,
     businessDayService,
+    inventoryLedgerRepository,
     paymentModes,
     eventBus,
     coreHealthService: createCoreHealthService(),

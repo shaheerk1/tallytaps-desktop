@@ -289,6 +289,8 @@ function createBillingEngineService({
       description: item.description,
       qty,
       kilos: Number.isFinite(kilos) && kilos > 0 ? kilos : null,
+      handlingUom: product.handling_uom || 'qty',
+      baseUom: product.base_uom || null,
       requiresKilos,
       pricingBasis,
       quantityStep: Number(product.quantity_step || 1),

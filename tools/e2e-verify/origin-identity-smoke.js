@@ -9,6 +9,7 @@ const { createPartyRepository } = require('../../packages/database/repositories/
 const { createIssuedChequeRepository } = require('../../packages/database/repositories/issued-cheque.repository');
 const { createBusinessDayRepository } = require('../../packages/database/repositories/business-day.repository');
 const { createSupplierSaleStatementRepository } = require('../../packages/database/repositories/supplier-sale-statement.repository');
+const { createInventoryLedgerRepository } = require('../../packages/database/repositories/inventory-ledger.repository');
 
 async function main() {
   const realDatabase = createDatabase();
@@ -25,12 +26,13 @@ async function main() {
       const database = { withConnection: async (work) => work(txConnection) };
       const sequences = createDocumentSequenceRepository({ database });
       const businessDays = createBusinessDayRepository({ database });
+      const inventoryLedger = createInventoryLedgerRepository({ database });
       const issuedCheques = createIssuedChequeRepository({ database, documentSequenceRepository: sequences, businessDayRepository: businessDays });
       const liveBills = createLiveBillRepository({ database, documentSequenceRepository: sequences, businessDayRepository: businessDays });
-      const billing = createBillingRepository({ database, businessDayRepository: businessDays, documentSequenceRepository: sequences });
-      const refunds = createRefundRepository({ database, documentSequenceRepository: sequences, businessDayRepository: businessDays });
+      const billing = createBillingRepository({ database, businessDayRepository: businessDays, documentSequenceRepository: sequences, inventoryLedgerRepository: inventoryLedger });
+      const refunds = createRefundRepository({ database, documentSequenceRepository: sequences, businessDayRepository: businessDays, inventoryLedgerRepository: inventoryLedger });
       const cash = createCashManagementRepository({ database, documentSequenceRepository: sequences, businessDayRepository: businessDays });
-      const catalog = createCatalogRepository({ database, documentSequenceRepository: sequences, businessDayRepository: businessDays, issuedChequeRepository: issuedCheques });
+      const catalog = createCatalogRepository({ database, documentSequenceRepository: sequences, businessDayRepository: businessDays, issuedChequeRepository: issuedCheques, inventoryLedgerRepository: inventoryLedger });
       const parties = createPartyRepository({ database, businessDayRepository: businessDays });
       const pattiyals = createSupplierSaleStatementRepository({ database, documentSequenceRepository: sequences, businessDayRepository: businessDays });
 
@@ -47,7 +49,7 @@ async function main() {
         const workstation = context ? { id: context.id, location_code: context.location_code, machine_code: context.machine_code } : null;
         const session = context ? { id: context.session_id, user_id: context.user_id, billing_date: context.billing_date } : null;
         const [[supplier]] = await connection.execute('SELECT id, supplier_code FROM suppliers WHERE is_active = 1 ORDER BY id LIMIT 1');
-        const [[product]] = await connection.execute('SELECT id, sku, name, unit_price FROM products WHERE is_active = 1 ORDER BY id LIMIT 1');
+        const [[product]] = await connection.execute('SELECT id, sku, name, unit_price, dual_uom_enabled, handling_uom, base_uom FROM products WHERE is_active = 1 ORDER BY id LIMIT 1');
         if (!workstation || !session || !supplier || !product) throw new Error('Smoke test requires a workstation session, supplier, and active product.');
         const locCode = workstation.location_code;
         const macCode = workstation.machine_code;
@@ -72,14 +74,14 @@ async function main() {
 
         const draft = await catalog.saveGoodsReceiptDraft({
           supplierId: supplier.id, businessDate: txnDate, locCode, macCode, userId,
-          lines: [{ productId: product.id, packageQty: 1, packageUnit: 'bags', receivedKilos: null, unitCost: 1 }]
+          lines: [{ productId: product.id, packageQty: 1, packageUnit: product.handling_uom, receivedKilos: product.dual_uom_enabled ? 1 : null, expectedBasePerHandling: product.dual_uom_enabled ? 1 : null, unitCost: 1 }]
         });
         await catalog.finalizeGoodsReceiptDraft({ goodsReceiptId: draft.id, userId });
         const correction = await catalog.createGoodsReceiptCorrection({ goodsReceiptId: draft.id, reason: 'Origin smoke correction', locCode, macCode, businessDate: txnDate, userId });
         await catalog.saveGoodsReceiptDraft({
           goodsReceiptId: correction.id, supplierId: supplier.id, businessDate: txnDate, locCode, macCode,
           documentType: 'correction', correctsGoodsReceiptId: draft.id, correctionReason: 'Origin smoke correction', userId,
-          lines: [{ productId: product.id, packageQty: 2, packageUnit: 'bags', receivedKilos: null, unitCost: 1 }]
+          lines: [{ productId: product.id, packageQty: 2, packageUnit: product.handling_uom, receivedKilos: product.dual_uom_enabled ? 2 : null, expectedBasePerHandling: product.dual_uom_enabled ? 1 : null, unitCost: 1 }]
         });
         await catalog.finalizeGoodsReceiptDraft({ goodsReceiptId: correction.id, userId });
         await catalog.adjustStock({ productId: product.id, quantity: 1, businessDate: txnDate, locCode, macCode, reason: 'Origin smoke test', userId });
@@ -106,10 +108,10 @@ async function main() {
           throw new Error('Returned issued cheque did not reverse its linked supplier payment.');
         }
 
-        const [[lot]] = await connection.execute('SELECT id, remaining_quantity, remaining_kilos FROM inventory_lots WHERE product_id = ? ORDER BY id DESC LIMIT 1', [product.id]);
+        const [[lot]] = await connection.execute('SELECT id, remaining_handling_quantity, remaining_base_quantity FROM inventory_lots WHERE product_id = ? ORDER BY id DESC LIMIT 1', [product.id]);
         await catalog.finalizeStockCount({
           businessDate: txnDate, locCode, macCode, reason: 'Origin smoke test', userId,
-          lines: [{ inventoryLotId: lot.id, countedQuantity: Number(lot.remaining_quantity), countedKilos: lot.remaining_kilos }]
+          lines: [{ inventoryLotId: lot.id, countedQuantity: Number(lot.remaining_handling_quantity), countedKilos: lot.remaining_base_quantity }]
         });
 
         await connection.execute("UPDATE cash_shifts SET status = 'closed' WHERE workstation_id = ? AND status IN ('open','blind_closed')", [workstation.id]);
@@ -126,6 +128,7 @@ async function main() {
         await liveBills.addItem({
           sessionId: session.id, receiptNo, locCode, macCode, txnDate, userId,
           productId: product.id, supplierCode: supplier.supplier_code || '', itemCode: product.sku, description: product.name, qty: 1,
+          kilos: product.dual_uom_enabled ? 1 : null, handlingUom: product.handling_uom, baseUom: product.base_uom,
           unitPrice: saleAmount, discount: 0, merchandiseTotal: saleAmount, total: saleAmount
         });
         await liveBills.updateBillCustomer({
@@ -168,7 +171,7 @@ async function main() {
           sessionId: session.id, receiptNo: dishonourReceiptNo, locCode, macCode, txnDate, userId,
           customerCode: sharedMarketCode, customerAccountId: firstCustomer.customer.id,
           productId: product.id, supplierCode: supplier.supplier_code || '', itemCode: product.sku,
-          description: product.name, qty: 1, unitPrice: saleAmount, discount: 0,
+          description: product.name, qty: 1, kilos: product.dual_uom_enabled ? 1 : null, handlingUom: product.handling_uom, baseUom: product.base_uom, unitPrice: saleAmount, discount: 0,
           merchandiseTotal: saleAmount, total: saleAmount
         });
         const dishonourSale = await billing.finalizeInvoice({

@@ -13,6 +13,9 @@ interface Product {
   name: string;
   unit_price: number;
   stock_qty: number;
+  handling_uom?: string;
+  base_uom?: string | null;
+  dual_uom_enabled?: number | boolean;
   requires_kilos?: number | boolean;
   pricing_basis?: 'qty' | 'kilos';
   quantity_step?: number;
@@ -1381,6 +1384,8 @@ export class BillingComponent implements OnInit, OnDestroy {
   canOverrideLinePrice(item: BillItem): boolean { return this.isProductPriceAdjustable(this.products.find((entry) => entry.id === item.productId)); }
   get isSelectedProductPriceChangeable(): boolean { return this.isProductPriceAdjustable(this.products.find((entry) => entry.id === this.selectedProductId)); }
   get selectedProductRequiresKilos(): boolean { return truthyFlag(this.products.find((product) => product.id === this.selectedProductId)?.requires_kilos); }
+  get selectedHandlingUom(): string { return this.products.find((product) => product.id === this.selectedProductId)?.handling_uom || 'Qty'; }
+  get selectedBaseUom(): string { return this.products.find((product) => product.id === this.selectedProductId)?.base_uom || 'Measured'; }
   get showKilosField(): boolean { return this.selectedProductId === null || this.selectedProductRequiresKilos; }
   get selectedProductQuantityStep(): number { return Math.max(Number(this.products.find((product) => product.id === this.selectedProductId)?.quantity_step || 1), 0.001); }
   async updateItemPrice(index: number, newPrice: number): Promise<void> { const item = this.billItems[index]; if (!Number.isFinite(newPrice) || newPrice < 0 || !this.canOverrideLinePrice(item)) return; const previous = item.unitPrice; item.unitPrice = newPrice; if (!await this.persistItemAndRefresh(index, item.metadata || {})) { item.unitPrice = previous; this.lineError = 'Price change was not accepted by this item policy.'; } }

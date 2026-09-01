@@ -34,7 +34,7 @@ export class ReportsComponent implements OnInit {
   get filteredItemOptions(): SalesItemOption[] { const term = this.itemPickerSearch.trim().toLowerCase(); return term ? this.itemOptions.filter((item) => `${item.itemCode} ${item.description}`.toLowerCase().includes(term)) : this.itemOptions; }
   get itemPickerLabel(): string { return this.allItemsSelected ? `All items (${this.itemOptions.length})` : `${this.selectedItemCodes.length} item${this.selectedItemCodes.length === 1 ? '' : 's'} selected`; }
   get totalSupplierDue(): number { return this.suppliers.reduce((sum, row) => sum + Number(row.balance || 0), 0); }
-  get totalInventoryMovement(): number { return this.inventory.reduce((sum, row) => sum + Number(row.net_quantity || 0), 0); }
+  get totalInventoryMovement(): number { return this.inventory.length; }
 
   async ngOnInit(): Promise<void> {
     const billingDate = String(this.session.getWorkstationSession()?.billingDate || '').slice(0, 10);

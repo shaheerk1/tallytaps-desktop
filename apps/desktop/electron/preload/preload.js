@@ -105,7 +105,7 @@ contextBridge.exposeInMainWorld('posApi', {
     ,getSupplierSettlement: (settlementId, actor) => ipcRenderer.invoke('supply.settlements.get', { settlementId, actor })
     ,listSupplierChargeTypes: (actor) => ipcRenderer.invoke('supply.charges.listTypes', { actor })
     ,addSupplierCharge: (charge, actor) => ipcRenderer.invoke('supply.charges.add', { charge, actor })
-    ,listInventoryLots: (productId, actor) => ipcRenderer.invoke('inventory.lots.list', { productId, actor })
+    ,listInventoryLots: (productId, locCode, actor) => ipcRenderer.invoke('inventory.lots.list', { productId, locCode, actor })
     ,finalizeStockCount: (count, actor) => ipcRenderer.invoke('inventory.counts.finalize', { count, actor })
   },
   pattiyals: {

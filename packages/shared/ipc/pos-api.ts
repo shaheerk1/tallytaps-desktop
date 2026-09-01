@@ -65,6 +65,9 @@ export type FieldInboxRecord = {
   item: string | null;
   qty: number | null;
   unit: string | null;
+  handling_uom: string;
+  base_uom: string | null;
+  dual_uom_enabled: number | boolean;
   note: string | null;
   createdAt: string | null;
   receivedAt: string | null;
@@ -683,6 +686,8 @@ export type BillItem = {
   description: string;
   qty: number;
   kilos?: number | null;
+  handlingUom?: string;
+  baseUom?: string | null;
   requiresKilos?: number | boolean;
   pricingBasis?: 'qty' | 'kilos';
   quantityStep?: number;
@@ -999,6 +1004,8 @@ export type CatalogProduct = {
   maximum_sell_price: number | null;
   price_override_reason_required: number | boolean;
   stock_qty: number;
+  stock_handling_qty: number;
+  stock_base_qty: number;
   is_active: number | boolean;
   metadata: Record<string, unknown> | null;
   created_at: string;
@@ -1013,6 +1020,9 @@ export type CatalogProductInput = {
   barcode?: string | null;
   category?: string | null;
   unit?: string | null;
+  handlingUom?: string;
+  baseUom?: string | null;
+  dualUomEnabled?: boolean;
   requiresKilos?: boolean;
   pricingBasis?: 'qty' | 'kilos';
   quantityStep?: number;

@@ -1,10 +1,13 @@
-function createRefundRepository({ database, documentSequenceRepository, businessDayRepository }) {
+const { createInventoryLedgerRepository } = require('./inventory-ledger.repository');
+
+function createRefundRepository({ database, documentSequenceRepository, businessDayRepository, inventoryLedgerRepository }) {
   if (!database) {
     throw new Error('Refund repository requires a database instance.');
   }
   if (!documentSequenceRepository) {
     throw new Error('Refund repository requires the document sequence repository.');
   }
+  inventoryLedgerRepository = inventoryLedgerRepository || createInventoryLedgerRepository({ database });
 
   const toNumber = (value) => Number(value || 0);
   const toMoney = (value) => Math.round(toNumber(value) * 100) / 100;
@@ -314,17 +317,25 @@ function createRefundRepository({ database, documentSequenceRepository, business
         'SELECT COALESCE(MAX(line_no), 0) AS max_no FROM refund_draft_items WHERE refund_draft_id = ?', [draftId]
       );
       const lineNo = Number(existingLine[0]?.line_no || 0) || Number(lineNumbers[0].max_no || 0) + 1;
+      const [sourceLines] = await connection.execute(
+        'SELECT handling_uom_snapshot, base_uom_snapshot FROM invoice_items WHERE id = ? LIMIT 1',
+        [item.sourceInvoiceItemId]
+      );
+      const sourceUom = sourceLines[0] || {};
       await connection.execute(
         `INSERT INTO refund_draft_items (
            refund_draft_id, loc_code, mac_code, txn_date, refund_no, line_no,
            source_invoice_item_id, product_id, supplier_code, item_code, description,
-           source_quantity, source_kilos, return_quantity, return_kilos,
+           source_quantity, source_handling_quantity, source_kilos, source_base_quantity,
+           return_quantity, return_handling_quantity, return_kilos, return_base_quantity,
+           handling_uom_snapshot, base_uom_snapshot,
            unit_price, source_merchandise_total, source_bag_charge_total, source_wage_charge_total,
            discount, tax, merchandise_total, bag_charge_mode, bag_charge_total, wage_charge_mode, wage_charge_total,
            total, stock_disposition, metadata
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON))
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON))
          ON DUPLICATE KEY UPDATE
-           return_quantity = VALUES(return_quantity), return_kilos = VALUES(return_kilos),
+           return_quantity = VALUES(return_quantity), return_handling_quantity = VALUES(return_handling_quantity),
+           return_kilos = VALUES(return_kilos), return_base_quantity = VALUES(return_base_quantity),
            discount = VALUES(discount), tax = VALUES(tax), merchandise_total = VALUES(merchandise_total),
            bag_charge_mode = VALUES(bag_charge_mode), bag_charge_total = VALUES(bag_charge_total),
            wage_charge_mode = VALUES(wage_charge_mode), wage_charge_total = VALUES(wage_charge_total), total = VALUES(total),
@@ -332,7 +343,9 @@ function createRefundRepository({ database, documentSequenceRepository, business
         [
           draftId, draft[0].loc_code, draft[0].mac_code, draft[0].txn_date, draft[0].refund_no, lineNo,
           item.sourceInvoiceItemId, item.productId || null, item.supplierCode || '', item.itemCode || '', item.description,
-          item.sourceQuantity, item.sourceKilos, item.returnQuantity, item.returnKilos,
+          item.sourceQuantity, item.sourceQuantity, item.sourceKilos, item.sourceKilos,
+          item.returnQuantity, item.returnQuantity, item.returnKilos, item.returnKilos,
+          sourceUom.handling_uom_snapshot || 'qty', sourceUom.base_uom_snapshot || null,
           item.unitPrice, item.sourceMerchandiseTotal, item.sourceBagChargeTotal, item.sourceWageChargeTotal,
           item.discount, item.tax, item.merchandiseTotal, item.bagChargeMode, item.bagChargeTotal, item.wageChargeMode, item.wageChargeTotal,
           item.total, item.stockDisposition || 'sellable',
@@ -565,14 +578,20 @@ function createRefundRepository({ database, documentSequenceRepository, business
             `INSERT INTO refund_items (
                refund_id, loc_code, mac_code, txn_date, refund_no, line_no,
                source_invoice_item_id, product_id, supplier_code, item_code, description,
-               source_quantity, source_kilos, return_quantity, return_kilos,
+                source_quantity, source_handling_quantity, source_kilos, source_base_quantity,
+                return_quantity, return_handling_quantity, return_kilos, return_base_quantity,
+                handling_uom_snapshot, base_uom_snapshot,
                unit_price, discount, tax, merchandise_total, bag_charge_mode, bag_charge_total, wage_charge_mode, wage_charge_total,
                total, stock_disposition, metadata
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON))`,
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON))`,
             [
               refundId, draft.loc_code, draft.mac_code, draft.txn_date, draft.refund_no, refundLineNo,
               item.source_invoice_item_id, item.product_id, item.supplier_code || '', item.item_code, item.description,
-              item.source_quantity, item.source_kilos, item.return_quantity, item.return_kilos,
+              item.source_quantity, item.source_handling_quantity ?? item.source_quantity,
+              item.source_kilos, item.source_base_quantity ?? item.source_kilos,
+              item.return_quantity, item.return_handling_quantity ?? item.return_quantity,
+              item.return_kilos, item.return_base_quantity ?? item.return_kilos,
+              item.handling_uom_snapshot || 'qty', item.base_uom_snapshot || null,
               item.unit_price, item.discount, item.tax, item.merchandise_total, item.bag_charge_mode, item.bag_charge_total,
               item.wage_charge_mode, item.wage_charge_total, item.total, item.stock_disposition, item.metadata
             ]
@@ -590,26 +609,37 @@ function createRefundRepository({ database, documentSequenceRepository, business
           );
           if (sourceMovements.length === 0) continue;
 
-          const movementQty = Number(item.return_kilos == null ? item.return_quantity : item.return_kilos);
-          if (!Number.isFinite(movementQty) || movementQty <= 0) continue;
-          await connection.execute(
-            `INSERT INTO stock_movements
-               (product_id, loc_code, mac_code, quantity, business_date, document_type, document_no, line_no, event_no,
-                movement_type, reference_type, reference_id, note, created_by)
-             VALUES (?, ?, ?, ?, ?, 'refund', ?, ?, 1, 'return', 'refund_item', ?, 'Sellable customer return', ?)`,
-            [item.product_id, draft.loc_code, draft.mac_code, movementQty, draft.txn_date,
-              draft.refund_no, refundLineNo, String(refundItemResult.insertId), userId || draft.user_id || null]
-          );
-          await connection.execute(
-            'UPDATE products SET stock_qty = stock_qty + ? WHERE id = ?',
-            [movementQty, item.product_id]
-          );
+          const returnHandling = Number(item.return_handling_quantity ?? item.return_quantity ?? 0);
+          const returnBase = item.return_base_quantity == null && item.return_kilos == null
+            ? null
+            : Number(item.return_base_quantity ?? item.return_kilos);
+          if (!(returnHandling > 0) && !(returnBase > 0)) continue;
+          await inventoryLedgerRepository.postWithConnection(connection, {
+            productId: item.product_id,
+            locCode: draft.loc_code,
+            macCode: draft.mac_code,
+            businessDate: draft.txn_date,
+            documentType: 'refund',
+            documentNo: draft.refund_no,
+            lineNo: refundLineNo,
+            eventNo: 1,
+            movementType: 'return',
+            referenceType: 'refund_item',
+            referenceId: refundItemResult.insertId,
+            note: 'Sellable customer return',
+            createdBy: userId || draft.user_id,
+            handlingDelta: returnHandling > 0 ? returnHandling : null,
+            baseDelta: returnBase != null && returnBase > 0 ? returnBase : null,
+            handlingUom: item.handling_uom_snapshot,
+            baseUom: item.base_uom_snapshot
+          });
 
           // Restore the original FIFO lot allocation proportionally. This is
           // independent of generic stock so supplier settlement remains tied
           // to the actual consignment load that was returned.
-          const byKilos = item.return_kilos != null;
-          let remainingAllocation = movementQty;
+          const byBase = returnBase != null;
+          let remainingAllocation = Number(byBase ? returnBase : returnHandling);
+          const originalReturnMeasure = remainingAllocation;
           let returnAllocationNo = 0;
           const [allocations] = await connection.execute(
             `SELECT a.*, l.supplier_id, l.ownership_model, l.terms_snapshot
@@ -619,29 +649,38 @@ function createRefundRepository({ database, documentSequenceRepository, business
           );
           for (const allocation of allocations) {
             if (remainingAllocation <= 0.0005) break;
-            const measure = Number(byKilos ? allocation.kilos : allocation.quantity);
+            const measure = Number(byBase ? (allocation.base_quantity ?? allocation.kilos) : (allocation.handling_quantity ?? allocation.quantity));
             if (!Number.isFinite(measure) || measure <= 0) continue;
             const [returnedRows] = await connection.execute(
-              `SELECT COALESCE(SUM(${byKilos ? 'kilos' : 'quantity'}), 0) AS returned_measure
+              `SELECT COALESCE(SUM(${byBase ? 'base_quantity' : 'handling_quantity'}), 0) AS returned_measure
                FROM lot_sale_allocations WHERE source_allocation_id = ? FOR UPDATE`, [allocation.id]
             );
             const available = measure - Number(returnedRows[0].returned_measure || 0);
             const restored = Math.min(remainingAllocation, Math.max(0, available));
             if (restored <= 0.0005) continue;
             const returnValue = toMoney(Number(allocation.sale_value) * (restored / measure));
+            const restoredHandling = byBase
+              ? Math.round(returnHandling * (restored / originalReturnMeasure) * 1000) / 1000
+              : restored;
+            const restoredBase = byBase ? restored : null;
             returnAllocationNo += 1;
             await connection.execute(
               `INSERT INTO lot_sale_allocations
                  (inventory_lot_id, loc_code, mac_code, txn_date, document_type, document_no, line_no, allocation_no,
-                  refund_item_id, source_allocation_id, quantity, kilos, sale_value)
-               VALUES (?, ?, ?, ?, 'refund', ?, ?, ?, ?, ?, ?, ?, ?)`,
+                   refund_item_id, source_allocation_id, quantity, handling_quantity, kilos, base_quantity, sale_value)
+                VALUES (?, ?, ?, ?, 'refund', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
               [allocation.inventory_lot_id, draft.loc_code, draft.mac_code, draft.txn_date, draft.refund_no,
                 refundLineNo, returnAllocationNo, refundItemResult.insertId, allocation.id,
-                byKilos ? 0 : restored, byKilos ? restored : null, -returnValue]
+                restoredHandling, restoredHandling, restoredBase, restoredBase, -returnValue]
             );
             await connection.execute(
-              `UPDATE inventory_lots SET ${byKilos ? 'remaining_kilos' : 'remaining_quantity'} = ${byKilos ? 'remaining_kilos' : 'remaining_quantity'} + ? WHERE id = ?`,
-              [restored, allocation.inventory_lot_id]
+              `UPDATE inventory_lots
+               SET remaining_quantity = remaining_quantity + ?,
+                   remaining_handling_quantity = remaining_handling_quantity + ?,
+                   remaining_kilos = CASE WHEN ? IS NULL THEN remaining_kilos ELSE COALESCE(remaining_kilos, 0) + ? END,
+                   remaining_base_quantity = CASE WHEN ? IS NULL THEN remaining_base_quantity ELSE COALESCE(remaining_base_quantity, 0) + ? END
+               WHERE id = ?`,
+              [restoredHandling, restoredHandling, restoredBase, restoredBase, restoredBase, restoredBase, allocation.inventory_lot_id]
             );
             if (allocation.ownership_model === 'consignment') {
               const terms = parseJson(allocation.terms_snapshot);

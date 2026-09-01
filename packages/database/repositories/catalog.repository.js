@@ -1,3 +1,5 @@
+const { createInventoryLedgerRepository } = require('./inventory-ledger.repository');
+
 const PRODUCT_COLUMNS = `
   id,
   sku,
@@ -5,6 +7,9 @@ const PRODUCT_COLUMNS = `
   barcode,
   COALESCE(NULLIF(category, ''), JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.category'))) AS category,
   unit,
+  handling_uom,
+  base_uom,
+  dual_uom_enabled,
   requires_kilos,
   pricing_basis,
   quantity_step,
@@ -18,6 +23,8 @@ const PRODUCT_COLUMNS = `
   maximum_sell_price,
   price_override_reason_required,
   stock_qty,
+  stock_handling_qty,
+  stock_base_qty,
   is_active,
   metadata,
   created_at,
@@ -32,6 +39,9 @@ function normalizeProductPayload({
   barcode = null,
   category = null,
   unit = null,
+  handlingUom = null,
+  baseUom = null,
+  dualUomEnabled = false,
   requiresKilos = false,
   pricingBasis = 'qty',
   quantityStep = 1,
@@ -56,6 +66,11 @@ function normalizeProductPayload({
   const normalizedWageCharge = Math.max(0, Number(wageCharge || 0));
   const normalizedPricingBasis = String(pricingBasis || 'qty') === 'kilos' ? 'kilos' : 'qty';
   const normalizedQuantityStep = Number(quantityStep);
+  const normalizedDualUom = toBooleanish(dualUomEnabled) || normalizedPricingBasis === 'kilos' || toBooleanish(requiresKilos);
+  const normalizedHandlingUom = String(handlingUom || (normalizedDualUom ? 'bag' : unit || 'qty')).trim() || 'qty';
+  const normalizedBaseUom = normalizedDualUom
+    ? (String(baseUom || unit || 'kg').trim() || 'kg')
+    : null;
 
   return {
     sku,
@@ -65,6 +80,9 @@ function normalizeProductPayload({
     barcode,
     category: promotedCategory,
     unit,
+    handlingUom: normalizedHandlingUom,
+    baseUom: normalizedBaseUom,
+    dualUomEnabled: normalizedDualUom,
     // A kilo-priced item must capture kilos. Quantity may still record bags,
     // including zero for small retail portions.
     requiresKilos: normalizedPricingBasis === 'kilos' || toBooleanish(requiresKilos),
@@ -83,11 +101,12 @@ function normalizeProductPayload({
   };
 }
 
-function createCatalogRepository({ database, documentSequenceRepository, businessDayRepository, issuedChequeRepository = null }) {
+function createCatalogRepository({ database, documentSequenceRepository, businessDayRepository, issuedChequeRepository = null, inventoryLedgerRepository }) {
   if (!database) {
     throw new Error('Catalog repository requires a database instance.');
   }
   if (!documentSequenceRepository) throw new Error('Catalog repository requires the document sequence repository.');
+  inventoryLedgerRepository = inventoryLedgerRepository || createInventoryLedgerRepository({ database });
 
   async function listProducts(options = {}) {
     return database.withConnection(async (connection) => {
@@ -117,7 +136,7 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
 
   async function createProduct({
     sku, name, unitPrice, stockQty = 0, barcode = null, category = null,
-    unit = null, requiresKilos = false, pricingBasis = 'qty', quantityStep = 1, allowZeroQuantity = false, bagCharge = 0, wageCharge = 0, wageBasis = 'none', isActive = 1, priceOverrideAllowed = false, minimumSellPrice = null, maximumSellPrice = null, priceOverrideReasonRequired = false, metadata = null
+    unit = null, handlingUom = null, baseUom = null, dualUomEnabled = false, requiresKilos = false, pricingBasis = 'qty', quantityStep = 1, allowZeroQuantity = false, bagCharge = 0, wageCharge = 0, wageBasis = 'none', isActive = 1, priceOverrideAllowed = false, minimumSellPrice = null, maximumSellPrice = null, priceOverrideReasonRequired = false, metadata = null
   }) {
     if (!Number.isFinite(Number(unitPrice)) || Number(unitPrice) < 0) {
       throw new Error('Unit price cannot be negative.');
@@ -130,6 +149,9 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
       barcode,
       category,
       unit,
+      handlingUom,
+      baseUom,
+      dualUomEnabled,
       requiresKilos,
       pricingBasis,
       quantityStep,
@@ -143,14 +165,17 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
     });
     return database.withConnection(async (connection) => {
       await connection.execute(
-        `INSERT INTO products (sku, name, barcode, category, unit, requires_kilos, pricing_basis, quantity_step, allow_zero_quantity, unit_price, bag_charge, wage_charge, wage_basis, price_override_allowed, minimum_sell_price, maximum_sell_price, price_override_reason_required, stock_qty, is_active, metadata)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON))`,
+        `INSERT INTO products (sku, name, barcode, category, unit, handling_uom, base_uom, dual_uom_enabled, requires_kilos, pricing_basis, quantity_step, allow_zero_quantity, unit_price, bag_charge, wage_charge, wage_basis, price_override_allowed, minimum_sell_price, maximum_sell_price, price_override_reason_required, stock_qty, stock_handling_qty, stock_base_qty, is_active, metadata)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?, CAST(? AS JSON))`,
         [
           normalized.sku,
           normalized.name,
           normalized.barcode,
           normalized.category,
           normalized.unit,
+          normalized.handlingUom,
+          normalized.baseUom,
+          normalized.dualUomEnabled ? 1 : 0,
           normalized.requiresKilos ? 1 : 0,
           normalized.pricingBasis,
           normalized.quantityStep,
@@ -160,7 +185,6 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
           normalized.wageCharge,
           normalized.wageBasis,
           normalized.priceOverrideAllowed ? 1 : 0, normalized.minimumSellPrice, normalized.maximumSellPrice, normalized.priceOverrideReasonRequired ? 1 : 0,
-          normalized.stockQty,
           normalized.isActive ? 1 : 0,
           JSON.stringify(normalized.metadata)
         ]
@@ -171,7 +195,7 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
   }
 
   async function updateProduct(id, {
-    sku, name, unitPrice, stockQty, barcode, category, unit, requiresKilos, pricingBasis, quantityStep, allowZeroQuantity, bagCharge, wageCharge, wageBasis, isActive, priceOverrideAllowed, minimumSellPrice, maximumSellPrice, priceOverrideReasonRequired, metadata
+    sku, name, unitPrice, stockQty, barcode, category, unit, handlingUom, baseUom, dualUomEnabled, requiresKilos, pricingBasis, quantityStep, allowZeroQuantity, bagCharge, wageCharge, wageBasis, isActive, priceOverrideAllowed, minimumSellPrice, maximumSellPrice, priceOverrideReasonRequired, metadata
   }) {
     if (unitPrice !== undefined && (!Number.isFinite(Number(unitPrice)) || Number(unitPrice) < 0)) {
       throw new Error('Unit price cannot be negative.');
@@ -184,6 +208,9 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
       barcode,
       category,
       unit,
+      handlingUom,
+      baseUom,
+      dualUomEnabled,
       requiresKilos,
       pricingBasis,
       quantityStep,
@@ -207,6 +234,9 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
         params.push(normalized.category);
       }
       if (unit !== undefined) { sets.push('unit = ?'); params.push(normalized.unit); }
+      if (handlingUom !== undefined) { sets.push('handling_uom = ?'); params.push(normalized.handlingUom); }
+      if (baseUom !== undefined || dualUomEnabled !== undefined) { sets.push('base_uom = ?'); params.push(normalized.baseUom); }
+      if (dualUomEnabled !== undefined || requiresKilos !== undefined || pricingBasis === 'kilos') { sets.push('dual_uom_enabled = ?'); params.push(normalized.dualUomEnabled ? 1 : 0); }
       if (requiresKilos !== undefined || pricingBasis === 'kilos') { sets.push('requires_kilos = ?'); params.push(normalized.requiresKilos ? 1 : 0); }
       if (pricingBasis !== undefined) { sets.push('pricing_basis = ?'); params.push(normalized.pricingBasis); }
       if (quantityStep !== undefined) { sets.push('quantity_step = ?'); params.push(normalized.quantityStep); }
@@ -219,7 +249,7 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
       if (minimumSellPrice !== undefined) { sets.push('minimum_sell_price = ?'); params.push(normalized.minimumSellPrice); }
       if (maximumSellPrice !== undefined) { sets.push('maximum_sell_price = ?'); params.push(normalized.maximumSellPrice); }
       if (priceOverrideReasonRequired !== undefined) { sets.push('price_override_reason_required = ?'); params.push(normalized.priceOverrideReasonRequired ? 1 : 0); }
-      if (stockQty !== undefined) { sets.push('stock_qty = ?'); params.push(normalized.stockQty); }
+      if (stockQty !== undefined) throw new Error('Stock cannot be overwritten from Item Management. Use an explained stock adjustment or physical count.');
       if (isActive !== undefined) { sets.push('is_active = ?'); params.push(normalized.isActive ? 1 : 0); }
       if (metadata !== undefined) { sets.push('metadata = CAST(? AS JSON)'); params.push(JSON.stringify(normalized.metadata)); }
 
@@ -419,11 +449,12 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
       const packageQty = line.packageQty == null || line.packageQty === '' ? null : Number(line.packageQty);
       const receivedKilos = line.receivedKilos == null || line.receivedKilos === '' ? null : Number(line.receivedKilos);
       const expectedKilos = line.expectedKilos == null || line.expectedKilos === '' ? null : Number(line.expectedKilos);
+      const expectedBasePerHandling = line.expectedBasePerHandling == null || line.expectedBasePerHandling === '' ? null : Number(line.expectedBasePerHandling);
       const unitCost = line.unitCost == null || line.unitCost === '' ? null : Number(line.unitCost);
-      if ([packageQty, receivedKilos, expectedKilos, unitCost].some((value) => value != null && (!Number.isFinite(value) || value < 0))) {
+      if ([packageQty, receivedKilos, expectedKilos, expectedBasePerHandling, unitCost].some((value) => value != null && (!Number.isFinite(value) || value < 0))) {
         throw new Error('GRN quantities, kilos, and unit cost must be zero or greater.');
       }
-      return { lineNo: index + 1, productId: line.productId, packageQty, packageUnit: line.packageUnit || null, expectedKilos, receivedKilos, unitCost, metadata: line.metadata || {} };
+      return { lineNo: index + 1, productId: line.productId, packageQty, packageUnit: line.packageUnit || null, expectedKilos, receivedKilos, expectedBasePerHandling, conversionMode: line.conversionMode === 'fixed' ? 'fixed' : 'variable', unitCost, metadata: line.metadata || {} };
     });
   }
 
@@ -476,11 +507,18 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
           await connection.execute(
             `INSERT INTO goods_receipt_lines
                (goods_receipt_id, loc_code, mac_code, business_date, grn_no, line_no,
-                product_id, package_qty, package_unit, expected_kilos, received_kilos, unit_cost, metadata)
-             SELECT id, loc_code, mac_code, business_date, grn_no, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON)
-             FROM goods_receipts WHERE id = ?`,
-            [line.lineNo, line.productId, line.packageQty, line.packageUnit, line.expectedKilos,
-              line.receivedKilos, line.unitCost, JSON.stringify(line.metadata), draftId]
+                product_id, package_qty, handling_quantity, package_unit, handling_uom_snapshot,
+                expected_kilos, expected_base_quantity, received_kilos, received_base_quantity,
+                base_uom_snapshot, conversion_mode, expected_base_per_handling, actual_base_per_handling, unit_cost, metadata)
+              SELECT g.id, g.loc_code, g.mac_code, g.business_date, g.grn_no, ?, ?, ?, ?, ?, COALESCE(?, p.handling_uom), ?, ?, ?, ?, p.base_uom, ?, ?, ?, ?, CAST(? AS JSON)
+              FROM goods_receipts g
+              JOIN products p ON p.id = ?
+              WHERE g.id = ?`,
+            [line.lineNo, line.productId, line.packageQty, line.packageQty, line.packageUnit, line.packageUnit,
+              line.expectedKilos, line.expectedKilos, line.receivedKilos, line.receivedKilos,
+              line.conversionMode, line.expectedBasePerHandling,
+              line.packageQty > 0 && line.receivedKilos != null ? line.receivedKilos / line.packageQty : null,
+              line.unitCost, JSON.stringify(line.metadata), line.productId, draftId]
           );
         }
         await connection.commit();
@@ -513,17 +551,39 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
        WHERE grl.goods_receipt_id = ? FOR UPDATE`, [originalId]
     );
     for (const lot of lots) {
-      const stockQty = lot.received_kilos == null ? Number(lot.received_quantity) : Number(lot.received_kilos);
+      const handlingQty = Number(lot.received_handling_quantity ?? lot.received_quantity ?? 0);
+      const baseQty = lot.received_base_quantity == null && lot.received_kilos == null
+        ? null
+        : Number(lot.received_base_quantity ?? lot.received_kilos);
+      await inventoryLedgerRepository.postWithConnection(connection, {
+        productId: lot.product_id,
+        inventoryLotId: lot.id,
+        locCode: correction.loc_code,
+        macCode: correction.mac_code,
+        businessDate: correction.business_date,
+        documentType: 'grn',
+        documentNo: correction.grn_no,
+        lineNo: lot.line_no,
+        eventNo: 1,
+        movementType: 'receipt_correction',
+        referenceType: 'goods_receipt_correction',
+        referenceId: correction.id,
+        note: 'Reversal of corrected GRN',
+        createdBy: userId,
+        handlingDelta: handlingQty === 0 ? null : -handlingQty,
+        baseDelta: baseQty == null || baseQty === 0 ? null : -baseQty,
+        handlingUom: lot.handling_uom_snapshot,
+        baseUom: lot.base_uom_snapshot
+      });
       await connection.execute(
-        `INSERT INTO stock_movements
-           (product_id, loc_code, mac_code, quantity, business_date, document_type, document_no, line_no, event_no,
-            movement_type, reference_type, reference_id, note, created_by)
-         VALUES (?, ?, ?, ?, ?, 'grn', ?, ?, 1, 'receipt_correction', 'goods_receipt_correction', ?, 'Reversal of corrected GRN', ?)`,
-        [lot.product_id, correction.loc_code, correction.mac_code, -stockQty, correction.business_date,
-          correction.grn_no, lot.line_no, String(correction.id), userId || null]
+        `UPDATE inventory_lots
+         SET remaining_quantity = 0,
+             remaining_handling_quantity = 0,
+             remaining_kilos = CASE WHEN remaining_kilos IS NULL THEN NULL ELSE 0 END,
+             remaining_base_quantity = CASE WHEN remaining_base_quantity IS NULL THEN NULL ELSE 0 END
+         WHERE id = ?`,
+        [lot.id]
       );
-      await connection.execute('UPDATE products SET stock_qty = stock_qty - ? WHERE id = ?', [stockQty, lot.product_id]);
-      await connection.execute('UPDATE inventory_lots SET remaining_quantity = 0, remaining_kilos = CASE WHEN remaining_kilos IS NULL THEN NULL ELSE 0 END WHERE id = ?', [lot.id]);
       await connection.execute(
         `INSERT INTO inventory_measurements
            (inventory_lot_id, loc_code, mac_code, txn_date, document_type, document_no, line_no, event_no,
@@ -564,9 +624,15 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
         await businessDayRepository.assertOpenWithConnection(connection, {
           locationCode: receipt.loc_code, businessDate: receipt.business_date
         });
-        const [suppliers] = await connection.execute('SELECT id FROM suppliers WHERE id = ? AND is_active = 1 FOR UPDATE', [receipt.supplier_id]);
+        const [suppliers] = await connection.execute('SELECT id, supplier_code FROM suppliers WHERE id = ? AND is_active = 1 FOR UPDATE', [receipt.supplier_id]);
         if (!suppliers.length) throw new Error('Supplier is not active.');
-        const [lines] = await connection.execute('SELECT * FROM goods_receipt_lines WHERE goods_receipt_id = ? ORDER BY line_no, id', [receipt.id]);
+        const [lines] = await connection.execute(
+          `SELECT gl.*, p.handling_uom, p.base_uom, p.dual_uom_enabled
+           FROM goods_receipt_lines gl
+           JOIN products p ON p.id = gl.product_id
+           WHERE gl.goods_receipt_id = ? ORDER BY gl.line_no, gl.id`,
+          [receipt.id]
+        );
         if (!lines.length) throw new Error('Add at least one product line before finalizing the GRN.');
         let agreement = null;
         if (receipt.agreement_id) {
@@ -578,18 +644,44 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
         const ownership = agreement?.ownership_model || 'owned';
         const postingEventNo = receipt.document_type === 'correction' ? 2 : 1;
         for (const line of lines) {
-          const quantity = Number(line.package_qty || 0);
-          const kilos = line.received_kilos == null ? null : Number(line.received_kilos);
-          const stockQty = kilos != null ? kilos : quantity;
-          if (!line.product_id || !Number.isFinite(stockQty) || stockQty <= 0) throw new Error('Every GRN line needs a product and positive received quantity or kilos.');
+          const handlingQuantity = Number(line.handling_quantity ?? line.package_qty ?? 0);
+          const baseQuantity = line.received_base_quantity == null && line.received_kilos == null
+            ? null
+            : Number(line.received_base_quantity ?? line.received_kilos);
+          if (!line.product_id || !Number.isFinite(handlingQuantity) || handlingQuantity < 0 || (baseQuantity != null && (!Number.isFinite(baseQuantity) || baseQuantity < 0))) {
+            throw new Error('Every GRN line needs valid handling and measured quantities.');
+          }
+          if (line.dual_uom_enabled && !(baseQuantity > 0)) throw new Error(`A dual-UoM GRN line requires a positive ${line.base_uom || 'base quantity'}.`);
+          if (!line.dual_uom_enabled && !(handlingQuantity > 0)) throw new Error('A single-UoM GRN line requires a positive handling quantity.');
+          const expectedRatio = line.expected_base_per_handling == null ? null : Number(line.expected_base_per_handling);
+          const expectedBaseQuantity = line.expected_base_quantity == null
+            ? (expectedRatio != null && handlingQuantity > 0 ? expectedRatio * handlingQuantity : null)
+            : Number(line.expected_base_quantity);
+          const actualRatio = handlingQuantity > 0 && baseQuantity != null ? baseQuantity / handlingQuantity : null;
+          const supplierLotPrefix = String(suppliers[0].supplier_code || 'SUP').trim().toUpperCase().replace(/[^A-Z0-9_-]+/g, '-');
+          const locationLotPrefix = String(receipt.loc_code).trim().toUpperCase().replace(/[^A-Z0-9_-]+/g, '-');
+          const lotCode = `${supplierLotPrefix}-${locationLotPrefix}-${businessDateText(receipt.business_date).replace(/-/g, '')}-${receipt.grn_no}-${line.line_no}`;
           const [lot] = await connection.execute(
             `INSERT INTO inventory_lots
-               (goods_receipt_line_id, loc_code, mac_code, txn_date, grn_no, line_no, supplier_id, product_id,
-                ownership_model, received_quantity, remaining_quantity, received_kilos, remaining_kilos, terms_snapshot)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON))`,
-            [line.id, receipt.loc_code, receipt.mac_code, receipt.business_date, receipt.grn_no, line.line_no,
-              receipt.supplier_id, line.product_id, ownership, quantity || stockQty, quantity || stockQty, kilos, kilos,
+               (goods_receipt_line_id, lot_code, loc_code, mac_code, txn_date, grn_no, line_no, supplier_id, product_id,
+                ownership_model, received_quantity, remaining_quantity, received_handling_quantity, remaining_handling_quantity,
+                received_kilos, remaining_kilos, received_base_quantity, remaining_base_quantity,
+                handling_uom_snapshot, base_uom_snapshot, conversion_mode, expected_base_per_handling, actual_base_per_handling, terms_snapshot)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON))`,
+            [line.id, lotCode, receipt.loc_code, receipt.mac_code, receipt.business_date, receipt.grn_no, line.line_no,
+              receipt.supplier_id, line.product_id, ownership,
+              handlingQuantity, handlingQuantity, handlingQuantity, handlingQuantity,
+              baseQuantity, baseQuantity, baseQuantity, baseQuantity,
+              line.handling_uom || 'qty', line.base_uom || null, line.conversion_mode || 'variable', expectedRatio, actualRatio,
               JSON.stringify({ agreementId: receipt.agreement_id, ownershipModel: ownership, commissionRate: agreement?.commission_rate || 0, settlementBasis: agreement?.settlement_basis || null })]
+          );
+          await connection.execute(
+            `UPDATE goods_receipt_lines
+             SET handling_quantity = ?, handling_uom_snapshot = ?,
+                 expected_base_quantity = ?, received_base_quantity = ?, base_uom_snapshot = ?,
+                 actual_base_per_handling = ?
+             WHERE id = ?`,
+            [handlingQuantity, line.handling_uom || 'qty', expectedBaseQuantity, baseQuantity, line.base_uom || null, actualRatio, line.id]
           );
           await connection.execute(
             `INSERT INTO inventory_measurements
@@ -597,20 +689,32 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
                 measurement_type, package_qty, kilos, reason, recorded_by)
              VALUES (?, ?, ?, ?, 'grn', ?, ?, ?, 'declared', ?, ?, 'GRN receiving', ?)`,
             [lot.insertId, receipt.loc_code, receipt.mac_code, receipt.business_date, receipt.grn_no, line.line_no,
-              postingEventNo, quantity || null, kilos, userId || null]
+              postingEventNo, handlingQuantity || null, baseQuantity, userId || null]
           );
-          await connection.execute(
-            `INSERT INTO stock_movements
-               (product_id, loc_code, mac_code, quantity, business_date, document_type, document_no, line_no, event_no,
-                movement_type, reference_type, reference_id, note, created_by)
-             VALUES (?, ?, ?, ?, ?, 'grn', ?, ?, ?, 'receipt', 'inventory_lot', ?, 'Goods received', ?)`,
-            [line.product_id, receipt.loc_code, receipt.mac_code, stockQty, receipt.business_date,
-              receipt.grn_no, line.line_no, postingEventNo, String(lot.insertId), userId || null]
-          );
-          await connection.execute('UPDATE products SET stock_qty = stock_qty + ? WHERE id = ?', [stockQty, line.product_id]);
+          await inventoryLedgerRepository.postWithConnection(connection, {
+            productId: line.product_id,
+            inventoryLotId: lot.insertId,
+            locCode: receipt.loc_code,
+            macCode: receipt.mac_code,
+            businessDate: receipt.business_date,
+            documentType: 'grn',
+            documentNo: receipt.grn_no,
+            lineNo: line.line_no,
+            eventNo: postingEventNo,
+            movementType: 'receipt',
+            referenceType: 'inventory_lot',
+            referenceId: lot.insertId,
+            note: 'Goods received',
+            createdBy: userId,
+            handlingDelta: handlingQuantity > 0 ? handlingQuantity : null,
+            baseDelta: baseQuantity != null && baseQuantity > 0 ? baseQuantity : null,
+            handlingUom: line.handling_uom,
+            baseUom: line.base_uom
+          });
           const unitCost = line.unit_cost == null ? null : Number(line.unit_cost);
           if (ownership === 'owned' && Number.isFinite(unitCost) && unitCost > 0) {
-            const purchaseDue = Math.round(unitCost * stockQty * 100) / 100;
+            const valuationQuantity = baseQuantity != null ? baseQuantity : handlingQuantity;
+            const purchaseDue = Math.round(unitCost * valuationQuantity * 100) / 100;
             await connection.execute(
               `INSERT INTO supplier_payable_entries
                  (supplier_id, loc_code, mac_code, goods_receipt_id, inventory_lot_id, entry_type, amount, business_date,
@@ -618,7 +722,7 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
                VALUES (?, ?, ?, ?, ?, 'purchase_debit', ?, ?, 'grn', ?, ?, ?, 'Owned stock received', ?, CAST(? AS JSON))`,
               [receipt.supplier_id, receipt.loc_code, receipt.mac_code, receipt.id, lot.insertId, purchaseDue,
                 receipt.business_date, receipt.grn_no, line.line_no, postingEventNo, userId || null,
-                JSON.stringify({ unitCost, stockQty, goodsReceiptLineId: line.id })]
+                JSON.stringify({ unitCost, stockQty: valuationQuantity, handlingQuantity, baseQuantity, goodsReceiptLineId: line.id })]
             );
           }
         }
@@ -760,9 +864,8 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
     });
   }
 
-  async function adjustStock({ productId, quantity, businessDate, locCode, macCode, reason, userId = null }) {
-    const amount = Number(quantity);
-    if (!productId || !Number.isFinite(amount) || amount === 0 || !String(reason || '').trim()) throw new Error('Product, non-zero quantity, and adjustment reason are required.');
+  async function adjustStock({ productId, quantity, handlingQuantity = null, baseQuantity = null, businessDate, locCode, macCode, reason, userId = null }) {
+    if (!productId || !String(reason || '').trim()) throw new Error('Product and adjustment reason are required.');
     return database.withConnection(async (connection) => {
       await connection.beginTransaction();
       try {
@@ -771,14 +874,37 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
         const documentNo = await documentSequenceRepository.allocateWithConnection(connection, {
           documentType: 'stock_adjustment', locCode, macCode, txnDate: businessDate
         });
-        await connection.execute(
-          `INSERT INTO stock_movements
-             (product_id, loc_code, mac_code, quantity, business_date, document_type, document_no, line_no, event_no,
-              movement_type, reference_type, reference_id, note, created_by)
-           VALUES (?, ?, ?, ?, ?, 'stock_adjustment', ?, 1, 1, 'adjustment', 'manual_adjustment', ?, ?, ?)`,
-          [productId, locCode, macCode, amount, businessDate, documentNo, String(documentNo), String(reason).trim(), userId || null]
-        );
-        await connection.execute('UPDATE products SET stock_qty = stock_qty + ? WHERE id = ?', [amount, productId]);
+        const [products] = await connection.execute('SELECT * FROM products WHERE id = ? FOR UPDATE', [productId]);
+        if (!products.length) throw new Error('Product no longer exists.');
+        const product = products[0];
+        let handling = handlingQuantity == null || handlingQuantity === '' ? null : Number(handlingQuantity);
+        let base = baseQuantity == null || baseQuantity === '' ? null : Number(baseQuantity);
+        if (handling == null && base == null && quantity != null && quantity !== '') {
+          if (product.dual_uom_enabled) base = Number(quantity);
+          else handling = Number(quantity);
+        }
+        if ((handling != null && !Number.isFinite(handling)) || (base != null && !Number.isFinite(base)) || (!handling && !base)) {
+          throw new Error('Enter a non-zero handling or measured adjustment.');
+        }
+        await inventoryLedgerRepository.postWithConnection(connection, {
+          productId,
+          locCode,
+          macCode,
+          businessDate,
+          documentType: 'stock_adjustment',
+          documentNo,
+          lineNo: 1,
+          eventNo: 1,
+          movementType: 'adjustment',
+          referenceType: 'manual_adjustment',
+          referenceId: documentNo,
+          note: String(reason).trim(),
+          createdBy: userId,
+          handlingDelta: handling,
+          baseDelta: base,
+          handlingUom: product.handling_uom,
+          baseUom: product.base_uom
+        });
         await connection.commit();
       } catch (error) { await connection.rollback(); throw error; }
     });
@@ -1000,9 +1126,9 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
     });
   }
 
-  async function listInventoryLots(productId = null) {
+  async function listInventoryLots(productId = null, locCode = null) {
     return database.withConnection(async (connection) => {
-      const [rows] = await connection.execute(`SELECT l.*, p.sku, p.name AS product_name, s.name AS supplier_name FROM inventory_lots l JOIN products p ON p.id = l.product_id JOIN suppliers s ON s.id = l.supplier_id WHERE (? IS NULL OR l.product_id = ?) AND (l.remaining_quantity > 0 OR COALESCE(l.remaining_kilos, 0) > 0) ORDER BY l.id ASC`, [productId, productId]);
+      const [rows] = await connection.execute(`SELECT l.*, p.sku, p.name AS product_name, s.name AS supplier_name FROM inventory_lots l JOIN products p ON p.id = l.product_id JOIN suppliers s ON s.id = l.supplier_id WHERE (? IS NULL OR l.product_id = ?) AND (? IS NULL OR l.loc_code = ?) AND (l.remaining_handling_quantity > 0 OR COALESCE(l.remaining_base_quantity, 0) > 0) ORDER BY l.id ASC`, [productId, productId, locCode, locCode]);
       return rows;
     });
   }
@@ -1034,13 +1160,23 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
           await connection.execute(
             `INSERT INTO inventory_stock_count_lines
                (stock_count_id, loc_code, mac_code, business_date, count_no, line_no, inventory_lot_id,
-                expected_quantity, counted_quantity, expected_kilos, counted_kilos)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                expected_quantity, expected_handling_quantity, counted_quantity, counted_handling_quantity,
+                expected_kilos, expected_base_quantity, counted_kilos, counted_base_quantity)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [count.insertId, locCode, macCode, businessDate, countNo, lineNo, lot.id,
-              lot.remaining_quantity, countedQty, lot.remaining_kilos, countedKilos]
+              lot.remaining_handling_quantity, lot.remaining_handling_quantity, countedQty, countedQty,
+              lot.remaining_base_quantity, lot.remaining_base_quantity, countedKilos, countedKilos]
           );
-          const useKilos = lot.remaining_kilos != null && countedKilos != null; const expected = Number(useKilos ? lot.remaining_kilos : lot.remaining_quantity); const actual = Number(useKilos ? countedKilos : countedQty); const variance = Math.round((actual - expected) * 1000) / 1000;
-          await connection.execute(`UPDATE inventory_lots SET remaining_quantity = ?, remaining_kilos = ? WHERE id = ?`, [countedQty, countedKilos, lot.id]);
+          if (lot.remaining_base_quantity != null && countedKilos == null) throw new Error('A dual-UoM lot requires both counted measures.');
+          const handlingVariance = Math.round((countedQty - Number(lot.remaining_handling_quantity || 0)) * 1000) / 1000;
+          const baseVariance = countedKilos == null ? null : Math.round((countedKilos - Number(lot.remaining_base_quantity || 0)) * 1000) / 1000;
+          await connection.execute(
+            `UPDATE inventory_lots
+             SET remaining_quantity = ?, remaining_handling_quantity = ?,
+                 remaining_kilos = ?, remaining_base_quantity = ?
+             WHERE id = ?`,
+            [countedQty, countedQty, countedKilos, countedKilos, lot.id]
+          );
           await connection.execute(
             `INSERT INTO inventory_measurements
                (inventory_lot_id, loc_code, mac_code, txn_date, document_type, document_no, line_no, event_no,
@@ -1048,16 +1184,27 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
              VALUES (?, ?, ?, ?, 'stock_count', ?, ?, 1, 'physical_count', ?, ?, ?, ?)`,
             [lot.id, locCode, macCode, businessDate, countNo, lineNo, countedQty, countedKilos, String(reason).trim(), userId || null]
           );
-          if (Math.abs(variance) > 0.0005) {
-            await connection.execute(
-              `INSERT INTO stock_movements
-                 (product_id, loc_code, mac_code, quantity, business_date, document_type, document_no, line_no, event_no,
-                  movement_type, reference_type, reference_id, note, created_by)
-               VALUES (?, ?, ?, ?, ?, 'stock_count', ?, ?, 1, 'stock_count', 'inventory_stock_count', ?, ?, ?)`,
-              [lot.product_id, locCode, macCode, variance, businessDate, countNo, lineNo,
-                String(count.insertId), String(reason).trim(), userId || null]
-            );
-            await connection.execute(`UPDATE products SET stock_qty = stock_qty + ? WHERE id = ?`, [variance, lot.product_id]);
+          if (Math.abs(handlingVariance) > 0.0005 || (baseVariance != null && Math.abs(baseVariance) > 0.0005)) {
+            await inventoryLedgerRepository.postWithConnection(connection, {
+              productId: lot.product_id,
+              inventoryLotId: lot.id,
+              locCode,
+              macCode,
+              businessDate,
+              documentType: 'stock_count',
+              documentNo: countNo,
+              lineNo,
+              eventNo: 1,
+              movementType: 'stock_count',
+              referenceType: 'inventory_stock_count',
+              referenceId: count.insertId,
+              note: String(reason).trim(),
+              createdBy: userId,
+              handlingDelta: Math.abs(handlingVariance) > 0.0005 ? handlingVariance : null,
+              baseDelta: baseVariance != null && Math.abs(baseVariance) > 0.0005 ? baseVariance : null,
+              handlingUom: lot.handling_uom_snapshot,
+              baseUom: lot.base_uom_snapshot
+            });
           }
         }
         await connection.execute(`UPDATE inventory_stock_counts SET status = 'finalized', finalized_at = NOW() WHERE id = ?`, [count.insertId]); await connection.commit(); return { id: count.insertId };

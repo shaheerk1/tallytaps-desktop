@@ -8,8 +8,8 @@ export class SupplyReceivingComponent implements OnInit {
   activePanel: 'receive' | 'pattiyal' | 'settle' | 'inventory' | 'setup' = 'receive';
   panelInfo = ''; panelError = '';
   supplier = { supplierCode: '', name: '', phone: '', mobile: '', address: '' };
-  receipt: any = { supplierId: null, agreementId: null, businessDate: new Date().toISOString().slice(0, 10), vehicleNo: '', externalReference: '', lines: [{ productId: null, packageQty: null, packageUnit: 'bags', receivedKilos: null, expectedKilos: null, unitCost: null }] };
-  adjustment: any = { productId: null, quantity: null, businessDate: new Date().toISOString().slice(0, 10), reason: '' };
+  receipt: any = { supplierId: null, agreementId: null, businessDate: new Date().toISOString().slice(0, 10), vehicleNo: '', externalReference: '', lines: [{ productId: null, packageQty: null, packageUnit: '', receivedKilos: null, expectedKilos: null, expectedBasePerHandling: null, conversionMode: 'variable', unitCost: null }] };
+  adjustment: any = { productId: null, handlingQuantity: null, baseQuantity: null, businessDate: new Date().toISOString().slice(0, 10), reason: '' };
   agreement: any = { supplierId: null, ownershipModel: 'consignment', settlementBasis: 'net_sale', commissionRate: 2, paymentTermsDays: null };
   settlement: any = { supplierId: null, fromDate: new Date().toISOString().slice(0, 10), toDate: new Date().toISOString().slice(0, 10) };
   payment: any = { settlementId: null, method: 'cash', amount: null, reference: '', chequeDetails: { bankAccountId: null, chequeNumber: '', chequeDate: '' } };
@@ -40,20 +40,23 @@ export class SupplyReceivingComponent implements OnInit {
     if (!api) return;
     const [suppliers, products, receipts, agreements, settlements, chargeTypes, lots, bankAccounts] = await Promise.all([
       api.listSuppliers(this.actor()), api.listProducts(), api.listGoodsReceipts({ ...this.grnFilters, scope: this.grnView, page: this.grnPage, pageSize: this.grnPageSize }, this.actor()), api.listSupplyAgreements(null, this.actor()),
-      api.listSupplierSettlements(null, this.actor()), api.listSupplierChargeTypes(this.actor()), api.listInventoryLots(null, this.actor()), api.listBusinessBankAccounts(false, this.actor())
+      api.listSupplierSettlements(null, this.actor()), api.listSupplierChargeTypes(this.actor()), api.listInventoryLots(null, this.origin().locCode, this.actor()), api.listBusinessBankAccounts(false, this.actor())
     ]);
     this.suppliers = suppliers.data || []; this.products = products.data || []; this.receipts = receipts.data?.rows || []; this.grnTotal = Number(receipts.data?.total || 0); this.agreements = agreements.data || [];
     this.settlements = settlements.data || []; this.chargeTypes = chargeTypes.data || []; this.lots = lots.data || [];
     this.bankAccounts = bankAccounts.data || [];
-    this.stockCount.lines = this.lots.map((lot: any) => ({ inventoryLotId: lot.id, countedQuantity: lot.remaining_quantity, countedKilos: lot.remaining_kilos }));
+    this.stockCount.lines = this.lots.map((lot: any) => ({ inventoryLotId: lot.id, countedQuantity: lot.remaining_handling_quantity ?? lot.remaining_quantity, countedKilos: lot.remaining_base_quantity ?? lot.remaining_kilos }));
     const failed = [suppliers, receipts, agreements, settlements, chargeTypes, lots, bankAccounts].find((result: any) => !result.success);
     if (failed) this.reportError(failed.error || 'Some receiving data could not be loaded. Check the role permissions for this workflow.');
   }
-  addLine(): void { this.receipt.lines.push({ productId: null, packageQty: null, packageUnit: 'bags', receivedKilos: null, expectedKilos: null, unitCost: null }); }
+  productForLine(line: any): any { return this.products.find((product: any) => Number(product.id) === Number(line.productId)) || null; }
+  get adjustmentProduct(): any { return this.products.find((product: any) => Number(product.id) === Number(this.adjustment.productId)) || null; }
+  onGrnProductChanged(line: any): void { const product = this.productForLine(line); if (!product) return; line.packageUnit = product.handling_uom || 'qty'; if (!product.dual_uom_enabled) { line.receivedKilos = null; line.expectedBasePerHandling = null; } }
+  addLine(): void { this.receipt.lines.push({ productId: null, packageQty: null, packageUnit: '', receivedKilos: null, expectedKilos: null, expectedBasePerHandling: null, conversionMode: 'variable', unitCost: null }); }
   removeLine(index: number): void { if (this.receipt.lines.length > 1) this.receipt.lines.splice(index, 1); }
   get grnPageCount(): number { return Math.max(1, Math.ceil(this.grnTotal / this.grnPageSize)); }
   get grnPageNumbers(): number[] { const count = this.grnPageCount; const start = Math.max(1, Math.min(this.grnPage - 2, count - 4)); return Array.from({ length: Math.min(5, count - start + 1) }, (_, index) => start + index); }
-  newGoodsReceipt(): void { this.receipt = { id: null, status: 'draft', documentType: 'receipt', correctsGoodsReceiptId: null, correctionReason: '', supplierId: null, agreementId: null, businessDate: this.session.getBillingDate() || new Date().toISOString().slice(0, 10), vehicleNo: '', externalReference: '', lines: [{ productId: null, packageQty: null, packageUnit: 'bags', receivedKilos: null, expectedKilos: null, unitCost: null }] }; this.grnReviewMode = false; this.grnEditorOpen = true; this.grnDetail = null; this.correctionSource = null; }
+  newGoodsReceipt(): void { this.receipt = { id: null, status: 'draft', documentType: 'receipt', correctsGoodsReceiptId: null, correctionReason: '', supplierId: null, agreementId: null, businessDate: this.session.getBillingDate() || new Date().toISOString().slice(0, 10), vehicleNo: '', externalReference: '', lines: [{ productId: null, packageQty: null, packageUnit: '', receivedKilos: null, expectedKilos: null, expectedBasePerHandling: null, conversionMode: 'variable', unitCost: null }] }; this.grnReviewMode = false; this.grnEditorOpen = true; this.grnDetail = null; this.correctionSource = null; }
   async applyGrnFilters(): Promise<void> { this.grnPage = 1; await this.load(); }
   async changeGrnPage(page: number): Promise<void> { this.grnPage = Math.min(this.grnPageCount, Math.max(1, page)); await this.load(); }
   async changeGrnPageSize(): Promise<void> { this.grnPage = 1; await this.load(); }
@@ -62,7 +65,7 @@ export class SupplyReceivingComponent implements OnInit {
     const result = await this.api().getGoodsReceipt(id, this.actor());
     if (!result.success) { this.reportError(result.error || 'Could not load GRN.'); return; }
     const detail = result.data; const receipt = detail.receipt;
-    this.receipt = { id: receipt.id, status: receipt.status, documentType: receipt.document_type, correctsGoodsReceiptId: receipt.corrects_goods_receipt_id, correctionReason: receipt.correction_reason || '', supplierId: receipt.supplier_id, agreementId: receipt.agreement_id, businessDate: this.dateInput(receipt.business_date), vehicleNo: receipt.vehicle_no || '', externalReference: receipt.external_reference || '', lines: detail.lines.map((line: any) => ({ productId: line.product_id, sku: line.sku, productName: line.product_name, packageQty: line.package_qty, packageUnit: line.package_unit || 'bags', expectedKilos: line.expected_kilos, receivedKilos: line.received_kilos, unitCost: line.unit_cost })) };
+    this.receipt = { id: receipt.id, status: receipt.status, documentType: receipt.document_type, correctsGoodsReceiptId: receipt.corrects_goods_receipt_id, correctionReason: receipt.correction_reason || '', supplierId: receipt.supplier_id, agreementId: receipt.agreement_id, businessDate: this.dateInput(receipt.business_date), vehicleNo: receipt.vehicle_no || '', externalReference: receipt.external_reference || '', lines: detail.lines.map((line: any) => ({ productId: line.product_id, sku: line.sku, productName: line.product_name, packageQty: line.handling_quantity ?? line.package_qty, packageUnit: line.handling_uom_snapshot || line.package_unit || 'qty', expectedKilos: line.expected_base_quantity ?? line.expected_kilos, receivedKilos: line.received_base_quantity ?? line.received_kilos, expectedBasePerHandling: line.expected_base_per_handling, conversionMode: line.conversion_mode || 'variable', unitCost: line.unit_cost })) };
     this.grnDetail = detail; this.grnReviewMode = receipt.status !== 'draft'; this.grnEditorOpen = true; this.correctionSource = null;
   }
   closeGoodsReceipt(): void { this.grnEditorOpen = false; this.grnReviewMode = false; this.grnDetail = null; this.correctionSource = null; }
@@ -93,14 +96,14 @@ export class SupplyReceivingComponent implements OnInit {
         { label: 'Ownership', value: receipt.ownership_model || 'owned' },
         { label: 'Recorded', value: new Date(receipt.created_at).toLocaleString() }
       ],
-      items: detail.lines.map((line: any) => ({ description: `${line.sku} ${line.product_name}`, qty: line.received_kilos != null ? `${Number(line.received_kilos).toFixed(3)} kg` : `${Number(line.package_qty || 0).toFixed(3)} ${line.package_unit || ''}`, amount: line.unit_cost != null ? Number(line.unit_cost).toFixed(2) : '-' })),
+      items: detail.lines.map((line: any) => ({ description: `${line.sku} ${line.product_name}`, qty: `${Number(line.handling_quantity ?? line.package_qty ?? 0).toFixed(3)} ${line.handling_uom_snapshot || line.package_unit || 'qty'}${line.received_base_quantity != null || line.received_kilos != null ? ` / ${Number(line.received_base_quantity ?? line.received_kilos).toFixed(3)} ${line.base_uom_snapshot || 'base'}` : ''}`, amount: line.unit_cost != null ? Number(line.unit_cost).toFixed(2) : '-' })),
       totals: [{ label: 'LINES', value: String(detail.lines.length), bold: true }]
     };
   }
   private async receiptDetail(id: number): Promise<any | null> { const result = await this.api().getGoodsReceipt(id, this.actor()); if (!result.success) { this.error = result.error || 'Could not load GRN details.'; return null; } return result.data; }
   async printGrn(id: number): Promise<void> { const detail = await this.receiptDetail(id); if (!detail) return; const result = await this.printing.printDocument(this.grnDocument(detail)); this.info = result.success ? 'GRN acknowledgement sent to the receipt printer.' : result.error || 'GRN print failed.'; }
   async saveGrnPdf(id: number): Promise<void> { const detail = await this.receiptDetail(id); if (!detail) return; const number = detail.receipt.grn_number; const result = await this.printing.savePdf(this.grnDocument(detail), { prompt: true, fileName: `${number}.pdf` }); this.info = result.success ? (result.canceled ? 'PDF save canceled.' : `GRN PDF saved to ${result.filePath}.`) : result.error || 'GRN PDF save failed.'; }
-  async saveAdjustment(): Promise<void> { const result = await this.api().adjustStock({ ...this.adjustment, ...this.origin(this.adjustment.businessDate) }, this.actor()); if (!result.success) { this.error = result.error || 'Could not save stock adjustment.'; return; } this.info = 'Stock adjustment recorded.'; this.adjustment.quantity = null; this.adjustment.reason = ''; await this.load(); }
+  async saveAdjustment(): Promise<void> { const result = await this.api().adjustStock({ ...this.adjustment, ...this.origin(this.adjustment.businessDate) }, this.actor()); if (!result.success) { this.error = result.error || 'Could not save stock adjustment.'; return; } this.info = 'Dual stock adjustment recorded.'; this.adjustment.handlingQuantity = null; this.adjustment.baseQuantity = null; this.adjustment.reason = ''; await this.load(); }
   async createAgreement(): Promise<void> { const result = await this.api().createSupplyAgreement(this.agreement, this.actor()); if (!result.success) { this.error = result.error || 'Could not save agreement.'; return; } this.info = 'Supplier agreement saved.'; await this.load(); }
   get selectedSettlement(): any { return this.settlements.find((item: any) => Number(item.id) === Number(this.payment.settlementId)) || null; }
   get selectedChargeType(): any { return this.chargeTypes.find((item: any) => Number(item.id) === Number(this.charge.chargeTypeId)) || null; }

@@ -34,7 +34,10 @@ function createReportService({ database }) {
   async function inventoryMovementSummary({ fromDate = null, toDate = null } = {}) {
     return database.withConnection(async (connection) => {
       const [rows] = await connection.execute(
-        `SELECT p.sku, p.name, COALESCE(SUM(m.quantity), 0) AS net_quantity
+        `SELECT p.sku, p.name, p.handling_uom, p.base_uom, p.dual_uom_enabled,
+                p.stock_handling_qty, p.stock_base_qty,
+                COALESCE(SUM(m.handling_quantity_delta), 0) AS net_handling_quantity,
+                COALESCE(SUM(m.base_quantity_delta), 0) AS net_base_quantity
          FROM stock_movements m JOIN products p ON p.id = m.product_id
          WHERE (? IS NULL OR m.business_date >= ?) AND (? IS NULL OR m.business_date <= ?)
          GROUP BY p.id ORDER BY p.name`, [fromDate, fromDate, toDate, toDate]
@@ -213,7 +216,9 @@ function createReportService({ database }) {
          ORDER BY e.business_date, e.id`, [fromDate, fromDate, toDate, toDate]
       );
       const [movements] = await connection.execute(
-        `SELECT m.business_date, p.sku, p.name AS product_name, m.movement_type, m.quantity, m.note, m.created_at
+        `SELECT m.business_date, p.sku, p.name AS product_name, m.movement_type,
+                m.handling_quantity_delta, m.handling_uom_snapshot,
+                m.base_quantity_delta, m.base_uom_snapshot, m.note, m.created_at
          FROM stock_movements m JOIN products p ON p.id = m.product_id
          WHERE (? IS NULL OR m.business_date >= ?) AND (? IS NULL OR m.business_date <= ?)
          ORDER BY m.business_date, m.id`, [fromDate, fromDate, toDate, toDate]
@@ -222,9 +227,9 @@ function createReportService({ database }) {
     });
     return writeWorkbook(filePath, [
       { name: 'Supplier Summary', rows: [['Supplier Code', 'Supplier', 'Accruals', 'Balance'], ...suppliers.map((row) => [row.supplier_code || '', row.name, row.accruals, row.balance])]},
-      { name: 'Inventory Movement', rows: [['SKU', 'Product', 'Net Quantity'], ...inventory.map((row) => [row.sku, row.name, row.net_quantity]) ]},
+      { name: 'Inventory Movement', rows: [['SKU', 'Product', 'Handling UoM', 'Net Handling', 'Base UoM', 'Net Base', 'Handling On Hand', 'Base On Hand'], ...inventory.map((row) => [row.sku, row.name, row.handling_uom, row.net_handling_quantity, row.base_uom || '', row.net_base_quantity, row.stock_handling_qty, row.stock_base_qty]) ]},
       { name: 'Source Payable Ledger', rows: [['Business Date', 'Supplier Code', 'Supplier', 'Entry Type', 'Amount', 'Reason', 'Recorded At'], ...source.payables.map((row) => [row.business_date, row.supplier_code || '', row.supplier_name, row.entry_type, row.amount, row.reason || '', row.created_at])]},
-      { name: 'Source Stock Ledger', rows: [['Business Date', 'SKU', 'Product', 'Movement', 'Quantity', 'Reason', 'Recorded At'], ...source.movements.map((row) => [row.business_date, row.sku, row.product_name, row.movement_type, row.quantity, row.note || '', row.created_at])]},
+      { name: 'Source Stock Ledger', rows: [['Business Date', 'SKU', 'Product', 'Movement', 'Handling Delta', 'Handling UoM', 'Base Delta', 'Base UoM', 'Reason', 'Recorded At'], ...source.movements.map((row) => [row.business_date, row.sku, row.product_name, row.movement_type, row.handling_quantity_delta, row.handling_uom_snapshot || '', row.base_quantity_delta, row.base_uom_snapshot || '', row.note || '', row.created_at])]},
       { name: 'Working Adjustments', rows: [['Draft only - enter approved changes in POS; this sheet does not update the ledger'], ['Date', 'Supplier', 'Adjustment Type', 'Amount', 'Reason', 'Approver'], ['', '', '', '', '', '']]}
     ]);
   }

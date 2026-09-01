@@ -48,6 +48,9 @@ export class ItemManagementComponent implements OnInit {
     barcode: '',
     category: '',
     unit: '',
+    handlingUom: 'qty',
+    baseUom: '',
+    dualUomEnabled: false,
     requiresKilos: false,
     pricingBasis: 'qty' as 'qty' | 'kilos',
     quantityStep: 1,
@@ -182,7 +185,7 @@ export class ItemManagementComponent implements OnInit {
   }
 
   stockBadge(item: CatalogProduct): { text: string; cls: string } {
-    const qty = Number(item.stock_qty);
+    const qty = item.dual_uom_enabled ? Number(item.stock_base_qty) : Number(item.stock_handling_qty);
     if (qty <= 0) return { text: 'Out', cls: 'out' };
     if (qty < 10) return { text: 'Low', cls: 'low' };
     return { text: 'In', cls: 'in' };
@@ -199,6 +202,7 @@ export class ItemManagementComponent implements OnInit {
       barcode: '',
       category: '',
       unit: '',
+      handlingUom: 'qty', baseUom: '', dualUomEnabled: false,
       requiresKilos: false, pricingBasis: 'qty', quantityStep: 1, allowZeroQuantity: false, bagCharge: 0, wageCharge: 0, wageBasis: 'none',
       unitPrice: 0,
       priceOverrideAllowed: false, minimumSellPrice: null, maximumSellPrice: null, priceOverrideReasonRequired: false,
@@ -219,6 +223,9 @@ export class ItemManagementComponent implements OnInit {
       barcode: item.barcode || '',
       category: item.category || '',
       unit: item.unit || '',
+      handlingUom: item.handling_uom || 'qty',
+      baseUom: item.base_uom || '',
+      dualUomEnabled: truthyFlag(item.dual_uom_enabled),
       requiresKilos: truthyFlag(item['requires_kilos']),
       pricingBasis: (item.pricing_basis || 'qty') as 'qty' | 'kilos',
       quantityStep: Number(item.quantity_step || 1),
@@ -263,8 +270,11 @@ export class ItemManagementComponent implements OnInit {
       name,
       barcode: this.form.barcode.trim() || null,
       category: this.form.category.trim() || null,
-      unit: this.form.unit.trim() || null,
-      requiresKilos: this.form.requiresKilos,
+      unit: (this.form.dualUomEnabled ? this.form.baseUom : this.form.handlingUom).trim() || null,
+      handlingUom: this.form.handlingUom.trim() || 'qty',
+      baseUom: this.form.dualUomEnabled ? (this.form.baseUom.trim() || null) : null,
+      dualUomEnabled: this.form.dualUomEnabled,
+      requiresKilos: this.form.dualUomEnabled || this.form.requiresKilos,
       pricingBasis: this.form.pricingBasis,
       quantityStep: this.form.quantityStep,
       allowZeroQuantity: this.form.allowZeroQuantity,
@@ -276,7 +286,6 @@ export class ItemManagementComponent implements OnInit {
       minimumSellPrice: this.form.minimumSellPrice,
       maximumSellPrice: this.form.maximumSellPrice,
       priceOverrideReasonRequired: this.form.priceOverrideReasonRequired,
-      stockQty: this.form.stockQty,
       isActive: this.form.isActive,
       metadata: this.buildItemMetadata()
     };

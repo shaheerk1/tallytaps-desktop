@@ -34,7 +34,7 @@
         <span class="col-name">Name</span>
         <span class="col-cat">Category</span>
         <span class="col-price">Price</span>
-        <span class="col-unit">Unit</span>
+        <span class="col-unit">UoM</span>
         <span class="col-barcode">Barcode</span>
         <span class="col-stock">Stock</span>
         <span class="col-status">Status</span>
@@ -52,13 +52,13 @@
           <span class="cat-none" *ngIf="!item.category">—</span>
         </span>
         <span class="col-price monospace">{{ item.unit_price | number:'1.2-2' }}</span>
-        <span class="col-unit">{{ item.unit || '—' }}</span>
+        <span class="col-unit">{{ item.handling_uom }}<ng-container *ngIf="item.dual_uom_enabled"> / {{ item.base_uom }}</ng-container></span>
         <span class="col-barcode monospace">{{ item.barcode || '—' }}</span>
         <span class="col-stock">
           <span class="stock-badge" [class]="stockBadge(item).cls">
             {{ stockBadge(item).text }}
           </span>
-          <span class="stock-qty monospace">{{ item.stock_qty | number:'1.0-3' }}</span>
+          <span class="stock-qty monospace">{{ item.stock_handling_qty | number:'1.0-3' }} {{ item.handling_uom }}<ng-container *ngIf="item.dual_uom_enabled"> / {{ item.stock_base_qty | number:'1.0-3' }} {{ item.base_uom }}</ng-container></span>
         </span>
         <span class="col-status">
           <span class="status-badge" [class.inactive]="!item.is_active || item.is_active === 0">
@@ -118,24 +118,34 @@
         <span class="field-hint">Free-form with suggestions from existing categories.</span>
       </div>
       <div class="form-field">
-        <label>Unit</label>
-        <input class="form-input" type="text" [(ngModel)]="form.unit" placeholder="e.g. each, kg, g, bag" />
+        <label>Handling UoM</label>
+        <input class="form-input" type="text" [(ngModel)]="form.handlingUom" placeholder="bag, box, crate, roll, piece" />
+        <span class="field-hint">The unit counted for handling and logistics.</span>
+      </div>
+      <div class="form-field">
+        <label>Dual UoM</label>
+        <label class="form-check-inline"><input type="checkbox" [(ngModel)]="form.dualUomEnabled" /><span>Track handling and measured stock together</span></label>
+      </div>
+      <div class="form-field" *ngIf="form.dualUomEnabled">
+        <label>Base / Measured UoM</label>
+        <input class="form-input" type="text" [(ngModel)]="form.baseUom" placeholder="kg, lb, litre, metre, square metre" />
+        <span class="field-hint">Used for measurement, pricing, valuation, or both.</span>
       </div>
       <div class="form-field">
         <label>Pricing Basis</label>
         <select class="form-input" [(ngModel)]="form.pricingBasis">
-          <option value="qty">Price per quantity / bag</option>
-          <option value="kilos">Price per kilo</option>
+          <option value="qty">Price per handling unit</option>
+          <option value="kilos">Price per base / measured unit</option>
         </select>
-        <span class="field-hint">Leafy bundles normally use quantity; potato bags normally use kilos.</span>
+        <span class="field-hint">The stored legacy values remain compatible while billing uses the configured labels.</span>
       </div>
       <div class="form-field">
-        <label>Kilo Capture</label>
+        <label>Measured Unit Capture</label>
         <label class="form-check-inline">
-          <input type="checkbox" [(ngModel)]="form.requiresKilos" [disabled]="form.pricingBasis === 'kilos'" />
-          <span>Ask for kilos when this item is billed</span>
+          <input type="checkbox" [(ngModel)]="form.requiresKilos" [disabled]="form.dualUomEnabled || form.pricingBasis === 'kilos'" />
+          <span>Ask for the base / measured quantity when this item is billed</span>
         </label>
-        <span class="field-hint">Kilo-priced items always require kilos. Quantity remains the bag count.</span>
+        <span class="field-hint">Base-priced items always require a measurement. Handling quantity remains available.</span>
       </div>
       <div class="form-field">
         <label>Quantity Increment</label>
@@ -146,12 +156,12 @@
         <label>Zero Quantity</label>
         <label class="form-check-inline">
           <input type="checkbox" [(ngModel)]="form.allowZeroQuantity" [disabled]="!form.requiresKilos && form.pricingBasis !== 'kilos'" />
-          <span>Allow zero bags when kilos are entered</span>
+          <span>Allow zero handling units when a base quantity is entered</span>
         </label>
         <span class="field-hint">Useful for a small retail portion sold by kilos without a bag count.</span>
       </div>
       <div class="form-field">
-        <label>Bag Charge (per bag)</label>
+        <label>Handling Charge (per {{ form.handlingUom || 'unit' }})</label>
         <input class="form-input monospace" type="number" [(ngModel)]="form.bagCharge" step="0.01" min="0" />
       </div>
       <div class="form-field">
@@ -161,8 +171,8 @@
       <div class="form-field" *ngIf="form.wageCharge > 0">
         <label>Wage Basis</label>
         <select class="form-input" [(ngModel)]="form.wageBasis">
-          <option value="qty">Per bag / quantity</option>
-          <option value="kilos">Per kilo</option>
+          <option value="qty">Per handling unit</option>
+          <option value="kilos">Per base / measured unit</option>
         </select>
       </div>
       <div class="form-field">
@@ -186,8 +196,8 @@
         <span class="field-hint">Stored now for the future approval/reason workflow.</span>
       </div>
       <div class="form-field">
-        <label>Stock Quantity</label>
-        <input class="form-input monospace" type="number" [(ngModel)]="form.stockQty" step="0.001" min="0" />
+        <label>Current Stock</label>
+        <span class="field-hint">{{ form.stockQty | number:'1.0-3' }} legacy primary units. Use Stock Control for explained adjustments; Item Management cannot overwrite inventory.</span>
       </div>
       <div class="form-field">
         <label>Status</label>

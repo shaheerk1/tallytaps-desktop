@@ -1,4 +1,6 @@
-function createBillingRepository({ database, businessDayRepository, documentSequenceRepository }) {
+const { createInventoryLedgerRepository } = require('./inventory-ledger.repository');
+
+function createBillingRepository({ database, businessDayRepository, documentSequenceRepository, inventoryLedgerRepository }) {
   if (!database) {
     throw new Error('Billing repository requires a database instance.');
   }
@@ -11,6 +13,7 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
     const kilos = Number(value);
     return Number.isFinite(kilos) && kilos > 0 ? Math.round(kilos * 1000) / 1000 : null;
   }
+  inventoryLedgerRepository = inventoryLedgerRepository || createInventoryLedgerRepository({ database });
 
   function chequePaymentValues(payment = {}) {
     const details = payment.chequeDetails && typeof payment.chequeDetails === 'object'
@@ -55,43 +58,54 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
 
   async function allocateFinalizedSaleToLots(connection, item, txnDate, userId) {
     if (!item.product_id) return;
-    const byKilos = item.kilos != null;
-    let remaining = Number(byKilos ? item.kilos : item.qty);
-    const saleQuantity = Number(item.qty ?? item.quantity ?? 0);
+    const baseQuantity = item.base_quantity == null && item.kilos == null ? null : Number(item.base_quantity ?? item.kilos);
+    const byBase = baseQuantity != null;
+    let remaining = Number(byBase ? baseQuantity : (item.handling_quantity ?? item.qty ?? item.quantity));
+    const saleQuantity = Number(item.handling_quantity ?? item.qty ?? item.quantity ?? 0);
     if (!Number.isFinite(remaining) || remaining <= 0) return;
     const [lots] = await connection.execute(
-      `SELECT * FROM inventory_lots WHERE product_id = ? AND ${byKilos ? 'remaining_kilos' : 'remaining_quantity'} > 0
-       ORDER BY id ASC FOR UPDATE`, [item.product_id]
+      `SELECT * FROM inventory_lots
+       WHERE product_id = ? AND loc_code = ?
+         AND ${byBase ? 'remaining_base_quantity' : 'remaining_handling_quantity'} > 0
+       ORDER BY id ASC FOR UPDATE`, [item.product_id, item.loc_code]
     );
     const original = remaining;
     let allocationNo = 0;
     for (const lot of lots) {
       if (remaining <= 0.0005) break;
-      const available = Number(byKilos ? lot.remaining_kilos : lot.remaining_quantity);
+      const available = Number(byBase ? lot.remaining_base_quantity : lot.remaining_handling_quantity);
       const taken = Math.min(remaining, available);
       const saleValue = toMoney(Number(item.total) * (taken / original));
       // A weighted sale can carry both bags and kilos. Allocate the package
       // measure proportionally so the lot cannot later be oversold by bags.
       const proportion = taken / original;
-      const quantity = byKilos ? Math.round(saleQuantity * proportion * 1000) / 1000 : taken;
-      const kilos = byKilos ? taken : null;
+      const quantity = byBase ? Math.round(saleQuantity * proportion * 1000) / 1000 : taken;
+      const base = byBase ? taken : null;
       allocationNo += 1;
       await connection.execute(
         `INSERT INTO lot_sale_allocations
            (inventory_lot_id, loc_code, mac_code, txn_date, document_type, document_no, line_no, allocation_no,
-            invoice_item_id, quantity, kilos, sale_value)
-         VALUES (?, ?, ?, ?, 'sale', ?, ?, ?, ?, ?, ?, ?)`,
+            invoice_item_id, quantity, handling_quantity, kilos, base_quantity, sale_value)
+         VALUES (?, ?, ?, ?, 'sale', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [lot.id, item.loc_code, item.mac_code, item.txn_date, item.receipt_no, item.seq_no, allocationNo,
-          item.id, quantity, kilos, saleValue]
+          item.id, quantity, quantity, base, base, saleValue]
       );
-      if (byKilos && lot.remaining_quantity != null && quantity > 0) {
+      if (byBase && quantity > 0) {
         await connection.execute(
-          `UPDATE inventory_lots SET remaining_kilos = remaining_kilos - ?, remaining_quantity = GREATEST(0, remaining_quantity - ?) WHERE id = ?`,
-          [taken, quantity, lot.id]
+          `UPDATE inventory_lots
+           SET remaining_kilos = remaining_kilos - ?,
+               remaining_base_quantity = remaining_base_quantity - ?,
+               remaining_quantity = GREATEST(0, remaining_quantity - ?),
+               remaining_handling_quantity = GREATEST(0, remaining_handling_quantity - ?)
+           WHERE id = ?`,
+          [taken, taken, quantity, quantity, lot.id]
         );
       } else {
         await connection.execute(
-          `UPDATE inventory_lots SET ${byKilos ? 'remaining_kilos' : 'remaining_quantity'} = ${byKilos ? 'remaining_kilos' : 'remaining_quantity'} - ? WHERE id = ?`, [taken, lot.id]
+          `UPDATE inventory_lots
+           SET remaining_quantity = remaining_quantity - ?,
+               remaining_handling_quantity = remaining_handling_quantity - ?
+           WHERE id = ?`, [taken, taken, lot.id]
         );
       }
       const terms = typeof lot.terms_snapshot === 'string' ? JSON.parse(lot.terms_snapshot || '{}') : (lot.terms_snapshot || {});
@@ -383,7 +397,8 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
         // Load the held items for this receipt
         const [items] = await connection.execute(
           `SELECT id, loc_code, mac_code, txn_date, receipt_no, seq_no, product_id, item_code, description,
-                  quantity AS qty, kilos, unit_price, discount, tax, merchandise_total, bag_charge_total, wage_charge_total, total
+                  quantity AS qty, handling_quantity, kilos, base_quantity, handling_uom_snapshot, base_uom_snapshot,
+                  unit_price, discount, tax, merchandise_total, bag_charge_total, wage_charge_total, total
            FROM invoice_items
            WHERE invoice_id IS NULL AND loc_code = ? AND mac_code = ? AND txn_date = ? AND receipt_no = ?
            ORDER BY seq_no ASC`,
@@ -498,19 +513,28 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
         // lines move their final quantity.
         for (const item of items) {
           if (!item.product_id) continue;
-          const movementQty = Number(item.kilos == null ? item.qty : item.kilos);
-          if (!Number.isFinite(movementQty) || movementQty <= 0) continue;
-          await connection.execute(
-            `INSERT INTO stock_movements
-               (product_id, loc_code, mac_code, quantity, business_date, document_type, document_no, line_no, event_no,
-                movement_type, reference_type, reference_id, note, created_by)
-             VALUES (?, ?, ?, ?, ?, 'sale', ?, ?, 1, 'sale', 'invoice_item', ?, 'Stock deduction from finalized sale', ?)`,
-            [item.product_id, locCode, macCode, -movementQty, txnDate, receiptNo, item.seq_no, String(item.id), userId || null]
-          );
-          await connection.execute(
-            'UPDATE products SET stock_qty = stock_qty - ? WHERE id = ?',
-            [movementQty, item.product_id]
-          );
+          const handlingQuantity = Number(item.handling_quantity ?? item.qty ?? item.quantity ?? 0);
+          const baseQuantity = item.base_quantity == null && item.kilos == null ? null : Number(item.base_quantity ?? item.kilos);
+          if (!(handlingQuantity > 0) && !(baseQuantity > 0)) continue;
+          await inventoryLedgerRepository.postWithConnection(connection, {
+            productId: item.product_id,
+            locCode,
+            macCode,
+            businessDate: txnDate,
+            documentType: 'sale',
+            documentNo: receiptNo,
+            lineNo: item.seq_no,
+            eventNo: 1,
+            movementType: 'sale',
+            referenceType: 'invoice_item',
+            referenceId: item.id,
+            note: 'Stock deduction from finalized sale',
+            createdBy: userId,
+            handlingDelta: handlingQuantity > 0 ? -handlingQuantity : null,
+            baseDelta: baseQuantity != null && baseQuantity > 0 ? -baseQuantity : null,
+            handlingUom: item.handling_uom_snapshot,
+            baseUom: item.base_uom_snapshot
+          });
           await allocateFinalizedSaleToLots(connection, item, txnDate, userId);
         }
 
