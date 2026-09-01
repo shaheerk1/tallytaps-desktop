@@ -86,6 +86,7 @@ function createCloudSyncRepository({ database }) {
   }
 
   async function collectStream(stream, limit) {
+    const rowLimit = boundedLimit(limit, 1, 100, 100);
     return database.withConnection(async (connection) => {
       await connection.beginTransaction();
       try {
@@ -93,8 +94,11 @@ function createCloudSyncRepository({ database }) {
         const cursorAt = cursorRows[0]?.cursor_at || new Date(0);
         const cursorId = Number(cursorRows[0]?.cursor_id || 0);
         const filters = [stream.where, `(t.cloud_sync_updated_at > ? OR (t.cloud_sync_updated_at = ? AND t.id > ?))`].filter(Boolean).join(' AND ');
-        const [rows] = await connection.execute(`SELECT t.* FROM ${stream.table} t ${stream.join || ''} WHERE ${filters} ORDER BY t.cloud_sync_updated_at,t.id LIMIT ?`,
-          [cursorAt,cursorAt,cursorId,limit]);
+        // MySQL 8 rejects LIMIT placeholders through mysqld_stmt_execute on
+        // some installations. rowLimit is an integer clamped in this module,
+        // so embedding it is safe and keeps the remaining values prepared.
+        const [rows] = await connection.execute(`SELECT t.* FROM ${stream.table} t ${stream.join || ''} WHERE ${filters} ORDER BY t.cloud_sync_updated_at,t.id LIMIT ${rowLimit}`,
+          [cursorAt,cursorAt,cursorId]);
         for (const source of rows) {
           const payload = serializableRow(source);
           const sourceUpdatedAt = source.cloud_sync_updated_at;
@@ -116,8 +120,9 @@ function createCloudSyncRepository({ database }) {
   }
 
   async function pendingBatch(limit) {
+    const rowLimit = boundedLimit(limit, 1, 500, 100);
     return database.withConnection(async (connection) => {
-      const [rows] = await connection.execute(`SELECT * FROM pos_cloud_sync_outbox ORDER BY sequence LIMIT ?`, [limit]);
+      const [rows] = await connection.execute(`SELECT * FROM pos_cloud_sync_outbox ORDER BY sequence LIMIT ${rowLimit}`);
       return rows.map((row) => ({ sequence: Number(row.sequence), entityType: row.entity_type, sourceKey: row.source_key,
         locCode: row.loc_code, macCode: row.mac_code, operation: row.operation, schemaVersion: 1,
         sourceCreatedAt: iso(row.source_created_at), sourceUpdatedAt: iso(row.source_updated_at), payload: json(row.payload) }));
@@ -172,5 +177,6 @@ function serializableRow(row) {
 function originValue(row, key) { const value=row[key]; return value == null || value === '' ? null : String(value); }
 function iso(value) { if (!value) return null; const date=value instanceof Date ? value : new Date(value); return Number.isNaN(date.getTime()) ? null : date.toISOString(); }
 function json(value) { if (value == null) return {}; if (typeof value === 'object') return value; try { return JSON.parse(value); } catch { return {}; } }
+function boundedLimit(value,min,max,fallback) { const number=Number(value); return Number.isInteger(number) ? Math.max(min,Math.min(max,number)) : fallback; }
 
 module.exports = { STREAMS,createCloudSyncRepository };
