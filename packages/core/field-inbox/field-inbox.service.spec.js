@@ -74,7 +74,7 @@ test('identifies the registered POS node when requesting routed field records', 
       listResolved: async () => []
     },
     cloudSyncRepository: {
-      getConfiguration: async () => ({ node_id: 'node-7', registered_host_id: 'TH-TEST' })
+      ensureConfiguration: async () => ({ node_id: 'node-7', registered_host_id: 'TH-TEST' })
     },
     secretProtector: { decrypt: () => 'secret' },
     fetchImpl: async (_url, options) => {
