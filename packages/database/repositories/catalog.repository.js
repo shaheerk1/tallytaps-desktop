@@ -85,7 +85,7 @@ function normalizeProductPayload({
     dualUomEnabled: normalizedDualUom,
     // A kilo-priced item must capture kilos. Quantity may still record bags,
     // including zero for small retail portions.
-    requiresKilos: normalizedPricingBasis === 'kilos' || toBooleanish(requiresKilos),
+    requiresKilos: normalizedDualUom || normalizedPricingBasis === 'kilos' || toBooleanish(requiresKilos),
     pricingBasis: normalizedPricingBasis,
     quantityStep: Number.isFinite(normalizedQuantityStep) && normalizedQuantityStep > 0 ? normalizedQuantityStep : 1,
     allowZeroQuantity: toBooleanish(allowZeroQuantity),
@@ -237,7 +237,7 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
       if (handlingUom !== undefined) { sets.push('handling_uom = ?'); params.push(normalized.handlingUom); }
       if (baseUom !== undefined || dualUomEnabled !== undefined) { sets.push('base_uom = ?'); params.push(normalized.baseUom); }
       if (dualUomEnabled !== undefined || requiresKilos !== undefined || pricingBasis === 'kilos') { sets.push('dual_uom_enabled = ?'); params.push(normalized.dualUomEnabled ? 1 : 0); }
-      if (requiresKilos !== undefined || pricingBasis === 'kilos') { sets.push('requires_kilos = ?'); params.push(normalized.requiresKilos ? 1 : 0); }
+      if (requiresKilos !== undefined || pricingBasis === 'kilos' || dualUomEnabled !== undefined) { sets.push('requires_kilos = ?'); params.push(normalized.requiresKilos ? 1 : 0); }
       if (pricingBasis !== undefined) { sets.push('pricing_basis = ?'); params.push(normalized.pricingBasis); }
       if (quantityStep !== undefined) { sets.push('quantity_step = ?'); params.push(normalized.quantityStep); }
       if (allowZeroQuantity !== undefined) { sets.push('allow_zero_quantity = ?'); params.push(normalized.allowZeroQuantity ? 1 : 0); }
@@ -450,11 +450,12 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
       const receivedKilos = line.receivedKilos == null || line.receivedKilos === '' ? null : Number(line.receivedKilos);
       const expectedKilos = line.expectedKilos == null || line.expectedKilos === '' ? null : Number(line.expectedKilos);
       const expectedBasePerHandling = line.expectedBasePerHandling == null || line.expectedBasePerHandling === '' ? null : Number(line.expectedBasePerHandling);
+      const ratioTolerancePercent = line.ratioTolerancePercent == null || line.ratioTolerancePercent === '' ? 20 : Number(line.ratioTolerancePercent);
       const unitCost = line.unitCost == null || line.unitCost === '' ? null : Number(line.unitCost);
-      if ([packageQty, receivedKilos, expectedKilos, expectedBasePerHandling, unitCost].some((value) => value != null && (!Number.isFinite(value) || value < 0))) {
-        throw new Error('GRN quantities, kilos, and unit cost must be zero or greater.');
+      if ([packageQty, receivedKilos, expectedKilos, expectedBasePerHandling, unitCost].some((value) => value != null && (!Number.isFinite(value) || value < 0)) || !Number.isFinite(ratioTolerancePercent) || ratioTolerancePercent <= 0 || ratioTolerancePercent > 1000) {
+        throw new Error('GRN quantities and cost must be zero or greater, and ratio warning tolerance must be between 0 and 1000 percent.');
       }
-      return { lineNo: index + 1, productId: line.productId, packageQty, packageUnit: line.packageUnit || null, expectedKilos, receivedKilos, expectedBasePerHandling, conversionMode: line.conversionMode === 'fixed' ? 'fixed' : 'variable', unitCost, metadata: line.metadata || {} };
+      return { lineNo: index + 1, productId: line.productId, packageQty, packageUnit: line.packageUnit || null, expectedKilos, receivedKilos, expectedBasePerHandling, ratioTolerancePercent, conversionMode: line.conversionMode === 'fixed' ? 'fixed' : 'variable', unitCost, metadata: line.metadata || {} };
     });
   }
 
@@ -509,8 +510,8 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
                (goods_receipt_id, loc_code, mac_code, business_date, grn_no, line_no,
                 product_id, package_qty, handling_quantity, package_unit, handling_uom_snapshot,
                 expected_kilos, expected_base_quantity, received_kilos, received_base_quantity,
-                base_uom_snapshot, conversion_mode, expected_base_per_handling, actual_base_per_handling, unit_cost, metadata)
-              SELECT g.id, g.loc_code, g.mac_code, g.business_date, g.grn_no, ?, ?, ?, ?, ?, COALESCE(?, p.handling_uom), ?, ?, ?, ?, p.base_uom, ?, ?, ?, ?, CAST(? AS JSON)
+                base_uom_snapshot, conversion_mode, expected_base_per_handling, actual_base_per_handling, ratio_tolerance_percent, unit_cost, metadata)
+              SELECT g.id, g.loc_code, g.mac_code, g.business_date, g.grn_no, ?, ?, ?, ?, ?, COALESCE(?, p.handling_uom), ?, ?, ?, ?, p.base_uom, ?, ?, ?, ?, ?, CAST(? AS JSON)
               FROM goods_receipts g
               JOIN products p ON p.id = ?
               WHERE g.id = ?`,
@@ -518,7 +519,7 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
               line.expectedKilos, line.expectedKilos, line.receivedKilos, line.receivedKilos,
               line.conversionMode, line.expectedBasePerHandling,
               line.packageQty > 0 && line.receivedKilos != null ? line.receivedKilos / line.packageQty : null,
-              line.unitCost, JSON.stringify(line.metadata), line.productId, draftId]
+              line.ratioTolerancePercent, line.unitCost, JSON.stringify(line.metadata), line.productId, draftId]
           );
         }
         await connection.commit();
@@ -645,15 +646,18 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
         const postingEventNo = receipt.document_type === 'correction' ? 2 : 1;
         for (const line of lines) {
           const handlingQuantity = Number(line.handling_quantity ?? line.package_qty ?? 0);
-          const baseQuantity = line.received_base_quantity == null && line.received_kilos == null
+          const expectedRatio = line.expected_base_per_handling == null ? null : Number(line.expected_base_per_handling);
+          let baseQuantity = line.received_base_quantity == null && line.received_kilos == null
             ? null
             : Number(line.received_base_quantity ?? line.received_kilos);
+          if (baseQuantity == null && line.conversion_mode === 'fixed' && expectedRatio != null && handlingQuantity > 0) {
+            baseQuantity = Math.round(handlingQuantity * expectedRatio * 1000) / 1000;
+          }
           if (!line.product_id || !Number.isFinite(handlingQuantity) || handlingQuantity < 0 || (baseQuantity != null && (!Number.isFinite(baseQuantity) || baseQuantity < 0))) {
             throw new Error('Every GRN line needs valid handling and measured quantities.');
           }
           if (line.dual_uom_enabled && !(baseQuantity > 0)) throw new Error(`A dual-UoM GRN line requires a positive ${line.base_uom || 'base quantity'}.`);
           if (!line.dual_uom_enabled && !(handlingQuantity > 0)) throw new Error('A single-UoM GRN line requires a positive handling quantity.');
-          const expectedRatio = line.expected_base_per_handling == null ? null : Number(line.expected_base_per_handling);
           const expectedBaseQuantity = line.expected_base_quantity == null
             ? (expectedRatio != null && handlingQuantity > 0 ? expectedRatio * handlingQuantity : null)
             : Number(line.expected_base_quantity);
@@ -666,13 +670,13 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
                (goods_receipt_line_id, lot_code, loc_code, mac_code, txn_date, grn_no, line_no, supplier_id, product_id,
                 ownership_model, received_quantity, remaining_quantity, received_handling_quantity, remaining_handling_quantity,
                 received_kilos, remaining_kilos, received_base_quantity, remaining_base_quantity,
-                handling_uom_snapshot, base_uom_snapshot, conversion_mode, expected_base_per_handling, actual_base_per_handling, terms_snapshot)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON))`,
+                handling_uom_snapshot, base_uom_snapshot, conversion_mode, expected_base_per_handling, actual_base_per_handling, ratio_tolerance_percent, terms_snapshot)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON))`,
             [line.id, lotCode, receipt.loc_code, receipt.mac_code, receipt.business_date, receipt.grn_no, line.line_no,
               receipt.supplier_id, line.product_id, ownership,
               handlingQuantity, handlingQuantity, handlingQuantity, handlingQuantity,
               baseQuantity, baseQuantity, baseQuantity, baseQuantity,
-              line.handling_uom || 'qty', line.base_uom || null, line.conversion_mode || 'variable', expectedRatio, actualRatio,
+              line.handling_uom || 'qty', line.base_uom || null, line.conversion_mode || 'variable', expectedRatio, actualRatio, Number(line.ratio_tolerance_percent || 20),
               JSON.stringify({ agreementId: receipt.agreement_id, ownershipModel: ownership, commissionRate: agreement?.commission_rate || 0, settlementBasis: agreement?.settlement_basis || null })]
           );
           await connection.execute(
@@ -1133,6 +1137,35 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
     });
   }
 
+  async function listInventorySummary(locCode) {
+    if (!String(locCode || '').trim()) throw new Error('Location is required for inventory balances.');
+    return database.withConnection(async (connection) => {
+      const [rows] = await connection.execute(
+        `SELECT p.id, p.sku, p.name, p.handling_uom, p.base_uom, p.dual_uom_enabled,
+                COALESCE(b.handling_on_hand, 0) AS handling_on_hand,
+                COALESCE(b.base_on_hand, 0) AS base_on_hand,
+                COALESCE(l.lot_handling_on_hand, 0) AS lot_handling_on_hand,
+                COALESCE(l.lot_base_on_hand, 0) AS lot_base_on_hand,
+                COALESCE(b.handling_on_hand, 0) - COALESCE(l.lot_handling_on_hand, 0) AS unallocated_handling,
+                COALESCE(b.base_on_hand, 0) - COALESCE(l.lot_base_on_hand, 0) AS unallocated_base,
+                COALESCE(l.active_lots, 0) AS active_lots
+         FROM products p
+         LEFT JOIN inventory_balances b ON b.product_id = p.id AND b.loc_code = ?
+         LEFT JOIN (
+           SELECT product_id,
+                  SUM(remaining_handling_quantity) AS lot_handling_on_hand,
+                  SUM(COALESCE(remaining_base_quantity, 0)) AS lot_base_on_hand,
+                  SUM(remaining_handling_quantity > 0 OR COALESCE(remaining_base_quantity, 0) > 0) AS active_lots
+           FROM inventory_lots WHERE loc_code = ? GROUP BY product_id
+         ) l ON l.product_id = p.id
+         WHERE p.is_active = 1
+         ORDER BY p.name`,
+        [String(locCode).trim(), String(locCode).trim()]
+      );
+      return rows;
+    });
+  }
+
   async function finalizeStockCount({ businessDate, locCode, macCode, reason, lines, userId = null }) {
     if (!businessDate || !String(reason || '').trim() || !Array.isArray(lines) || !lines.length) throw new Error('Business date, reason, and at least one lot count are required.');
     return database.withConnection(async (connection) => {
@@ -1284,6 +1317,7 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
     ,listSupplierChargeTypes
     ,addSupplierCharge
     ,listInventoryLots
+    ,listInventorySummary
     ,finalizeStockCount
   };
 }

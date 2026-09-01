@@ -4,11 +4,11 @@ import { PrintingService } from '../services/printing.service';
 
 @Component({ selector: 'pos-supply-receiving', templateUrl: './supply-receiving.component.html', styleUrls: ['./supply-receiving.component.css'] })
 export class SupplyReceivingComponent implements OnInit {
-  suppliers: any[] = []; products: any[] = []; receipts: any[] = []; agreements: any[] = []; settlements: any[] = []; chargeTypes: any[] = []; lots: any[] = []; bankAccounts: any[] = []; account: { entries: any[]; balance: number } = null as any; info = ''; error = ''; saving = false;
+  suppliers: any[] = []; products: any[] = []; receipts: any[] = []; agreements: any[] = []; settlements: any[] = []; chargeTypes: any[] = []; lots: any[] = []; inventorySummary: any[] = []; bankAccounts: any[] = []; account: { entries: any[]; balance: number } = null as any; info = ''; error = ''; saving = false;
   activePanel: 'receive' | 'pattiyal' | 'settle' | 'inventory' | 'setup' = 'receive';
   panelInfo = ''; panelError = '';
   supplier = { supplierCode: '', name: '', phone: '', mobile: '', address: '' };
-  receipt: any = { supplierId: null, agreementId: null, businessDate: new Date().toISOString().slice(0, 10), vehicleNo: '', externalReference: '', lines: [{ productId: null, packageQty: null, packageUnit: '', receivedKilos: null, expectedKilos: null, expectedBasePerHandling: null, conversionMode: 'variable', unitCost: null }] };
+  receipt: any = { supplierId: null, agreementId: null, businessDate: new Date().toISOString().slice(0, 10), vehicleNo: '', externalReference: '', lines: [{ productId: null, packageQty: null, packageUnit: '', receivedKilos: null, expectedKilos: null, expectedBasePerHandling: null, ratioTolerancePercent: 20, conversionMode: 'variable', unitCost: null }] };
   adjustment: any = { productId: null, handlingQuantity: null, baseQuantity: null, businessDate: new Date().toISOString().slice(0, 10), reason: '' };
   agreement: any = { supplierId: null, ownershipModel: 'consignment', settlementBasis: 'net_sale', commissionRate: 2, paymentTermsDays: null };
   settlement: any = { supplierId: null, fromDate: new Date().toISOString().slice(0, 10), toDate: new Date().toISOString().slice(0, 10) };
@@ -33,30 +33,35 @@ export class SupplyReceivingComponent implements OnInit {
   selectPanel(panel: 'receive' | 'pattiyal' | 'settle' | 'inventory' | 'setup'): void { this.activePanel = panel; this.panelInfo = ''; this.panelError = ''; }
   private reportSuccess(message: string): void { this.info = message; this.error = ''; this.panelInfo = message; this.panelError = ''; }
   private reportError(message: string): void { this.error = message; this.info = ''; this.panelError = message; this.panelInfo = ''; }
-  get canFinalizeGrn(): boolean { return Boolean(this.receipt.supplierId) && this.receipt.lines.length > 0 && this.receipt.lines.every((line: any) => line.productId && (Number(line.packageQty) > 0 || Number(line.receivedKilos) > 0)); }
-  get grnReadiness(): string { if (!this.receipt.supplierId) return 'Choose the supplier first.'; if (!this.receipt.lines.some((line: any) => line.productId)) return 'Add a product to the GRN line.'; if (!this.canFinalizeGrn) return 'Each line needs a product and either packages/quantity or received kilos.'; return 'Ready to finalize. This will create immutable lot and stock records.'; }
+  get canFinalizeGrn(): boolean { return Boolean(this.receipt.supplierId) && this.receipt.lines.length > 0 && this.receipt.lines.every((line: any) => { const product = this.productForLine(line); if (!product) return false; const handling = Number(line.packageQty || 0); if (!product.dual_uom_enabled) return handling > 0; if (line.conversionMode === 'fixed') return handling > 0 && Number(line.expectedBasePerHandling) > 0; return Number(line.receivedKilos) > 0; }); }
+  get grnReadiness(): string { if (!this.receipt.supplierId) return 'Choose the supplier first.'; if (!this.receipt.lines.some((line: any) => line.productId)) return 'Add a product to the GRN line.'; if (!this.canFinalizeGrn) return 'Each line needs its required handling and measured quantities.'; return 'Ready to finalize. This will create immutable lot and stock records.'; }
   async load(): Promise<void> {
     const api = this.api();
     if (!api) return;
-    const [suppliers, products, receipts, agreements, settlements, chargeTypes, lots, bankAccounts] = await Promise.all([
+    const [suppliers, products, receipts, agreements, settlements, chargeTypes, lots, inventorySummary, bankAccounts] = await Promise.all([
       api.listSuppliers(this.actor()), api.listProducts(), api.listGoodsReceipts({ ...this.grnFilters, scope: this.grnView, page: this.grnPage, pageSize: this.grnPageSize }, this.actor()), api.listSupplyAgreements(null, this.actor()),
-      api.listSupplierSettlements(null, this.actor()), api.listSupplierChargeTypes(this.actor()), api.listInventoryLots(null, this.origin().locCode, this.actor()), api.listBusinessBankAccounts(false, this.actor())
+      api.listSupplierSettlements(null, this.actor()), api.listSupplierChargeTypes(this.actor()), api.listInventoryLots(null, this.origin().locCode, this.actor()), api.listInventorySummary(this.origin().locCode, this.actor()), api.listBusinessBankAccounts(false, this.actor())
     ]);
     this.suppliers = suppliers.data || []; this.products = products.data || []; this.receipts = receipts.data?.rows || []; this.grnTotal = Number(receipts.data?.total || 0); this.agreements = agreements.data || [];
     this.settlements = settlements.data || []; this.chargeTypes = chargeTypes.data || []; this.lots = lots.data || [];
+    this.inventorySummary = inventorySummary.data || [];
     this.bankAccounts = bankAccounts.data || [];
     this.stockCount.lines = this.lots.map((lot: any) => ({ inventoryLotId: lot.id, countedQuantity: lot.remaining_handling_quantity ?? lot.remaining_quantity, countedKilos: lot.remaining_base_quantity ?? lot.remaining_kilos }));
-    const failed = [suppliers, receipts, agreements, settlements, chargeTypes, lots, bankAccounts].find((result: any) => !result.success);
+    const failed = [suppliers, receipts, agreements, settlements, chargeTypes, lots, inventorySummary, bankAccounts].find((result: any) => !result.success);
     if (failed) this.reportError(failed.error || 'Some receiving data could not be loaded. Check the role permissions for this workflow.');
   }
   productForLine(line: any): any { return this.products.find((product: any) => Number(product.id) === Number(line.productId)) || null; }
+  actualBasePerHandling(line: any): number | null { const handling = Number(line.packageQty); const base = Number(line.receivedKilos); return handling > 0 && base > 0 ? base / handling : null; }
+  ratioDeviation(line: any): number | null { const expected = Number(line.expectedBasePerHandling); const actual = this.actualBasePerHandling(line); return expected > 0 && actual != null ? ((actual - expected) / expected) * 100 : null; }
+  isVastRatioDeviation(line: any): boolean { const deviation = this.ratioDeviation(line); return deviation != null && Math.abs(deviation) >= Number(line.ratioTolerancePercent || 20); }
   get adjustmentProduct(): any { return this.products.find((product: any) => Number(product.id) === Number(this.adjustment.productId)) || null; }
-  onGrnProductChanged(line: any): void { const product = this.productForLine(line); if (!product) return; line.packageUnit = product.handling_uom || 'qty'; if (!product.dual_uom_enabled) { line.receivedKilos = null; line.expectedBasePerHandling = null; } }
-  addLine(): void { this.receipt.lines.push({ productId: null, packageQty: null, packageUnit: '', receivedKilos: null, expectedKilos: null, expectedBasePerHandling: null, conversionMode: 'variable', unitCost: null }); }
+  onGrnProductChanged(line: any): void { const product = this.productForLine(line); if (!product) return; line.packageUnit = product.handling_uom || 'qty'; line.ratioTolerancePercent = Number(line.ratioTolerancePercent || 20); if (!product.dual_uom_enabled) { line.receivedKilos = null; line.expectedBasePerHandling = null; line.conversionMode = 'variable'; } }
+  onConversionModeChanged(line: any): void { if (line.conversionMode === 'fixed') line.receivedKilos = null; }
+  addLine(): void { this.receipt.lines.push({ productId: null, packageQty: null, packageUnit: '', receivedKilos: null, expectedKilos: null, expectedBasePerHandling: null, ratioTolerancePercent: 20, conversionMode: 'variable', unitCost: null }); }
   removeLine(index: number): void { if (this.receipt.lines.length > 1) this.receipt.lines.splice(index, 1); }
   get grnPageCount(): number { return Math.max(1, Math.ceil(this.grnTotal / this.grnPageSize)); }
   get grnPageNumbers(): number[] { const count = this.grnPageCount; const start = Math.max(1, Math.min(this.grnPage - 2, count - 4)); return Array.from({ length: Math.min(5, count - start + 1) }, (_, index) => start + index); }
-  newGoodsReceipt(): void { this.receipt = { id: null, status: 'draft', documentType: 'receipt', correctsGoodsReceiptId: null, correctionReason: '', supplierId: null, agreementId: null, businessDate: this.session.getBillingDate() || new Date().toISOString().slice(0, 10), vehicleNo: '', externalReference: '', lines: [{ productId: null, packageQty: null, packageUnit: '', receivedKilos: null, expectedKilos: null, expectedBasePerHandling: null, conversionMode: 'variable', unitCost: null }] }; this.grnReviewMode = false; this.grnEditorOpen = true; this.grnDetail = null; this.correctionSource = null; }
+  newGoodsReceipt(): void { this.receipt = { id: null, status: 'draft', documentType: 'receipt', correctsGoodsReceiptId: null, correctionReason: '', supplierId: null, agreementId: null, businessDate: this.session.getBillingDate() || new Date().toISOString().slice(0, 10), vehicleNo: '', externalReference: '', lines: [{ productId: null, packageQty: null, packageUnit: '', receivedKilos: null, expectedKilos: null, expectedBasePerHandling: null, ratioTolerancePercent: 20, conversionMode: 'variable', unitCost: null }] }; this.grnReviewMode = false; this.grnEditorOpen = true; this.grnDetail = null; this.correctionSource = null; }
   async applyGrnFilters(): Promise<void> { this.grnPage = 1; await this.load(); }
   async changeGrnPage(page: number): Promise<void> { this.grnPage = Math.min(this.grnPageCount, Math.max(1, page)); await this.load(); }
   async changeGrnPageSize(): Promise<void> { this.grnPage = 1; await this.load(); }
@@ -65,7 +70,7 @@ export class SupplyReceivingComponent implements OnInit {
     const result = await this.api().getGoodsReceipt(id, this.actor());
     if (!result.success) { this.reportError(result.error || 'Could not load GRN.'); return; }
     const detail = result.data; const receipt = detail.receipt;
-    this.receipt = { id: receipt.id, status: receipt.status, documentType: receipt.document_type, correctsGoodsReceiptId: receipt.corrects_goods_receipt_id, correctionReason: receipt.correction_reason || '', supplierId: receipt.supplier_id, agreementId: receipt.agreement_id, businessDate: this.dateInput(receipt.business_date), vehicleNo: receipt.vehicle_no || '', externalReference: receipt.external_reference || '', lines: detail.lines.map((line: any) => ({ productId: line.product_id, sku: line.sku, productName: line.product_name, packageQty: line.handling_quantity ?? line.package_qty, packageUnit: line.handling_uom_snapshot || line.package_unit || 'qty', expectedKilos: line.expected_base_quantity ?? line.expected_kilos, receivedKilos: line.received_base_quantity ?? line.received_kilos, expectedBasePerHandling: line.expected_base_per_handling, conversionMode: line.conversion_mode || 'variable', unitCost: line.unit_cost })) };
+    this.receipt = { id: receipt.id, status: receipt.status, documentType: receipt.document_type, correctsGoodsReceiptId: receipt.corrects_goods_receipt_id, correctionReason: receipt.correction_reason || '', supplierId: receipt.supplier_id, agreementId: receipt.agreement_id, businessDate: this.dateInput(receipt.business_date), vehicleNo: receipt.vehicle_no || '', externalReference: receipt.external_reference || '', lines: detail.lines.map((line: any) => ({ productId: line.product_id, sku: line.sku, productName: line.product_name, packageQty: line.handling_quantity ?? line.package_qty, packageUnit: line.handling_uom_snapshot || line.package_unit || 'qty', expectedKilos: line.expected_base_quantity ?? line.expected_kilos, receivedKilos: line.received_base_quantity ?? line.received_kilos, expectedBasePerHandling: line.expected_base_per_handling, ratioTolerancePercent: line.ratio_tolerance_percent ?? 20, conversionMode: line.conversion_mode || 'variable', unitCost: line.unit_cost })) };
     this.grnDetail = detail; this.grnReviewMode = receipt.status !== 'draft'; this.grnEditorOpen = true; this.correctionSource = null;
   }
   closeGoodsReceipt(): void { this.grnEditorOpen = false; this.grnReviewMode = false; this.grnDetail = null; this.correctionSource = null; }

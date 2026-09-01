@@ -991,6 +991,9 @@ export type CatalogProduct = {
   barcode: string | null;
   category: string | null;
   unit: string | null;
+  handling_uom: string;
+  base_uom: string | null;
+  dual_uom_enabled: number | boolean;
   requires_kilos: number | boolean;
   pricing_basis: 'qty' | 'kilos';
   quantity_step: number;

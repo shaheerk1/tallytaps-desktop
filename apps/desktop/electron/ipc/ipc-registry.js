@@ -503,6 +503,7 @@ function registerIpcHandlers(services) {
   wrapIpcHandler('supply.charges.listTypes', async () => services.catalogService.listSupplierChargeTypes(), { authorize: requireSettlementsView });
   wrapIpcHandler('supply.charges.add', async (payload) => services.catalogService.addSupplierCharge(payload?.charge || {}), { authorize: requireSettlementsManage });
   wrapIpcHandler('inventory.lots.list', async (payload) => services.catalogService.listInventoryLots(payload?.productId || null, payload?.locCode || null), { authorize: requireReceivingView });
+  wrapIpcHandler('inventory.summary.list', async (payload) => services.catalogService.listInventorySummary(payload?.locCode), { authorize: requireReceivingView });
   wrapIpcHandler('inventory.counts.finalize', async (payload) => services.catalogService.finalizeStockCount(payload?.count || {}), { authorize: requireInventoryAdjust });
   wrapIpcHandler('supply.pattiyals.list', async (payload) => services.supplierSaleStatementService.list(payload?.filters || {}), { authorize: requireSettlementsView });
   wrapIpcHandler('supply.pattiyals.get', async (payload) => services.supplierSaleStatementService.get(payload?.statementId), { authorize: requireSettlementsView });

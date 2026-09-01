@@ -106,6 +106,7 @@ contextBridge.exposeInMainWorld('posApi', {
     ,listSupplierChargeTypes: (actor) => ipcRenderer.invoke('supply.charges.listTypes', { actor })
     ,addSupplierCharge: (charge, actor) => ipcRenderer.invoke('supply.charges.add', { charge, actor })
     ,listInventoryLots: (productId, locCode, actor) => ipcRenderer.invoke('inventory.lots.list', { productId, locCode, actor })
+    ,listInventorySummary: (locCode, actor) => ipcRenderer.invoke('inventory.summary.list', { locCode, actor })
     ,finalizeStockCount: (count, actor) => ipcRenderer.invoke('inventory.counts.finalize', { count, actor })
   },
   pattiyals: {

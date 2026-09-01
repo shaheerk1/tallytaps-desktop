@@ -74,9 +74,17 @@ async function main() {
 
         const draft = await catalog.saveGoodsReceiptDraft({
           supplierId: supplier.id, businessDate: txnDate, locCode, macCode, userId,
-          lines: [{ productId: product.id, packageQty: 1, packageUnit: product.handling_uom, receivedKilos: product.dual_uom_enabled ? 1 : null, expectedBasePerHandling: product.dual_uom_enabled ? 1 : null, unitCost: 1 }]
+          lines: [{ productId: product.id, packageQty: 1, packageUnit: product.handling_uom,
+            receivedKilos: null, expectedBasePerHandling: product.dual_uom_enabled ? 1 : null,
+            conversionMode: product.dual_uom_enabled ? 'fixed' : 'variable', ratioTolerancePercent: 15, unitCost: 1 }]
         });
         await catalog.finalizeGoodsReceiptDraft({ goodsReceiptId: draft.id, userId });
+        if (product.dual_uom_enabled) {
+          const [[fixedLot]] = await connection.execute('SELECT received_base_quantity, conversion_mode, ratio_tolerance_percent FROM inventory_lots WHERE goods_receipt_line_id IN (SELECT id FROM goods_receipt_lines WHERE goods_receipt_id = ?) LIMIT 1', [draft.id]);
+          if (Number(fixedLot?.received_base_quantity) !== 1 || fixedLot?.conversion_mode !== 'fixed' || Number(fixedLot?.ratio_tolerance_percent) !== 15) {
+            throw new Error('Fixed-ratio GRN did not derive and retain its lot-specific measured quantity policy.');
+          }
+        }
         const correction = await catalog.createGoodsReceiptCorrection({ goodsReceiptId: draft.id, reason: 'Origin smoke correction', locCode, macCode, businessDate: txnDate, userId });
         await catalog.saveGoodsReceiptDraft({
           goodsReceiptId: correction.id, supplierId: supplier.id, businessDate: txnDate, locCode, macCode,
