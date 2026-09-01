@@ -38,6 +38,8 @@ function createRefundRepository({ database, documentSequenceRepository, business
   function mapItem(row) {
     return {
       ...row,
+      handlingUom: row.handling_uom_snapshot || 'units',
+      baseUom: row.base_uom_snapshot || null,
       sourceQuantity: toNumber(row.source_quantity),
       sourceKilos: row.source_kilos == null ? null : toNumber(row.source_kilos),
       returnQuantity: row.return_quantity == null ? null : toNumber(row.return_quantity),
@@ -113,7 +115,7 @@ function createRefundRepository({ database, documentSequenceRepository, business
 
       const [items] = await connection.execute(
         `SELECT ii.id, ii.seq_no, ii.product_id, ii.item_code, ii.supplier_code, ii.description,
-                ii.quantity, ii.kilos, ii.unit_price, ii.discount, ii.tax,
+                ii.quantity, ii.kilos, ii.handling_uom_snapshot, ii.base_uom_snapshot, ii.unit_price, ii.discount, ii.tax,
                 ii.merchandise_total, ii.bag_charge_total, ii.wage_charge_total, ii.total, ii.metadata,
                 COALESCE(SUM(CASE WHEN r.status = 'completed' THEN ri.return_quantity ELSE 0 END), 0) AS refunded_quantity,
                 COALESCE(SUM(CASE WHEN r.status = 'completed' THEN ri.return_kilos ELSE 0 END), 0) AS refunded_kilos,
@@ -187,6 +189,8 @@ function createRefundRepository({ database, documentSequenceRepository, business
             description: item.description,
             qty: quantity,
             kilos,
+            handlingUom: item.handling_uom_snapshot || 'units',
+            baseUom: item.base_uom_snapshot || null,
           unitPrice: toMoney(item.unit_price),
           discount: toMoney(item.discount),
           tax: toMoney(item.tax),

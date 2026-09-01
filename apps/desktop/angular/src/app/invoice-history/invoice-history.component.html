@@ -29,7 +29,7 @@
       <section class="archive-items-panel">
         <div class="archive-items-scroll">
           <div class="archive-item-row archive-item-head">
-            <span>Item Code</span><span>Description</span><span>Rate</span><span>Qty</span><span>Kilos</span><span>Wage</span><span>Value</span>
+            <span>Item Code</span><span>Description</span><span>Rate</span><span>Unit Count</span><span>Measured Qty</span><span>Wage</span><span>Value</span>
           </div>
           <div class="archive-item-row" *ngFor="let item of invoice.items">
             <span class="archive-item-code">{{ itemCode(item) }}</span>
@@ -50,7 +50,7 @@
           </div>
         </section>
       </section>
-      <div class="totals"><span>Subtotal <b>{{ invoice.subtotal | number:'1.2-2' }}</b></span><span *ngIf="invoice.bag_charge_total">Bag charge <b>{{ invoice.bag_charge_total | number:'1.2-2' }}</b></span><span *ngIf="invoice.wage_charge_total">Wage charge <b>{{ invoice.wage_charge_total | number:'1.2-2' }}</b></span><span *ngIf="invoice.discountTotal">Discount <b>-{{ invoice.discountTotal | number:'1.2-2' }}</b></span><strong>TOTAL <b>{{ invoice.grandTotal | number:'1.2-2' }}</b></strong><span *ngFor="let payment of invoice.payments">{{ paymentLabel(payment) }} <b>{{ payment.amount | number:'1.2-2' }}</b></span><span *ngIf="invoice.balance > 0">Outstanding <b>{{ invoice.balance | number:'1.2-2' }}</b></span></div>
+      <div class="totals"><span>Subtotal <b>{{ invoice.subtotal | number:'1.2-2' }}</b></span><span *ngIf="invoice.bag_charge_total">Packaging charge <b>{{ invoice.bag_charge_total | number:'1.2-2' }}</b></span><span *ngIf="invoice.wage_charge_total">Wage charge <b>{{ invoice.wage_charge_total | number:'1.2-2' }}</b></span><span *ngIf="invoice.discountTotal">Discount <b>-{{ invoice.discountTotal | number:'1.2-2' }}</b></span><strong>TOTAL <b>{{ invoice.grandTotal | number:'1.2-2' }}</b></strong><span *ngFor="let payment of invoice.payments">{{ paymentLabel(payment) }} <b>{{ payment.amount | number:'1.2-2' }}</b></span><span *ngIf="invoice.balance > 0">Outstanding <b>{{ invoice.balance | number:'1.2-2' }}</b></span></div>
       <section *ngIf="invoice.balance > 0" class="collection"><div><b>Collect outstanding balance</b><small>This records a customer-account collection and cash in the active shift automatically.</small></div><label>Amount<input type="number" min="0.01" [max]="invoice.balance" step="0.01" [(ngModel)]="collectionAmount"></label><label>Method<select [(ngModel)]="collectionMethod"><option *ngFor="let mode of paymentModes" [value]="mode.id">{{ mode.name }}</option></select></label><button class="btn" [disabled]="collecting || !collectionAmount || collectionAmount <= 0" (click)="collectBalance()">{{ collecting ? 'Collecting...' : 'Collect balance' }}</button></section>
     </article>
     <article *ngIf="!invoice" class="detail-empty">Select an invoice to view its original receipt data.</article>

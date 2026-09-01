@@ -206,8 +206,8 @@
         <span class="hdr-code">Item Code</span>
         <span class="hdr-desc">Description</span>
         <span class="hdr-rate">Rate</span>
-        <span class="hdr-qty">Qty</span>
-        <span class="hdr-qty">Kilos</span>
+        <span class="hdr-qty">Unit Count</span>
+        <span class="hdr-qty">Measured Qty</span>
         <span class="hdr-qty">Wage</span>
         <span class="hdr-value">Value</span>
         <span class="hdr-plugin" *ngFor="let field of visibleTableFields">{{ field.label }}</span>
@@ -330,7 +330,7 @@
         <span class="value">{{ totalDiscount | number:'1.2-2' }}</span>
       </div>
       <div class="summary-item" *ngIf="bagChargeTotal > 0">
-        <span class="label">Bag Charges</span>
+        <span class="label">Packaging Charges</span>
         <span class="value">{{ bagChargeTotal | number:'1.2-2' }}</span>
       </div>
       <div class="summary-item" *ngIf="wageChargeTotal > 0">
@@ -754,7 +754,7 @@
         <span class="item-picker-code">{{ product.sku }}</span>
         <span class="item-picker-name">
           <b>{{ product.name }}</b>
-          <small>{{ product.pricing_basis === 'kilos' ? 'Priced by kilo' : 'Priced by quantity' }}<span *ngIf="product.requires_kilos"> · kilos required</span></small>
+          <small>{{ product.pricing_basis === 'kilos' ? 'Priced by Measured Qty' : 'Priced by Unit Count' }}<span *ngIf="product.requires_kilos"> · Measured Qty required</span></small>
         </span>
         <span class="item-picker-rate" [class.flexible]="itemPickerPrice(product) === 'Set at sale'">{{ itemPickerPrice(product) }}</span>
       </button>
@@ -841,7 +841,7 @@
                   <tr>
                     <th>Item</th>
                     <th class="text-right">Rate</th>
-                    <th class="text-right">Qty</th>
+                    <th class="text-right">Unit Count</th>
                     <th class="text-right">Disc.</th>
                     <th class="text-right">Value</th>
                   </tr>

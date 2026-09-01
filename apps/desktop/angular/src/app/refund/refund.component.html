@@ -94,10 +94,10 @@
           <article *ngFor="let item of source.items" class="source-item">
             <div>
               <strong>{{ itemCode(item) }} {{ item.description }}</strong>
-              <small *ngIf="item.kilos !== null">Sold: {{ formatMeasure(item.kilos) }} kg - Remaining: {{ formatMeasure(item.remainingKilos) }} kg</small>
-              <small *ngIf="item.kilos === null">Sold: {{ formatMeasure(item.qty) }} - Remaining: {{ formatMeasure(item.remainingQuantity) }}</small>
+              <small>Unit Count: sold {{ formatMeasure(item.qty) }} {{ item.handlingUom || 'units' }} - remaining {{ formatMeasure(item.remainingQuantity) }} {{ item.handlingUom || 'units' }}</small>
+              <small *ngIf="item.kilos !== null">Measured Qty: sold {{ formatMeasure(item.kilos) }} {{ item.baseUom || 'measured units' }} - remaining {{ formatMeasure(item.remainingKilos) }} {{ item.baseUom || 'measured units' }}</small>
               <small>Merchandise: {{ item.merchandiseTotal | number:'1.2-2' }} - Previously refunded: {{ item.refundedTotal | number:'1.2-2' }}</small>
-              <small *ngIf="item.bagChargeTotal">Bag charge: {{ item.bagChargeTotal | number:'1.2-2' }} - Remaining: {{ item.remainingBagChargeTotal | number:'1.2-2' }}</small>
+              <small *ngIf="item.bagChargeTotal">Packaging charge: {{ item.bagChargeTotal | number:'1.2-2' }} - Remaining: {{ item.remainingBagChargeTotal | number:'1.2-2' }}</small>
               <small *ngIf="item.wageChargeTotal">Wage charge: {{ item.wageChargeTotal | number:'1.2-2' }} - Remaining: {{ item.remainingWageChargeTotal | number:'1.2-2' }}</small>
               <small class="plugin-value" *ngFor="let value of pluginValues(item)">{{ value.label }}: {{ value.value }}</small>
             </div>
@@ -114,13 +114,13 @@
             <label>Reason <input [(ngModel)]="reason" placeholder="Required at completion" /></label>
           </div>
           <div class="draft-table">
-            <div class="draft-row heading"><span>Item</span><span>Return amount</span><span>Charge refund</span><span>Disposition</span><span>Total</span><span></span></div>
+            <div class="draft-row heading"><span>Item</span><span>Return Qty</span><span>Charge refund</span><span>Disposition</span><span>Total</span><span></span></div>
             <div class="draft-row" *ngFor="let item of draft.items">
               <span><strong>{{ itemCode(item) }} {{ item.description }}</strong><small>Source item #{{ item.source_invoice_item_id }}</small><small class="plugin-value" *ngFor="let value of pluginValues(item)">{{ value.label }}: {{ value.value }}</small></span>
-              <span *ngIf="item.returnKilos !== null"><input type="number" min="0.001" step="0.001" [(ngModel)]="item.returnKilos" (change)="updateItem(item)" /> kg</span>
-              <span *ngIf="item.returnKilos === null"><input type="number" min="0.001" step="0.001" [(ngModel)]="item.returnQuantity" (change)="updateItem(item)" /></span>
+              <span *ngIf="item.returnKilos !== null"><input type="number" min="0.001" step="0.001" [(ngModel)]="item.returnKilos" (change)="updateItem(item)" /> {{ item.baseUom || 'measured units' }} <small>Measured Qty</small></span>
+              <span *ngIf="item.returnKilos === null"><input type="number" min="0.001" step="0.001" [(ngModel)]="item.returnQuantity" (change)="updateItem(item)" /> {{ item.handlingUom || 'units' }} <small>Unit Count</small></span>
               <span class="charge-controls">
-                <label *ngIf="hasBagCharge(item)">Bag
+                <label *ngIf="hasBagCharge(item)">Packaging
                   <select [(ngModel)]="item.bagChargeMode" (change)="updateItem(item)"><option value="proportional">Proportional</option><option value="exclude">Do not refund</option><option value="custom">Custom</option></select>
                   <input *ngIf="item.bagChargeMode === 'custom'" type="number" min="0" step="0.01" [(ngModel)]="item.bagChargeTotal" (change)="updateItem(item)" />
                   <small>{{ item.bagChargeTotal | number:'1.2-2' }}</small>
@@ -130,7 +130,7 @@
                   <input *ngIf="item.wageChargeMode === 'custom'" type="number" min="0" step="0.01" [(ngModel)]="item.wageChargeTotal" (change)="updateItem(item)" />
                   <small>{{ item.wageChargeTotal | number:'1.2-2' }}</small>
                 </label>
-                <small *ngIf="!hasBagCharge(item) && !hasWageCharge(item)">No bag or wage charge</small>
+                <small *ngIf="!hasBagCharge(item) && !hasWageCharge(item)">No packaging or wage charge</small>
               </span>
               <span><select [(ngModel)]="item.stock_disposition" (change)="updateItem(item)"><option value="sellable">Sellable (stock update pending)</option><option value="damaged">Damaged</option><option value="waste">Waste</option></select></span>
               <strong>{{ item.total | number:'1.2-2' }}</strong>

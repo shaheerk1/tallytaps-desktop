@@ -731,6 +731,8 @@ export type InvoiceArchive = {
     description: string;
     qty: number;
     kilos?: number | null;
+    handling_uom_snapshot?: string | null;
+    base_uom_snapshot?: string | null;
     pricingBasis?: 'qty' | 'kilos';
     unitPrice: number;
     discount: number;
@@ -824,6 +826,8 @@ export type RefundSourceItem = {
   description: string;
   qty: number;
   kilos: number | null;
+  handlingUom?: string;
+  baseUom?: string | null;
   unitPrice: number;
   discount: number;
   tax: number;
@@ -877,6 +881,8 @@ export type RefundDraftItem = {
   sourceKilos: number | null;
   returnQuantity: number;
   returnKilos: number | null;
+  handlingUom?: string;
+  baseUom?: string | null;
   unitPrice: number;
   discount: number;
   tax: number;

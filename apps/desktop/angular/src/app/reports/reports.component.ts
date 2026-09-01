@@ -89,6 +89,7 @@ export class ReportsComponent implements OnInit {
   }
 
   value(row: SalesRow, key: string): string | number { return (row as unknown as Record<string, string | number>)[this.rowKey(key)] ?? ''; }
+  screenColumnLabel(column: Column): string { return ({ quantity: 'Unit Count', kilos: 'Measured Qty', bag: 'Packaging charge' } as Record<string, string>)[column.key] || column.label; }
   total(key: string): number | null { const totalKey: Record<string, keyof SalesTotals> = { lines: 'lineCount', invoices: 'invoiceCount', quantity: 'quantity', kilos: 'kilos', merchandise: 'merchandiseTotal', bag: 'bagChargeTotal', wage: 'wageChargeTotal', total: 'total' }; return totalKey[key] ? Number(this.sales.totals[totalKey[key]] || 0) : null; }
   private rowKey(key: string): string { return ({ date: 'txnDate', time: 'txnTime', item: 'itemCode', description: 'description', supplier: 'supplierCode', customer: 'customerCode', status: 'status', lines: 'lineCount', invoices: 'invoiceCount', quantity: 'quantity', kilos: 'kilos', price: 'unitPrice', merchandise: 'merchandiseTotal', bag: 'bagChargeTotal', wage: 'wageChargeTotal', total: 'total' } as Record<string, string>)[key] || key; }
   format(value: string | number, column: Column): string { if (!column.numeric) return String(value || '-'); const number = Number(value || 0); return column.money ? number.toFixed(2) : (Number.isInteger(number) ? String(number) : number.toFixed(3).replace(/0+$/, '').replace(/\.$/, '')); }

@@ -4,6 +4,8 @@ export type ItemMeasureSummary = {
   qty: number;
   kilos: number;
   hasKilos: boolean;
+  handlingUom: string;
+  baseUom: string;
 };
 
 type ItemMeasureSource = {
@@ -15,6 +17,10 @@ type ItemMeasureSource = {
   qty?: number | string | null;
   quantity?: number | string | null;
   kilos?: number | string | null;
+  handlingUom?: string | null;
+  baseUom?: string | null;
+  handling_uom_snapshot?: string | null;
+  base_uom_snapshot?: string | null;
 };
 
 function finiteMeasure(value: unknown): number {
@@ -38,7 +44,9 @@ export function summarizeItemMeasures(lines: ItemMeasureSource[] | null | undefi
       : itemCode
         ? `code:${itemCode}`
         : `description:${description.toLocaleLowerCase()}`;
-    const existing = grouped.get(key) || { key, description, qty: 0, kilos: 0, hasKilos: false };
+    const handlingUom = String(line.handlingUom ?? line.handling_uom_snapshot ?? 'units').trim() || 'units';
+    const baseUom = String(line.baseUom ?? line.base_uom_snapshot ?? 'measured units').trim() || 'measured units';
+    const existing = grouped.get(key) || { key, description, qty: 0, kilos: 0, hasKilos: false, handlingUom, baseUom };
     existing.qty = roundedMeasure(existing.qty + finiteMeasure(line.qty ?? line.quantity));
     if (line.kilos !== null && line.kilos !== undefined && line.kilos !== '') {
       existing.hasKilos = true;
@@ -58,8 +66,8 @@ export function formatItemMeasure(value: unknown): string {
 }
 
 export function itemMeasureSummaryText(summary: ItemMeasureSummary): string {
-  const quantity = `${formatItemMeasure(summary.qty)} qty`;
+  const quantity = `${formatItemMeasure(summary.qty)} ${summary.handlingUom}`;
   return summary.hasKilos
-    ? `${formatItemMeasure(summary.kilos)} kg / ${quantity}`
+    ? `${formatItemMeasure(summary.kilos)} ${summary.baseUom} / ${quantity}`
     : quantity;
 }
