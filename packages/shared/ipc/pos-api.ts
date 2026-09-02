@@ -45,7 +45,12 @@ export type MobileInboxBill = {
   device: { nickname: string | null; name: string | null };
   lines: Array<{ lineNo: number; sourceProductKey: string | null; sku: string | null; barcode: string | null;
     description: string; quantity: number; kilos: number | null; pricingBasis: 'qty' | 'kilos'; unitPrice: number;
-    discount: number; tax: number; merchandiseTotal: number; bagChargeTotal: number; wageChargeTotal: number; lineTotal: number; attributes: Record<string, unknown> }>;
+    handlingQuantity?: number; measuredQuantity?: number | null; handlingUom?: string; baseUom?: string | null;
+    dualUomEnabled?: boolean; requiresMeasuredQuantity?: boolean; allowZeroQuantity?: boolean; quantityStep?: number;
+    discount: number; tax: number; merchandiseTotal: number; bagChargeRate?: number; packagingChargeRate?: number;
+    bagChargeTotal: number; packagingChargeTotal?: number; wageChargeRate?: number; wageBasis?: 'none' | 'qty' | 'kilos';
+    wageChargeTotal: number; lineTotal: number; priceOverrideApplied?: boolean; priceOverrideReason?: string | null;
+    productSnapshot?: Record<string, unknown>; attributes: Record<string, unknown> }>;
   payments: Array<{ paymentNo: number; method: string; amount: number; reference: string | null }>;
 };
 

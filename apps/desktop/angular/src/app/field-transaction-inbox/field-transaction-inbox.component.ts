@@ -325,6 +325,27 @@ export class FieldTransactionInboxComponent implements OnInit {
     return `${(value / (1024 * 1024)).toFixed(1)} MB`;
   }
 
+  mobileBillLineMeasure(line: MobileInboxBill['lines'][number]): string {
+    const handling = this.mobileBillHandlingQuantity(line);
+    const handlingLabel = this.mobileBillHandlingUom(line);
+    const measured = this.mobileBillMeasuredQuantity(line);
+    const baseLabel = this.mobileBillBaseUom(line);
+    const values = [`${this.formatNumber(handling, 3)} ${handlingLabel}`];
+    if (measured != null) values.push(`${this.formatNumber(measured, 3)} ${baseLabel}`);
+    return values.join(' / ');
+  }
+
+  mobileBillPriceUom(line: MobileInboxBill['lines'][number]): string {
+    return line.pricingBasis === 'kilos' ? this.mobileBillBaseUom(line) : this.mobileBillHandlingUom(line);
+  }
+
+  mobileBillChargeSummary(line: MobileInboxBill['lines'][number]): string {
+    const values = [];
+    if (line.bagChargeTotal) values.push(`Packaging ${this.formatNumber(line.bagChargeTotal)}`);
+    if (line.wageChargeTotal) values.push(`Wage ${this.formatNumber(line.wageChargeTotal)}`);
+    return values.join(' / ');
+  }
+
   private deviceKey(record: FieldInboxRecord): string {
     return record.device.id || record.device.nickname || record.device.model || record.device.name || 'unknown';
   }
@@ -382,10 +403,14 @@ export class FieldTransactionInboxComponent implements OnInit {
       rasterHeaderLayout: 'billing',
       items: bill.lines.map((line) => ({
         description: `${line.sku ? `${line.sku} ` : ''}${line.description}`,
-        qty: line.pricingBasis === 'kilos' ? `${line.kilos || 0}` : `${line.quantity}`,
+        qty: line.pricingBasis === 'kilos'
+          ? `${this.mobileBillMeasuredQuantity(line) || 0} ${this.mobileBillBaseUom(line)}`
+          : `${this.mobileBillHandlingQuantity(line)} ${this.mobileBillHandlingUom(line)}`,
         measure: {
-          qty: `${line.quantity}`,
-          ...(line.pricingBasis === 'kilos' ? { kilos: `${line.kilos || 0}` } : {}),
+          qty: `${this.mobileBillHandlingQuantity(line)} ${this.mobileBillHandlingUom(line)}`,
+          ...(this.mobileBillMeasuredQuantity(line) != null
+            ? { kilos: `${this.mobileBillMeasuredQuantity(line) || 0} ${this.mobileBillBaseUom(line)}` }
+            : {}),
           rate: money(line.unitPrice)
         },
         amount: money(line.lineTotal),
@@ -406,5 +431,24 @@ export class FieldTransactionInboxComponent implements OnInit {
       preLines: bill.note ? [{ text: bill.note, align: 'left' }] : [],
       footerLines: cfg.footers
     };
+  }
+
+  private mobileBillHandlingQuantity(line: MobileInboxBill['lines'][number]): number {
+    return Number(line.handlingQuantity ?? line.quantity ?? 0);
+  }
+
+  private mobileBillMeasuredQuantity(line: MobileInboxBill['lines'][number]): number | null {
+    const value = line.measuredQuantity ?? line.kilos;
+    return value == null ? null : Number(value);
+  }
+
+  private mobileBillHandlingUom(line: MobileInboxBill['lines'][number]): string {
+    const snapshot = line.productSnapshot || (line.attributes?.['productSnapshot'] as Record<string, unknown> | undefined) || {};
+    return String(line.handlingUom || snapshot['handling_uom'] || 'qty');
+  }
+
+  private mobileBillBaseUom(line: MobileInboxBill['lines'][number]): string {
+    const snapshot = line.productSnapshot || (line.attributes?.['productSnapshot'] as Record<string, unknown> | undefined) || {};
+    return String(line.baseUom || snapshot['base_uom'] || 'measured');
   }
 }
