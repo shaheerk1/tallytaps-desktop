@@ -17,11 +17,17 @@ const source = {
       unitPrice: 50.5,
       discount: 0,
       tax: 0,
+      // Line money is prorated from its recorded components, not from one total.
+      merchandiseTotal: 505,
+      bagChargeTotal: 40,
+      wageChargeTotal: 10,
       total: 555,
       metadata: { per_kilo: true, kilos: 10, wage: 10, bags: 40 },
       remainingQuantity: 1,
       remainingKilos: 10,
-      remainingTotal: 555
+      remainingTotal: 555,
+      remainingBagChargeTotal: 40,
+      remainingWageChargeTotal: 10
     }
   ]
 };
@@ -34,6 +40,8 @@ const repository = {
   async getDraft() {
     return { id: 77, reason: '', items: [{ total: 277.5 }] };
   },
+  // A return first clears customer debt; only the remainder is paid out.
+  async getSettlementQuote() { return { returnTotal: 277.5, outstandingBalance: 0, debtReduction: 0, payoutDue: 277.5 }; },
   async finalizeDraft(payload) { return { refundId: 1, refundNumber: 'REF-1', refundNo: 1, grandTotal: 277.5, paidTotal: payload.payments[0].amount }; },
   async createDraft() { return { draftId: 77, refundNo: 1 }; },
   async removeDraftItem() {},
