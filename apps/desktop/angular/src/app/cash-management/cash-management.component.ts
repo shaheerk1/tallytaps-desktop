@@ -40,6 +40,28 @@ export class CashManagementComponent implements OnInit {
   }
   blankLines(): CashCountLine[] { return DEFAULT_DENOMINATIONS.map((denomination) => ({ denomination, quantity: 0 })); }
   total(lines: CashCountLine[]): number { return lines.reduce((sum, line) => sum + line.denomination * Number(line.quantity || 0), 0); }
+  get movementDirection(): 'in' | 'out' { return this.movementType === 'cash_in' ? 'in' : 'out'; }
+  get movementLabel(): string {
+    return ({ cash_in: 'Other cash coming in', cash_out: 'Other cash going out', safe_drop: 'Cash going to safe', bank_drop: 'Cash going to bank' } as const)[this.movementType];
+  }
+  selectMovement(type: 'cash_in' | 'cash_out' | 'safe_drop' | 'bank_drop'): void { this.movementType = type; }
+  /**
+   * A shift carries its business date straight from a MySQL DATE column, and
+   * Electron IPC preserves it as a Date. Stringifying one prints "Wed Sep 02"
+   * and serializing one shifts it across the Colombo offset, so the calendar
+   * parts are read explicitly.
+   */
+  businessDateText(value: unknown): string {
+    if (value instanceof Date) {
+      return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
+    }
+    return String(value || '').slice(0, 10);
+  }
+  /** Switching sides keeps whichever outgoing reason was already chosen. */
+  selectDirection(direction: 'in' | 'out'): void {
+    if (direction === 'in') { this.movementType = 'cash_in'; return; }
+    if (this.movementType === 'cash_in') this.movementType = 'cash_out';
+  }
 
   async load(): Promise<void> {
     if (!window.posApi) return;
@@ -88,13 +110,17 @@ export class CashManagementComponent implements OnInit {
 
   async addMovement(): Promise<void> {
     if (!window.posApi || !this.shift) return;
+    if (!this.movementAmount || !this.movementReason.trim()) {
+      this.error = 'Enter an amount and reason before recording this cash movement.'; return;
+    }
     this.error = '';
     const result = await window.posApi.cash.addMovement({
       shiftId: this.shift.id, type: this.movementType, amount: this.movementAmount,
       reason: this.movementReason, userId: this.context().userId
     }, this.actor());
     if (!result.success) { this.error = result.error || 'Could not record the cash movement.'; return; }
-    this.shift = result.data; this.movementAmount = 0; this.movementReason = ''; this.info = 'Cash movement recorded.';
+    this.shift = result.data; this.movementAmount = 0; this.movementReason = '';
+    this.info = `${this.movementLabel} recorded successfully.`;
     await this.loadHistory();
   }
 
@@ -122,7 +148,7 @@ export class CashManagementComponent implements OnInit {
       reportType: type,
       shiftId: this.shift.id,
       drawerName: this.shift.drawerName,
-      businessDate: this.shift.businessDate,
+      businessDate: this.businessDateText(this.shift.businessDate),
       openingTotal: this.shift.openingTotal,
       expectedTotal: this.shift.expectedTotal,
       declaredTotal: this.shift.declaredTotal,
@@ -154,7 +180,7 @@ export class CashManagementComponent implements OnInit {
         { label: 'Shift', value: String(shift.id) },
         { label: 'Drawer', value: shift.drawerName },
         { label: 'Cashier', value: this.session.getUser()?.displayName || '' },
-        { label: 'Business Date', value: String(shift.businessDate).slice(0, 10) }
+        { label: 'Business Date', value: this.businessDateText(shift.businessDate) }
       ],
       items,
       totals: [

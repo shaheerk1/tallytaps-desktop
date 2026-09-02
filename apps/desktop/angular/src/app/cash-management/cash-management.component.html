@@ -36,15 +36,20 @@
     <section class="two-col" *ngIf="shift.status === 'open'">
       <article>
         <h2>Cash Movement</h2>
-        <select [(ngModel)]="movementType">
-          <option value="cash_in">Cash in</option>
-          <option value="cash_out">Cash out</option>
-          <option value="safe_drop">Safe drop</option>
-          <option value="bank_drop">Bank drop</option>
-        </select>
+        <p>Choose the direction first. The drawer effect is shown again before saving.</p>
+        <div class="movement-direction" role="group" aria-label="Cash movement direction">
+          <button type="button" class="direction-in" [class.selected]="movementDirection === 'in'" (click)="selectDirection('in')"><b>↓ CASH COMING IN</b><span>Drawer balance increases</span></button>
+          <button type="button" class="direction-out" [class.selected]="movementDirection === 'out'" (click)="selectDirection('out')"><b>↑ CASH GOING OUT</b><span>Drawer balance decreases</span></button>
+        </div>
+        <div class="out-reason-options" *ngIf="movementDirection === 'out'">
+          <button type="button" [class.selected]="movementType === 'cash_out'" (click)="selectMovement('cash_out')">Other cash out</button>
+          <button type="button" [class.selected]="movementType === 'safe_drop'" (click)="selectMovement('safe_drop')">Safe drop</button>
+          <button type="button" [class.selected]="movementType === 'bank_drop'" (click)="selectMovement('bank_drop')">Bank drop</button>
+        </div>
         <input type="number" min="0.01" [(ngModel)]="movementAmount" placeholder="Amount" />
         <input [(ngModel)]="movementReason" placeholder="Required reason" />
-        <button class="primary" (click)="addMovement()">Record Movement</button>
+        <div class="movement-impact" [class.money-in]="movementDirection === 'in'" [class.money-out]="movementDirection === 'out'"><span>{{ movementDirection === 'in' ? 'DRAWER WILL INCREASE BY' : 'DRAWER WILL DECREASE BY' }}</span><strong>{{ movementDirection === 'in' ? '+' : '−' }}{{ movementAmount || 0 | number:'1.2-2' }}</strong><small>{{ movementLabel }}</small></div>
+        <button class="primary movement-save" [class.outgoing]="movementDirection === 'out'" (click)="addMovement()">{{ movementDirection === 'in' ? 'Confirm Cash Coming In' : 'Confirm Cash Going Out' }}</button>
       </article>
 
       <article>
