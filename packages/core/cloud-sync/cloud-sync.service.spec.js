@@ -15,6 +15,12 @@ test('desktop archive includes lot allocation exceptions and reconciliation even
   assert.ok(STREAMS.some((stream) => stream.entity === 'inventory_allocation_event'));
 });
 
+test('desktop archive includes the full customer advance audit trail', () => {
+  for (const entity of ['customer_advance_receipt', 'customer_advance_payment', 'customer_advance_refund', 'customer_advance_entry', 'invoice_advance_allocation']) {
+    assert.ok(STREAMS.some((stream) => stream.entity === entity), `${entity} is missing`);
+  }
+});
+
 test('manual cloud sync registers a node, uploads ordered changes and publishes a catalog', async () => {
   const config = { installation_id: '734b5e3f-7d4a-4c5f-8df4-f302cf4efce1', host_id: 'TH-TEST', api_key_ciphertext: 'host-key',
     enabled: 0, interval_minutes: 15, batch_size: 100, max_batches_per_run: 4, node_nickname: 'Main', last_catalog_hash: null };

@@ -33,6 +33,7 @@ aside, .invoice-detail, .detail-empty { background:var(--ui-warm-surface); box-s
 .items { padding:6px 16px; }.item { padding:10px 0; }
 .totals { gap:6px; padding:12px; margin:0 16px 16px; border:1px solid var(--ui-border); background:var(--ui-surface-muted); border-radius:var(--ui-radius-sm); }
 .collection { gap:10px; margin:0 16px 16px; padding:12px; background:var(--ui-primary-soft); }
+.collection .collection-advance { margin-top:4px; padding:6px 8px; border:1px solid #badbc8; border-radius:var(--ui-radius-sm); background:#f1faf5; color:var(--ui-success); font-weight:650; }
 @media(max-width:800px) { .invoice-history { padding:18px; } main { height:auto; } }
 
 /* Billing-style, read-only invoice lines. The line table owns its scrolling;

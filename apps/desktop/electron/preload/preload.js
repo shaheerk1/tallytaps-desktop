@@ -113,6 +113,12 @@ contextBridge.exposeInMainWorld('posApi', {
     ,allocateException: (allocation, actor) => ipcRenderer.invoke('inventory.allocations.resolve', { allocation, actor })
     ,reallocateSale: (allocation, actor) => ipcRenderer.invoke('inventory.allocations.reallocate', { allocation, actor })
   },
+  customerAdvances: {
+    balance: (customerAccountId, locCode, actor) => ipcRenderer.invoke('customerAdvances.balance', { customerAccountId, locCode, actor }),
+    summary: (customerAccountId, locCode, actor) => ipcRenderer.invoke('customerAdvances.summary', { customerAccountId, locCode, actor }),
+    receive: (advance, actor) => ipcRenderer.invoke('customerAdvances.receive', { ...advance, actor }),
+    refund: (refund, actor) => ipcRenderer.invoke('customerAdvances.refund', { ...refund, actor })
+  },
   pattiyals: {
     list: (filters, actor) => ipcRenderer.invoke('supply.pattiyals.list', { filters, actor }),
     get: (statementId, actor) => ipcRenderer.invoke('supply.pattiyals.get', { statementId, actor }),

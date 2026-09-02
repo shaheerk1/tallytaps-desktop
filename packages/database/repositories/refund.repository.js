@@ -1,6 +1,6 @@
 const { createInventoryLedgerRepository } = require('./inventory-ledger.repository');
 
-function createRefundRepository({ database, documentSequenceRepository, businessDayRepository, inventoryLedgerRepository }) {
+function createRefundRepository({ database, documentSequenceRepository, businessDayRepository, inventoryLedgerRepository, customerAdvanceRepository = null }) {
   if (!database) {
     throw new Error('Refund repository requires a database instance.');
   }
@@ -135,6 +135,17 @@ function createRefundRepository({ database, documentSequenceRepository, business
          FROM payments WHERE invoice_id = ? ORDER BY id ASC`,
         [invoiceId]
       );
+      const [advanceRows] = await connection.execute(
+        `SELECT COALESCE(SUM(a.amount - COALESCE(restored.amount, 0)), 0) AS restorable_amount
+         FROM invoice_advance_allocations a
+         LEFT JOIN (
+           SELECT invoice_advance_allocation_id, SUM(amount) AS amount
+           FROM customer_advance_entries
+           WHERE entry_type = 'restore_credit'
+           GROUP BY invoice_advance_allocation_id
+         ) restored ON restored.invoice_advance_allocation_id = a.id
+         WHERE a.invoice_id = ?`, [invoiceId]
+      );
       let customer = null;
       if (invoices[0].customer_account_id) {
         const [customers] = await connection.execute(
@@ -162,6 +173,7 @@ function createRefundRepository({ database, documentSequenceRepository, business
         grandTotal: toMoney(invoices[0].grand_total),
         paidTotal: toMoney(invoices[0].paid_total),
         balance: toMoney(invoices[0].balance),
+        advanceRestorable: toMoney(advanceRows[0]?.restorable_amount),
         metadata: parseJson(invoices[0].metadata),
         billHeader: {},
         customer: customer ? {
@@ -564,7 +576,10 @@ function createRefundRepository({ database, documentSequenceRepository, business
             [remainingBalance, remainingBalance, draft.source_invoice_id]
           );
         }
-        if (payoutTotal > 0 && draft.source_customer_account_id) {
+        const advanceRestoreTotal = toMoney((payments || []).filter((payment) => payment.method === 'advance')
+          .reduce((sum, payment) => sum + toMoney(payment.amount), 0));
+        const externalPayoutTotal = toMoney(payoutTotal - advanceRestoreTotal);
+        if (externalPayoutTotal > 0 && draft.source_customer_account_id) {
           receivableEntryNo += 1;
           await connection.execute(
             `INSERT INTO customer_receivable_entries
@@ -572,7 +587,7 @@ function createRefundRepository({ database, documentSequenceRepository, business
                 invoice_id, refund_id, cash_shift_id, entry_type, amount, reason, created_by, metadata)
              VALUES (?, ?, ?, ?, ?, 'refund', ?, ?, ?, ?, ?, 'refund_debit', ?, 'Refund payout after debt settlement', ?, CAST(? AS JSON))`,
             [businessDay.id, draft.source_customer_account_id, draft.loc_code, draft.mac_code, draft.txn_date, draft.refund_no, receivableEntryNo,
-              draft.source_invoice_id, refundId, cashShiftId, payoutTotal, userId || draft.user_id || null, JSON.stringify({ refundNumber })]
+              draft.source_invoice_id, refundId, cashShiftId, externalPayoutTotal, userId || draft.user_id || null, JSON.stringify({ refundNumber })]
           );
         }
         let refundLineNo = 0;
@@ -706,12 +721,22 @@ function createRefundRepository({ database, documentSequenceRepository, business
         let refundPaymentNo = 0;
         for (const payment of payments || []) {
           refundPaymentNo += 1;
-          await connection.execute(
+          const [refundPaymentResult] = await connection.execute(
             `INSERT INTO refund_payments
                (refund_id, loc_code, mac_code, txn_date, refund_no, payment_no, method, amount, provider_ref, status)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed')`,
             [refundId, draft.loc_code, draft.mac_code, draft.txn_date, draft.refund_no, refundPaymentNo, payment.method, payment.amount, payment.providerRef || null]
           );
+          if (payment.method === 'advance') {
+            if (!customerAdvanceRepository || !draft.source_customer_account_id) throw new Error('This refund cannot restore customer advance without the original customer account.');
+            await customerAdvanceRepository.restoreFromRefundWithConnection(connection, {
+              customerAccountId: draft.source_customer_account_id, businessDayId: businessDay.id,
+              locCode: draft.loc_code, macCode: draft.mac_code, txnDate: draft.txn_date,
+              sourceInvoiceId: draft.source_invoice_id, refundId, refundNumber,
+              refundPaymentId: refundPaymentResult.insertId, paymentNo: refundPaymentNo,
+              documentNo: draft.refund_no, amount: payment.amount, userId: userId || draft.user_id
+            });
+          }
         }
         if (cashShiftId) {
           const [shifts] = await connection.execute(

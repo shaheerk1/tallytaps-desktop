@@ -48,6 +48,7 @@ function createPaymentModeRegistry() {
       priority,
       enabled: mode.enabled !== false,
       pluginId: mode.pluginId || null,
+      configuration: mode.configuration || null,
       core: false
     });
     return { registered: mode.id };
@@ -84,6 +85,7 @@ function createPaymentModeRegistry() {
         priority: Number.isFinite(Number(mode.priority)) ? Number(mode.priority) : 100,
         enabled: mode.enabled !== false,
         pluginId: null,
+        configuration: mode.configuration || null,
         core: mode.core !== false
       });
     }

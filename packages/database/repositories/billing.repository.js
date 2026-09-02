@@ -1,6 +1,6 @@
 const { createInventoryLedgerRepository } = require('./inventory-ledger.repository');
 
-function createBillingRepository({ database, businessDayRepository, documentSequenceRepository, inventoryLedgerRepository }) {
+function createBillingRepository({ database, businessDayRepository, documentSequenceRepository, inventoryLedgerRepository, customerAdvanceRepository = null }) {
   if (!database) {
     throw new Error('Billing repository requires a database instance.');
   }
@@ -378,6 +378,15 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
             txnDate: businessDate, documentType: 'collection', documentNo: collectionNo, paymentNo,
             customerAccountId: invoice.customer_account_id, payment, userId
           });
+          if (payment.method === 'advance') {
+            if (!customerAdvanceRepository) throw new Error('Customer advance settlement is not available.');
+            await customerAdvanceRepository.applyToInvoiceWithConnection(connection, {
+              customerAccountId: invoice.customer_account_id, businessDayId: businessDay.id,
+              locCode: locationCode, macCode: machineCode, txnDate: businessDate,
+              invoiceId, invoiceNumber: invoice.invoice_number, paymentId: paymentResult.insertId, paymentNo,
+              documentType: 'collection', documentNo: collectionNo, amount: toMoney(payment.amount), userId
+            });
+          }
         }
         const remainingBalance = toMoney(openBalance - total);
         await connection.execute(
@@ -734,6 +743,14 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
             documentType: 'sale', documentNo: receiptNo, paymentNo,
             customerAccountId, payment: p, userId
           });
+          if (p.method === 'advance') {
+            if (!customerAdvanceRepository || !customerAccountId) throw new Error('A customer account is required to use advance money.');
+            await customerAdvanceRepository.applyToInvoiceWithConnection(connection, {
+              customerAccountId, businessDayId: businessDay.id, locCode, macCode, txnDate,
+              invoiceId, invoiceNumber, paymentId: paymentResult.insertId, paymentNo,
+              documentNo: receiptNo, amount: p.amount, userId
+            });
+          }
         }
 
         if (cashShiftId) {

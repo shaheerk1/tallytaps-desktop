@@ -79,7 +79,8 @@ async function seedAdminUser(database) {
       'refund.view', 'refund.create',
       'cash.shift.view', 'cash.shift.open', 'cash.movement.create', 'cash.count.create', 'cash.shift.blindClose', 'cash.shift.close',
       'business-day.view', 'business-day.open', 'business-day.close', 'business-day.reopen',
-      'customers.view', 'receivables.view', 'receivables.collect'
+      'customers.view', 'receivables.view', 'receivables.collect',
+      'customer-advances.view', 'customer-advances.create'
     ];
 
     const cashierPlaceholders = cashierPermissions.map(() => '?').join(', ');

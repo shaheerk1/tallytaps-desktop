@@ -228,6 +228,8 @@ export class BillingComponent implements OnInit, OnDestroy {
   private paymentAccountSearchToken = 0;
   private paymentAccountSearchTimer?: ReturnType<typeof setTimeout>;
   paymentError = '';
+  advanceAvailable = 0;
+  isAdvanceBalanceLoading = false;
   paymentSuccess: FinalizeResult | null = null;
   isFinalizing = false;
   numpadKeys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', '⌫'];
@@ -1831,6 +1833,20 @@ export class BillingComponent implements OnInit, OnDestroy {
     return this.selectedMode?.id === 'cheque';
   }
 
+  get isAdvanceModeSelected(): boolean { return this.selectedMode?.id === 'advance'; }
+  get queuedAdvanceAmount(): number {
+    return this.payments.filter((payment) => payment.method === 'advance')
+      .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+  }
+  /** Tender already added from real money, excluding the customer's stored advance. */
+  get otherTenderTotal(): number {
+    return this.payments.filter((payment) => payment.method !== 'advance' && this.modeType(payment.method) === 'tender')
+      .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+  }
+  private modeType(methodId: string): string {
+    return this.paymentModes.find((mode) => mode.id === methodId)?.type || 'tender';
+  }
+
   get canCompletePayment(): boolean {
     if (this.netTotal <= 0 || this.payments.length === 0) return false;
     if (this.tenderTotal >= this.netTotal) return true;
@@ -1889,6 +1905,7 @@ export class BillingComponent implements OnInit, OnDestroy {
         const firstTender = this.paymentModes.find((m) => m.type === 'tender');
         this.selectedModeId = firstTender?.id || this.paymentModes[0]?.id || 'cash';
         this.enteredAmount = this.netTotal.toFixed(2);
+        await this.loadAdvanceBalance();
         this.focusAmountInput();
       } else {
         this.paymentError = (result as { error: string }).error || 'Failed to load payment modes.';
@@ -1940,7 +1957,9 @@ export class BillingComponent implements OnInit, OnDestroy {
     this.selectedModeId = modeId;
     this.showChequeDetailsEditor = false;
     const remaining = this.outstanding > 0 ? this.outstanding : this.netTotal;
-    this.enteredAmount = remaining.toFixed(2);
+    this.enteredAmount = (modeId === 'advance'
+      ? Math.min(remaining, Math.max(this.advanceAvailable - this.queuedAdvanceAmount, 0))
+      : remaining).toFixed(2);
     this.focusAmountInput();
   }
 
@@ -2030,6 +2049,18 @@ export class BillingComponent implements OnInit, OnDestroy {
     this.paymentAccountTerm = '';
     this.paymentAccountMatches = [];
     this.paymentAccountSearchOpen = false;
+    await this.loadAdvanceBalance();
+  }
+
+  private async loadAdvanceBalance(): Promise<void> {
+    this.advanceAvailable = 0;
+    if (!window.posApi || !this.customerAccountId || !this.locationCode) return;
+    this.isAdvanceBalanceLoading = true;
+    const result = await window.posApi.customerAdvances.balance(
+      this.customerAccountId, this.locationCode, this.actor()
+    );
+    this.isAdvanceBalanceLoading = false;
+    if (result.success) this.advanceAvailable = Number(result.data || 0);
   }
 
   private currentChequeDetails(): ChequePaymentDetails | null {
@@ -2107,11 +2138,34 @@ export class BillingComponent implements OnInit, OnDestroy {
     }
 
     const chequeDetails = mode.id === 'cheque' ? this.currentChequeDetails() : null;
-    if ((mode.type === 'credit' || mode.id === 'cheque') && !this.customerAccountId) {
+    if ((mode.type === 'credit' || mode.id === 'cheque' || mode.id === 'advance') && !this.customerAccountId) {
       this.paymentError = mode.id === 'cheque'
         ? 'Link a real customer account before accepting a cheque.'
-        : 'Link a real customer account before adding pending credit.';
+        : mode.id === 'advance'
+          ? 'Link a real customer account before using advance money.'
+          : 'Link a real customer account before adding pending credit.';
       return;
+    }
+    if (mode.id === 'advance') {
+      const usable = Math.max(this.advanceAvailable - this.queuedAdvanceAmount, 0);
+      if (amount > usable + 0.005) {
+        this.paymentError = `Only ${usable.toFixed(2)} of unused advance remains available for this bill.`;
+        return;
+      }
+      if (amount > this.outstanding + 0.005) {
+        this.paymentError = `Advance use cannot exceed the remaining bill balance (${this.outstanding.toFixed(2)}).`;
+        return;
+      }
+    } else if (mode.type === 'tender' && this.queuedAdvanceAmount > 0) {
+      // Advance is stored money, never drawer cash. Taking more of another
+      // tender than the advance leaves unpaid would hand part of that stored
+      // balance back as change, so the cashier is stopped here instead of at
+      // finalization.
+      const roomForOtherTender = Math.max(this.netTotal - this.queuedAdvanceAmount - this.otherTenderTotal, 0);
+      if (amount > roomForOtherTender + 0.005) {
+        this.paymentError = `Only ${roomForOtherTender.toFixed(2)} is left after the advance already applied. Advance money is never returned as change — reduce this amount or remove the advance.`;
+        return;
+      }
     }
     if (mode.type === 'credit' && this.linkedCustomer?.creditEnabled === false) {
       this.paymentError = 'Credit is not enabled for the linked customer account.';

@@ -11,6 +11,7 @@ export class InvoiceHistoryComponent implements OnInit {
   term = ''; customerCode = ''; locCode = ''; macCode = ''; txnDate = '';
   rows: InvoiceRow[] = []; invoice: any = null;
   paymentModes: PaymentMode[] = []; collectionAmount = 0; collectionMethod = 'cash'; collecting = false;
+  advanceAvailable = 0; advanceBalanceLoading = false;
   error = ''; info = ''; loading = false;
   accountTerm = ''; accountMatches: any[] = []; assignmentReason = ''; assigningCustomer = false;
   private receiptSettings: any = null;
@@ -58,6 +59,36 @@ export class InvoiceHistoryComponent implements OnInit {
     if (!result.success || !result.data) { this.error = result.success ? 'Invoice was not found.' : result.error || 'Invoice was not found.'; return; }
     this.invoice = result.data;
     this.collectionAmount = Number(this.invoice.balance || 0);
+    await this.loadAdvanceBalance();
+  }
+
+  /** Stored advance is location-scoped, so it is read for the terminal doing the collection. */
+  async loadAdvanceBalance(): Promise<void> {
+    this.advanceAvailable = 0;
+    const ws = this.session.getWorkstationSession();
+    if (!window.posApi || !ws || !this.invoice?.customer?.id || !this.session.hasPermission('customer-advances.view')) {
+      if (this.collectionMethod === 'advance') this.collectionMethod = this.collectionModes[0]?.id || 'cash';
+      return;
+    }
+    this.advanceBalanceLoading = true;
+    const result = await window.posApi.customerAdvances.balance(this.invoice.customer.id, ws.locationCode, this.actor());
+    this.advanceBalanceLoading = false;
+    this.advanceAvailable = result.success ? Number(result.data || 0) : 0;
+    if (this.collectionMethod === 'advance' && this.advanceAvailable <= 0.005) {
+      this.collectionMethod = this.collectionModes[0]?.id || 'cash';
+    }
+  }
+
+  /** Advance only appears once the linked customer actually holds a balance here. */
+  get collectionModes(): PaymentMode[] {
+    return this.paymentModes.filter((mode) => mode.id !== 'advance' || this.advanceAvailable > 0.005);
+  }
+  get maxCollectionAmount(): number {
+    const balance = Number(this.invoice?.balance || 0);
+    return this.collectionMethod === 'advance' ? Math.min(balance, this.advanceAvailable) : balance;
+  }
+  onCollectionMethodChange(): void {
+    if (this.collectionAmount > this.maxCollectionAmount) this.collectionAmount = this.maxCollectionAmount;
   }
 
   async collectBalance(): Promise<void> {
@@ -65,6 +96,12 @@ export class InvoiceHistoryComponent implements OnInit {
     const workstation = this.session.getWorkstationSession();
     const user = this.session.getUser();
     if (!workstation || !user) { this.error = 'An active workstation session and cashier are required to collect a balance.'; return; }
+    if (Number(this.collectionAmount) > this.maxCollectionAmount + 0.005) {
+      this.error = this.collectionMethod === 'advance'
+        ? `Only ${this.money(this.advanceAvailable)} of customer advance is available at this location.`
+        : `Collection exceeds the outstanding balance (${this.money(Number(this.invoice.balance || 0))}).`;
+      return;
+    }
     this.collecting = true; this.error = ''; this.info = '';
     try {
       const result = await window.posApi.billing.collectInvoiceBalance({
@@ -74,7 +111,9 @@ export class InvoiceHistoryComponent implements OnInit {
         payments: [{ method: this.collectionMethod, amount: Number(this.collectionAmount) }]
       }, this.actor());
       if (!result.success) throw new Error(result.error || 'Could not collect the outstanding balance.');
-      this.info = `${this.money(result.data.collected)} collected. Remaining balance: ${this.money(result.data.balance)}.`;
+      this.info = this.collectionMethod === 'advance'
+        ? `${this.money(result.data.collected)} settled from stored advance. Remaining balance: ${this.money(result.data.balance)}.`
+        : `${this.money(result.data.collected)} collected. Remaining balance: ${this.money(result.data.balance)}.`;
       const invoiceId = this.invoice.id;
       await this.search();
       await this.select({ id: invoiceId } as InvoiceRow);
@@ -101,6 +140,7 @@ export class InvoiceHistoryComponent implements OnInit {
   }
   paymentLabel(payment: any): string {
     const method = String(payment?.method || '');
+    if (method === 'advance') return 'Advance';
     if (method !== 'cheque') return method;
     const number = String(payment?.chequeDetails?.number || payment?.providerRef || payment?.cheque_number || '').trim();
     return number ? `Cheque #${number}` : 'Cheque';

@@ -143,7 +143,7 @@
             <div><span>Actual payout due</span><strong>{{ payoutDue | number:'1.2-2' }}</strong></div>
           </div>
           <div class="complete-row">
-            <label *ngIf="payoutDue > 0.005">Payout method <select [(ngModel)]="payoutMethod"><option *ngFor="let mode of paymentModes" [value]="mode.id">{{ mode.name }}</option></select></label>
+            <label *ngIf="payoutDue > 0.005">Refund method <select [(ngModel)]="payoutMethod"><option *ngFor="let mode of availableRefundModes" [value]="mode.id">{{ refundModeName(mode) }}</option></select><small *ngIf="payoutMethod === 'advance'">Restores the {{ payoutDue | number:'1.2-2' }} originally paid from this invoice's advance; no cash leaves the drawer.</small></label>
             <div *ngIf="payoutDue <= 0.005" class="debt-note">No cash payout: this return reduces the outstanding customer balance.</div>
             <div><span>Refund Total</span><strong>{{ grandTotal | number:'1.2-2' }}</strong></div>
             <button class="btn complete" (click)="complete()" [disabled]="isFinalizing || grandTotal <= 0">{{ isFinalizing ? 'Completing...' : 'Complete Refund' }}</button>

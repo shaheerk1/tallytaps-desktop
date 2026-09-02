@@ -584,6 +584,7 @@
               <div class="pm-mode-name">
                 {{ mode.name }}
                 <span *ngIf="mode.type === 'credit'" class="pm-mode-tag">credit</span>
+                <small *ngIf="mode.id === 'advance'">{{ isAdvanceBalanceLoading ? 'Checking balance…' : ((advanceAvailable | number:'1.2-2') + ' available') }}</small>
               </div>
               <span *ngIf="isModeUsed(mode.id)" class="pm-mode-added">Added</span>
             </div>
@@ -625,7 +626,7 @@
             <div class="pm-account-heading">
               <div>
                 <span>Customer Account</span>
-                <small>Optional for cash/card · required for cheque or pending credit</small>
+                <small>Optional for cash/card · required for cheque, advance, or pending credit</small>
               </div>
               <button type="button" *ngIf="linkedCustomer && !paymentAccountSearchOpen" (click)="openPaymentAccountSearch()">Change</button>
             </div>
@@ -697,6 +698,10 @@
             (keydown)="onAmountKeydown($event)"
             placeholder="0.00"
           />
+          <div *ngIf="isAdvanceModeSelected" class="pm-advance-note">
+            <strong>{{ advanceAvailable - queuedAdvanceAmount | number:'1.2-2' }} available</strong>
+            <span>Uses this customer's stored advance. No new cash is added to the drawer.</span>
+          </div>
           <div *ngIf="isChequeModeSelected" class="pm-cheque-launch">
             <button *ngIf="!hasChequeDetails" type="button" class="btn-action pm-cheque-launch-btn" (click)="toggleChequeDetailsEditor()">Enter Cheque Details</button>
             <button *ngIf="hasChequeDetails" type="button" class="pm-cheque-summary" (click)="toggleChequeDetailsEditor()">

@@ -790,6 +790,15 @@ export type PaymentMode = {
   enabled?: boolean;
   pluginId?: string | null;
   core?: boolean;
+  configuration?: Record<string, unknown> | null;
+};
+
+export type CustomerAdvanceSummary = {
+  customer: { id: number; accountNumber: string; name: string; mobile: string | null };
+  locationCode: string;
+  availableBalance: number;
+  receipts: Array<{ id: number; advanceNumber: string; date: string; originalAmount: number; remainingAmount: number; reason: string; createdAt: string }>;
+  entries: Array<{ id: number; advanceReceiptId: number; advanceNumber: string; type: string; amount: number; reason: string; date: string; invoiceId: number | null; metadata: Record<string, unknown>; userName: string; createdAt: string }>;
 };
 
 export type InventoryLotCandidate = {
@@ -892,6 +901,7 @@ export type RefundSourceInvoice = {
   grandTotal: number;
   paidTotal: number;
   balance: number;
+  advanceRestorable: number;
   customer_code?: string;
   bagChargeTotal?: number;
   wageChargeTotal?: number;
@@ -1406,6 +1416,12 @@ export interface PosApi {
     getIssuedCheque: (chequeId: number, actor?: ActorContext | null) => Promise<IpcResult<unknown>>;
     createIssuedCheque: (cheque: Record<string, unknown>, actor?: ActorContext | null) => Promise<IpcResult<unknown>>;
     updateIssuedChequeStatus: (payload: Record<string, unknown>, actor?: ActorContext | null) => Promise<IpcResult<unknown>>;
+  };
+  customerAdvances: {
+    balance: (customerAccountId: number, locCode: string, actor?: ActorContext | null) => Promise<IpcResult<number>>;
+    summary: (customerAccountId: number, locCode: string, actor?: ActorContext | null) => Promise<IpcResult<CustomerAdvanceSummary>>;
+    receive: (advance: { customerAccountId: number; sessionId: number; userId: number; reason: string; payments: PaymentLine[] }, actor?: ActorContext | null) => Promise<IpcResult<{ id: number; advanceNumber: string; amount: number; availableBalance: number }>>;
+    refund: (refund: { customerAccountId: number; sessionId: number; userId: number; amount: number; method: string; providerRef?: string | null; reason: string }, actor?: ActorContext | null) => Promise<IpcResult<{ id: number; refundNumber: string; amount: number; availableBalance: number }>>;
   };
   pattiyals: {
     list: (filters: Record<string, unknown>, actor?: ActorContext | null) => Promise<IpcResult<{ rows: Array<Record<string, any>>; total: number; page: number; pageSize: number }>>;

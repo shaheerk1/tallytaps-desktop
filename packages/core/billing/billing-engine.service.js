@@ -7,7 +7,8 @@ function createBillingEngineService({
   paymentModes,
   paymentModeRepository,
   eventBus,
-  cashManagementService
+  cashManagementService,
+  customerAdvanceRepository = null
 }) {
   if (!liveBillRepository) {
     throw new Error('Billing engine requires liveBillRepository.');
@@ -421,10 +422,29 @@ function createBillingEngineService({
       if (!selectedAccount || selectedAccount.customer?.status !== 'active') throw new Error('Select an active customer account.');
     }
     const hasCheque = validatedPayments.some((payment) => payment.method === 'cheque');
-    if ((pendingAmount > 0 || hasCheque) && !resolvedCustomerAccountId) {
+    const advanceAmount = toMoney(validatedPayments.filter((payment) => payment.method === 'advance')
+      .reduce((sum, payment) => sum + toMoney(payment.amount), 0));
+    if ((pendingAmount > 0 || hasCheque || advanceAmount > 0) && !resolvedCustomerAccountId) {
       throw new Error(hasCheque
         ? 'Link a real customer account before accepting a cheque.'
-        : 'Link a real customer account before recording a pending/credit balance.');
+        : advanceAmount > 0
+          ? 'Link a real customer account before using advance money.'
+          : 'Link a real customer account before recording a pending/credit balance.');
+    }
+    if (advanceAmount > 0) {
+      if (!customerAdvanceRepository) throw new Error('Customer advance settlement is not available.');
+      // Prepaid money settles only what the other tenders leave unpaid. Without
+      // this cap a bill could be over-tendered with advance and the difference
+      // handed back as cash change, turning a stored balance into drawer cash.
+      const otherTenderTotal = toMoney(validatedPayments
+        .filter((payment) => payment.type === 'tender' && payment.method !== 'advance')
+        .reduce((sum, payment) => sum + toMoney(payment.amount), 0));
+      const applicable = toMoney(Math.max(effectiveGrandTotal - otherTenderTotal, 0));
+      if (advanceAmount > applicable + 0.005) {
+        throw new Error(`Advance money can only settle the ${applicable.toFixed(2)} left after the other payments. Advance is never returned as change.`);
+      }
+      const available = await customerAdvanceRepository.getBalance(resolvedCustomerAccountId, locCode);
+      if (advanceAmount > available + 0.005) throw new Error(`Only ${available.toFixed(2)} of customer advance is available at this location.`);
     }
     if (pendingAmount > 0 && !selectedAccount?.customer?.creditEnabled) {
       throw new Error('Credit is not enabled for the selected customer account.');
@@ -612,6 +632,21 @@ function createBillingEngineService({
     const cashLedger = cashManagementService
       ? await cashManagementService.prepareCollection({ sessionId, userId, payments: normalized })
       : { cashShiftId: null, movements: [] };
+    // Settling an outstanding balance from stored advance money moves one
+    // customer liability onto another; it must still respect the balance the
+    // customer actually holds at this location.
+    const collectionAdvance = toMoney(normalized.filter((payment) => payment.method === 'advance')
+      .reduce((sum, payment) => sum + toMoney(payment.amount), 0));
+    if (collectionAdvance > 0) {
+      if (!customerAdvanceRepository) throw new Error('Customer advance settlement is not available.');
+      const invoice = await billingRepository.getInvoice(invoiceId);
+      if (!invoice) throw new Error('Invoice was not found.');
+      if (!invoice.customer_account_id) throw new Error('This invoice has no customer account to settle.');
+      const available = await customerAdvanceRepository.getBalance(invoice.customer_account_id, cashLedger.locCode);
+      if (collectionAdvance > available + 0.005) {
+        throw new Error(`Only ${available.toFixed(2)} of customer advance is available at this location.`);
+      }
+    }
     return billingRepository.collectInvoiceBalance({
       invoiceId,
       userId,

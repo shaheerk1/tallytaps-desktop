@@ -19,6 +19,7 @@ const { createDocumentSequenceRepository } = require('../../../../packages/datab
 const { createBusinessDayRepository } = require('../../../../packages/database/repositories/business-day.repository');
 const { createInventoryLedgerRepository } = require('../../../../packages/database/repositories/inventory-ledger.repository');
 const { createSupplierSaleStatementRepository } = require('../../../../packages/database/repositories/supplier-sale-statement.repository');
+const { createCustomerAdvanceRepository } = require('../../../../packages/database/repositories/customer-advance.repository');
 const { seedAdminUser } = require('../../../../packages/database/seeders/seed-admin-user');
 const { seedDefaultSettings } = require('../../../../packages/database/seeders/seed-default-settings');
 const { createAuthService } = require('../../../../packages/core/auth/auth.service');
@@ -46,6 +47,7 @@ const { createCloudSyncService } = require('../../../../packages/core/cloud-sync
 const { createCloudSyncScheduler } = require('../../../../packages/core/cloud-sync/cloud-sync.scheduler');
 const { createBusinessDayService } = require('../../../../packages/core/business-days/business-day.service');
 const { createSupplierSaleStatementService } = require('../../../../packages/core/supplier-sale-statements/supplier-sale-statement.service');
+const { createCustomerAdvanceService } = require('../../../../packages/core/customer-advances/customer-advance.service');
 const { safeStorage } = require('electron');
 
 function createSecretProtector() {
@@ -84,9 +86,10 @@ async function createServiceContainer() {
   const catalogRepository = createCatalogRepository({ database, documentSequenceRepository, businessDayRepository, issuedChequeRepository, inventoryLedgerRepository });
   const partyRepository = createPartyRepository({ database, businessDayRepository });
   const paymentModeRepository = createPaymentModeRepository({ database });
-  const billingRepository = createBillingRepository({ database, businessDayRepository, documentSequenceRepository, inventoryLedgerRepository });
+  const customerAdvanceRepository = createCustomerAdvanceRepository({ database, documentSequenceRepository, businessDayRepository });
+  const billingRepository = createBillingRepository({ database, businessDayRepository, documentSequenceRepository, inventoryLedgerRepository, customerAdvanceRepository });
   const liveBillRepository = createLiveBillRepository({ database, documentSequenceRepository, businessDayRepository });
-  const refundRepository = createRefundRepository({ database, documentSequenceRepository, businessDayRepository, inventoryLedgerRepository });
+  const refundRepository = createRefundRepository({ database, documentSequenceRepository, businessDayRepository, inventoryLedgerRepository, customerAdvanceRepository });
   const cashManagementRepository = createCashManagementRepository({ database, documentSequenceRepository, businessDayRepository });
   const authRepository = createAuthRepository({ database });
   const workstationRepository = createWorkstationRepository({ database, businessDayRepository });
@@ -120,8 +123,10 @@ async function createServiceContainer() {
     paymentModes,
     paymentModeRepository,
     eventBus,
-    cashManagementService
+    cashManagementService,
+    customerAdvanceRepository
   });
+  const customerAdvanceService = createCustomerAdvanceService({ repository: customerAdvanceRepository, paymentModes, paymentModeRepository, cashManagementService });
   const refundService = createRefundService({ refundRepository, paymentModes, paymentModeRepository, eventBus, cashManagementService });
   const printService = createPrintService({ eventBus });
   const receiptRasterService = createReceiptRasterService();
@@ -150,6 +155,7 @@ async function createServiceContainer() {
     issuedChequeRepository,
     paymentModeRepository,
     supplierSaleStatementRepository,
+    customerAdvanceRepository,
     billingRepository,
     liveBillRepository,
     refundRepository,
@@ -166,6 +172,7 @@ async function createServiceContainer() {
     settingsService,
     catalogService,
     supplierSaleStatementService,
+    customerAdvanceService,
     billingEngineService,
     refundService,
     cashManagementService,

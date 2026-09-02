@@ -23,6 +23,9 @@ function registerIpcHandlers(services) {
   const requireCustomersManage = services.ipcAuthorizationService.requirePermission('customers.manage');
   const requireReceivablesView = services.ipcAuthorizationService.requirePermission('receivables.view');
   const requireReceivablesCollect = services.ipcAuthorizationService.requirePermission('receivables.collect');
+  const requireCustomerAdvancesView = services.ipcAuthorizationService.requirePermission('customer-advances.view');
+  const requireCustomerAdvancesCreate = services.ipcAuthorizationService.requirePermission('customer-advances.create');
+  const requireCustomerAdvancesRefund = services.ipcAuthorizationService.requirePermission('customer-advances.refund');
   const requireChequesView = services.ipcAuthorizationService.requirePermission('cheques.view');
   const requireChequesManage = services.ipcAuthorizationService.requirePermission('cheques.manage');
   const requireReportsView = services.ipcAuthorizationService.requirePermission('reports.view');
@@ -472,6 +475,10 @@ function registerIpcHandlers(services) {
   wrapIpcHandler('catalog.customers.create', async (payload) => services.catalogService.createCustomer(payload?.customer || {}), { authorize: requireCustomersManage });
   wrapIpcHandler('catalog.customers.update', async (payload) => services.catalogService.updateCustomer(payload?.customerId, payload?.customer || {}), { authorize: requireCustomersManage });
   wrapIpcHandler('catalog.customers.assignInvoice', async (payload) => services.catalogService.assignInvoiceCustomer(payload || {}), { authorize: requireCustomersManage });
+  wrapIpcHandler('customerAdvances.balance', async (payload) => services.customerAdvanceService.getBalance(payload || {}), { authorize: requireCustomerAdvancesView });
+  wrapIpcHandler('customerAdvances.summary', async (payload) => services.customerAdvanceService.getSummary(payload || {}), { authorize: requireCustomerAdvancesView });
+  wrapIpcHandler('customerAdvances.receive', async (payload) => services.customerAdvanceService.receive(payload || {}), { authorize: requireCustomerAdvancesCreate });
+  wrapIpcHandler('customerAdvances.refund', async (payload) => services.customerAdvanceService.refundUnused(payload || {}), { authorize: requireCustomerAdvancesRefund });
   wrapIpcHandler('catalog.cheques.list', async (payload) => services.catalogService.listCheques(payload?.filters || {}), { authorize: requireChequesView });
   wrapIpcHandler('catalog.cheques.get', async (payload) => services.catalogService.getCheque(payload?.chequeId), { authorize: requireChequesView });
   wrapIpcHandler('catalog.cheques.details', async (payload) => services.catalogService.updateChequeDetails(payload || {}), { authorize: requireChequesManage });

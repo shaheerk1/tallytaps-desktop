@@ -146,7 +146,7 @@ function createRefundService({ refundRepository, paymentModes, paymentModeReposi
     const normalized = payments.map((payment) => {
       const method = String(payment.method || '').toLowerCase();
       const mode = paymentModes.getMode(method);
-      if (!mode || mode.type !== 'tender') {
+      if (!mode || mode.type !== 'tender' || mode.configuration?.supportsRefundPayout === false) {
         throw new Error(`Refund payout method "${payment.method}" is not supported.`);
       }
       const amount = toMoney(payment.amount);

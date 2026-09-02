@@ -92,6 +92,11 @@ export class RefundComponent implements OnInit {
     return Math.max(0, this.grandTotal - this.debtReduction);
   }
 
+  get availableRefundModes(): PaymentMode[] {
+    return this.paymentModes.filter((mode) => mode.id !== 'advance'
+      || (Number(this.source?.advanceRestorable || 0) + 0.005 >= this.payoutDue && this.payoutDue > 0.005));
+  }
+
   itemCode(item: { itemCode?: string; item_code?: string; supplierCode?: string; supplier_code?: string }): string {
     const code = item.itemCode || item.item_code || '';
     const supplier = item.supplierCode || item.supplier_code || '';
@@ -389,12 +394,17 @@ export class RefundComponent implements OnInit {
   async loadPaymentModes(): Promise<void> {
     if (!window.posApi) return;
     const result = await window.posApi.billing.paymentModes(this.actor());
-    if (result.success) this.paymentModes = (result.data || []).filter((mode) => mode.type === 'tender');
+    if (result.success) this.paymentModes = (result.data || []).filter((mode) =>
+      mode.type === 'tender' && mode.configuration?.['supportsRefundPayout'] !== false);
   }
 
   async complete(): Promise<void> {
     if (!window.posApi || !this.draft || this.grandTotal <= 0) return;
     this.error = '';
+    if (this.payoutMethod === 'advance' && Number(this.source?.advanceRestorable || 0) + 0.005 < this.payoutDue) {
+      this.error = `Only ${Number(this.source?.advanceRestorable || 0).toFixed(2)} from this invoice can be restored to customer advance.`;
+      return;
+    }
     this.isFinalizing = true;
     try {
       const payments: PaymentLine[] = this.payoutDue > 0.005
@@ -432,6 +442,7 @@ export class RefundComponent implements OnInit {
       hour12: true
     }).format(value).replace(',', '');
   }
+  refundModeName(mode: PaymentMode): string { return mode.id === 'advance' ? 'Restore to Customer Advance' : mode.name; }
 
   private async printReceipt(refundNumber: string, refundNo: number, total: number): Promise<void> {
     if (!this.source || !window.posApi) return;

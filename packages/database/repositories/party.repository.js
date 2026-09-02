@@ -336,6 +336,12 @@ function createPartyRepository({ database, businessDayRepository }) {
           throw new Error('An invoice with an outstanding balance cannot be unlinked from its customer account.');
         }
         const previousId = invoice.customer_account_id == null ? null : Number(invoice.customer_account_id);
+        const [advanceAllocations] = await connection.execute(
+          'SELECT id FROM invoice_advance_allocations WHERE invoice_id = ? LIMIT 1', [invoiceId]
+        );
+        if (advanceAllocations.length && previousId !== nextAccountId) {
+          throw new Error('This invoice used customer advance money and cannot be reassigned to another customer. Refund or correct the advance transaction first.');
+        }
         if (previousId && previousId !== nextAccountId && !text(reason, 255)) {
           throw new Error('A reason is required when changing or removing an invoice customer account.');
         }
