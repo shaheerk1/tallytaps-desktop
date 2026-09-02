@@ -339,13 +339,6 @@ export class FieldTransactionInboxComponent implements OnInit {
     return line.pricingBasis === 'kilos' ? this.mobileBillBaseUom(line) : this.mobileBillHandlingUom(line);
   }
 
-  mobileBillChargeSummary(line: MobileInboxBill['lines'][number]): string {
-    const values = [];
-    if (line.bagChargeTotal) values.push(`Packaging ${this.formatNumber(line.bagChargeTotal)}`);
-    if (line.wageChargeTotal) values.push(`Wage ${this.formatNumber(line.wageChargeTotal)}`);
-    return values.join(' / ');
-  }
-
   private deviceKey(record: FieldInboxRecord): string {
     return record.device.id || record.device.nickname || record.device.model || record.device.name || 'unknown';
   }
@@ -386,51 +379,94 @@ export class FieldTransactionInboxComponent implements OnInit {
 
   private mobileBillDocument(bill: MobileInboxBill, cfg: ReceiptPrintSettings): PrintDocument {
     const money = (value: number) => `${cfg.currencySymbol} ${Number(value || 0).toFixed(2)}`;
+    const session = this.session.getWorkstationSession();
+    const cashier = this.session.getUser()?.displayName || 'POS user';
+    const label = (key: keyof ReceiptPrintSettings['labels']) => cfg.labels[key];
+    const paymentLabel = (method: string): string => {
+      const normalized = method.trim().toLocaleLowerCase();
+      if (normalized === 'cash') return label('cash');
+      if (normalized === 'card') return label('card');
+      if (normalized === 'cheque') return label('cheque');
+      return method.replace(/[_-]+/g, ' ').replace(/\b\w/g, (value) => value.toUpperCase());
+    };
     return {
-      documentTitle: 'Field Sales Invoice',
-      brand: { name: cfg.storeName, tagline: cfg.tagline, addressLines: cfg.addressLines, phone: cfg.phone },
+      documentTitle: 'Tax Invoice',
+      brand: { name: cfg.storeName, tagline: '', addressLines: cfg.addressLines, phone: cfg.phone },
       logoDataUrl: cfg.logoDataUrl || undefined,
-      secondaryHeaderLines: cfg.headers.map((text) => ({ text, align: 'center' })),
+      secondaryHeaderLines: [
+        ...cfg.headers.map((text) => ({ text, align: 'center' as const })),
+        ...(cfg.tagline.trim() ? [{ text: cfg.tagline.trim(), align: 'left' as const, bold: true, size: 1 as const }] : [])
+      ],
       meta: [
-        { label: 'Receipt', value: bill.clientBillId.slice(0, 12).toUpperCase() },
-        { label: 'Date', value: this.displayDateTime(bill.createdAt) },
+        { label: label('receipt'), value: `#${bill.clientBillId.slice(0, 12).toUpperCase()}` },
+        { label: label('date'), value: this.mobileBillReceiptDate(bill.createdAt, cfg.dateFormat) },
+        ...(session ? [{ label: label('terminal'), value: `${session.locationCode}/${session.machineCode}` }] : []),
+        { label: label('cashier'), value: cashier },
         { label: 'Source', value: bill.device.nickname || bill.device.name || 'Field device' },
-        ...(bill.customerName ? [{ label: 'Customer', value: bill.customerName }] : []),
-        ...(bill.customerMobile ? [{ label: 'Phone', value: bill.customerMobile }] : [])
+        ...(bill.customerName ? [{ label: label('customer'), value: bill.customerName }] : []),
+        ...(bill.customerMobile ? [{ label: label('phone'), value: bill.customerMobile }] : [])
       ],
       itemLayout: 'invoice-measures',
       receiptLanguage: cfg.language,
       rasterHeaderLayout: 'billing',
+      quantityTotal: this.mobileBillMeasure(
+        bill.lines.reduce((sum, line) => sum + this.mobileBillHandlingQuantity(line), 0)
+      ),
       items: bill.lines.map((line) => ({
-        description: `${line.sku ? `${line.sku} ` : ''}${line.description}`,
-        qty: line.pricingBasis === 'kilos'
-          ? `${this.mobileBillMeasuredQuantity(line) || 0} ${this.mobileBillBaseUom(line)}`
-          : `${this.mobileBillHandlingQuantity(line)} ${this.mobileBillHandlingUom(line)}`,
+        description: line.description,
+        qty: this.mobileBillReceiptQtyLabel(line),
         measure: {
-          qty: `${this.mobileBillHandlingQuantity(line)} ${this.mobileBillHandlingUom(line)}`,
+          qty: this.mobileBillMeasure(this.mobileBillHandlingQuantity(line)),
           ...(this.mobileBillMeasuredQuantity(line) != null
-            ? { kilos: `${this.mobileBillMeasuredQuantity(line) || 0} ${this.mobileBillBaseUom(line)}` }
+            ? { kilos: this.mobileBillMeasure(this.mobileBillMeasuredQuantity(line) || 0) }
             : {}),
-          rate: money(line.unitPrice)
+          rate: Number(line.unitPrice || 0).toFixed(2)
         },
-        amount: money(line.lineTotal),
-        extras: [
-          ...(line.bagChargeTotal ? [{ label: 'Bag', value: money(line.bagChargeTotal) }] : []),
-          ...(line.wageChargeTotal ? [{ label: 'Wage', value: money(line.wageChargeTotal) }] : [])
-        ]
+        amount: money(line.merchandiseTotal),
+        extras: []
       })),
       totals: [
-        { label: 'Subtotal', value: money(bill.subtotal) },
-        ...(bill.bagChargeTotal ? [{ label: 'Bag Charges', value: money(bill.bagChargeTotal) }] : []),
-        ...(bill.wageChargeTotal ? [{ label: 'Wage Charges', value: money(bill.wageChargeTotal) }] : []),
-        ...(bill.discountTotal ? [{ label: 'Discount', value: `-${money(bill.discountTotal)}` }] : []),
-        { label: 'TOTAL', value: money(bill.grandTotal), bold: true },
-        ...bill.payments.map((payment) => ({ label: payment.method.toUpperCase(), value: money(payment.amount) })),
-        ...(bill.balance ? [{ label: 'Pending Balance', value: money(bill.balance) }] : [])
+        { label: label('subtotal'), value: money(bill.subtotal) },
+        ...(bill.bagChargeTotal ? [{ label: label('bagCharge'), value: money(bill.bagChargeTotal) }] : []),
+        ...(bill.wageChargeTotal ? [{ label: label('wageCharge'), value: money(bill.wageChargeTotal) }] : []),
+        ...(bill.discountTotal ? [{ label: label('discount'), value: `-${money(bill.discountTotal)}` }] : []),
+        { label: label('total'), value: money(bill.grandTotal), bold: true },
+        ...bill.payments.map((payment) => ({ label: paymentLabel(payment.method), value: money(payment.amount) })),
+        ...(bill.balance ? [{ label: label('pendingBalance'), value: money(bill.balance) }] : [])
       ],
       preLines: bill.note ? [{ text: bill.note, align: 'left' }] : [],
       footerLines: cfg.footers
     };
+  }
+
+  private mobileBillReceiptDate(value: string, dateFormat: string): string {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return 'Not available';
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const datePart = dateFormat === 'd-m-Y'
+      ? `${day}-${month}-${year}`
+      : dateFormat === 'm/d/Y'
+        ? `${month}/${day}/${year}`
+        : dateFormat === 'd/m/Y'
+          ? `${day}/${month}/${year}`
+          : `${year}-${month}-${day}`;
+    return `${datePart} ${date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: true })}`;
+  }
+
+  private mobileBillMeasure(value: number): string {
+    if (!Number.isFinite(value)) return '0';
+    return value.toFixed(3).replace(/\.?0+$/, '');
+  }
+
+  private mobileBillReceiptQtyLabel(line: MobileInboxBill['lines'][number]): string {
+    const handling = `${this.mobileBillMeasure(this.mobileBillHandlingQuantity(line))} ${this.mobileBillHandlingUom(line)}`;
+    const measured = this.mobileBillMeasuredQuantity(line);
+    const measures = measured == null
+      ? handling
+      : `${handling} / ${this.mobileBillMeasure(measured)} ${this.mobileBillBaseUom(line)}`;
+    return `${measures} x ${Number(line.unitPrice || 0).toFixed(2)} per ${this.mobileBillPriceUom(line)}`;
   }
 
   private mobileBillHandlingQuantity(line: MobileInboxBill['lines'][number]): number {
