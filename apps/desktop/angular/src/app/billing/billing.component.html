@@ -58,6 +58,38 @@
         </div>
         <small class="unlinked-customer" *ngIf="customerCode && !linkedCustomer">Operational code only. A real account is required only for credit or cheque.</small>
       </div>
+      <div class="field-col lot-priority-field">
+        <label>Stock lot priority <span class="optional-label">Optional</span></label>
+        <div class="lot-priority-control">
+          <button type="button" tabindex="-1" class="lot-priority-trigger"
+            [class.has-lot]="selectedLot" [class.is-loading]="lotLookupLoading"
+            [disabled]="!selectedProductId || lotLookupLoading || (!selectedLot && !lotCandidates.length)"
+            (click)="toggleLotPicker($event)">
+            <ng-container *ngIf="selectedLot; else lotPickerStatus">
+              <span class="lot-trigger-main">
+                <strong>{{ selectedLot.supplier_code || selectedLot.supplier_name }} · {{ selectedLot.grn_number }}/L{{ selectedLot.line_no }}</strong>
+                <em>{{ selectedLot.txn_date | date:'dd MMM yyyy' }}</em>
+              </span>
+              <span class="lot-trigger-stock">Rem {{ selectedLot.remaining_handling_quantity | number:'1.0-3' }}/{{ selectedLot.received_handling_quantity | number:'1.0-3' }} {{ selectedLot.handling_uom_snapshot }}<ng-container *ngIf="selectedLot.remaining_base_quantity != null"> · {{ selectedLot.remaining_base_quantity | number:'1.0-3' }}/{{ selectedLot.received_base_quantity | number:'1.0-3' }} {{ selectedLot.base_uom_snapshot }}</ng-container></span>
+              <span class="lot-trigger-tag">{{ selectedLotSource === 'manual' ? 'Manual' : selectedLotSource === 'remembered' ? 'Remembered' : 'FIFO #1' }}</span>
+              <span class="lot-trigger-chevron">▾</span>
+            </ng-container>
+            <ng-template #lotPickerStatus><span class="lot-trigger-placeholder">{{ selectedProductId ? (lotLookupMessage || 'Automatic allocation at finalization') : 'Select an item to view stock lots' }}</span></ng-template>
+          </button>
+          <div class="lot-priority-dropdown" *ngIf="lotPickerOpen" (click)="$event.stopPropagation()">
+            <div class="lot-dropdown-head"><strong>Choose the stock lot to consume first</strong><span>Any remainder continues through FIFO automatically.</span></div>
+            <button type="button" tabindex="-1" class="lot-option" *ngFor="let lot of orderedLotCandidates"
+              [class.selected]="selectedLot?.id === lot.id" (click)="chooseLotCandidate(lot, $event)">
+              <span class="lot-option-primary"><strong>{{ lot.supplier_code || lot.supplier_name }}</strong><b>{{ lot.grn_number }} · Line {{ lot.line_no }}</b><em>{{ lot.txn_date | date:'dd MMM yyyy' }}</em></span>
+              <span class="lot-option-stock"><span>Unit Count <b>{{ lot.remaining_handling_quantity | number:'1.0-3' }}</b> / {{ lot.received_handling_quantity | number:'1.0-3' }} {{ lot.handling_uom_snapshot }}</span><span *ngIf="lot.remaining_base_quantity != null">Measured Qty <b>{{ lot.remaining_base_quantity | number:'1.0-3' }}</b> / {{ lot.received_base_quantity | number:'1.0-3' }} {{ lot.base_uom_snapshot }}</span></span>
+              <span class="lot-option-meta"><small>{{ lot.lot_code }}</small><small *ngIf="lot.actual_base_per_handling">{{ lot.actual_base_per_handling | number:'1.0-3' }} {{ lot.base_uom_snapshot }}/{{ lot.handling_uom_snapshot }}</small><small *ngIf="lot.external_reference">Ref {{ lot.external_reference }}</small></span>
+              <span class="lot-option-tags"><i class="lot-tag primary">{{ lotPriorityLabel(lot) }}</i><i class="lot-tag" *ngIf="lotMatchesSupplier(lot)">Supplier match</i><i class="lot-tag warning" *ngIf="!lotCoversCurrentLine(lot)">Partial coverage</i><i class="lot-tag" *ngIf="lotCoversCurrentLine(lot)">Full coverage</i></span>
+            </button>
+            <button type="button" tabindex="-1" class="lot-auto-action" *ngIf="selectedLotSource === 'manual' || selectedLotSource === 'remembered'" (click)="useAutomaticLotOrder($event)">Return this product to automatic FIFO</button>
+          </div>
+        </div>
+        <small class="lot-lookup-message" *ngIf="lotLookupMessage && selectedProductId">{{ lotLookupMessage }}</small>
+      </div>
     </div>
     <div class="input-row">
     <div class="input-grid">
@@ -217,7 +249,7 @@
       <div class="items-body">
         <div class="item-row" *ngFor="let item of billItems; let i = index" [style.grid-template-columns]="itemsGridTemplate">
           <span class="col-code">{{ item.supplierCode ? item.supplierCode + '~' : '' }}{{ item.itemCode }}</span>
-          <span class="col-desc">{{ item.description }}</span>
+          <span class="col-desc">{{ item.description }}<small class="line-lot-badge" *ngIf="item.allocationPriorityLotCode">Stock first: {{ item.allocationPriorityLotCode }} · {{ item.allocationPrioritySource || 'automatic' }}</small><small class="line-lot-badge muted" *ngIf="!item.allocationPriorityLotCode">Stock: automatic at finalize</small></span>
           <span class="col-rate"><input *ngIf="canOverrideLinePrice(item); else lockedRate" type="number" class="qty-input" [value]="item.unitPrice" min="0" step="0.01" (change)="updateItemPrice(i, +$any($event.target).value)" /><ng-template #lockedRate>{{ item.unitPrice | number:'1.2-2' }}</ng-template></span>
           <span class="col-qty">
             <input

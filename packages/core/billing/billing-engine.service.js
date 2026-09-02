@@ -306,7 +306,14 @@ function createBillingEngineService({
       wageChargeTotal: calculated.wageChargeTotal,
       total: calculated.total,
       metadata: {},
-      priceOverrideSnapshot
+      priceOverrideSnapshot,
+      allocationPriorityLotId: Number(item.allocationPriorityLotId) || null,
+      allocationPrioritySource: ['automatic', 'remembered', 'manual'].includes(item.allocationPrioritySource)
+        ? item.allocationPrioritySource
+        : null,
+      allocationPrioritySetBy: Number(item.allocationPriorityLotId) && Number.isInteger(Number(ctx.userId)) && Number(ctx.userId) > 0
+        ? Number(ctx.userId)
+        : null
     });
   }
 
@@ -561,6 +568,22 @@ function createBillingEngineService({
     return billingRepository.searchInvoices(filters || {});
   }
 
+  async function listAllocationLotCandidates(options) {
+    return billingRepository.listAllocationLotCandidates(options || {});
+  }
+
+  async function rememberAllocationLot(options) {
+    return billingRepository.rememberAllocationLot(options || {});
+  }
+
+  async function clearRememberedAllocationLot(options) {
+    return billingRepository.clearRememberedAllocationLot(options || {});
+  }
+
+  async function setLiveItemAllocationPriority(options) {
+    return billingRepository.setLiveItemAllocationPriority(options || {});
+  }
+
   async function getInvoiceArchive(invoiceId) {
     if (!invoiceId) throw new Error('invoiceId is required.');
     return billingRepository.getInvoiceArchive(invoiceId);
@@ -617,6 +640,10 @@ function createBillingEngineService({
     recallBills,
     loadBill,
     searchProducts,
+    listAllocationLotCandidates,
+    rememberAllocationLot,
+    clearRememberedAllocationLot,
+    setLiveItemAllocationPriority,
     searchInvoices,
     getInvoiceArchive,
     collectInvoiceBalance

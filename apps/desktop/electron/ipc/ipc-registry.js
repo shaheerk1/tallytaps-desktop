@@ -505,6 +505,10 @@ function registerIpcHandlers(services) {
   wrapIpcHandler('inventory.lots.list', async (payload) => services.catalogService.listInventoryLots(payload?.productId || null, payload?.locCode || null), { authorize: requireReceivingView });
   wrapIpcHandler('inventory.summary.list', async (payload) => services.catalogService.listInventorySummary(payload?.locCode), { authorize: requireReceivingView });
   wrapIpcHandler('inventory.counts.finalize', async (payload) => services.catalogService.finalizeStockCount(payload?.count || {}), { authorize: requireInventoryAdjust });
+  wrapIpcHandler('inventory.allocations.exceptions', async (payload) => services.catalogService.listAllocationExceptions(payload?.locCode), { authorize: requireReceivingView });
+  wrapIpcHandler('inventory.allocations.list', async (payload) => services.catalogService.listRecentLotAllocations(payload?.locCode, payload?.limit), { authorize: requireReceivingView });
+  wrapIpcHandler('inventory.allocations.resolve', async (payload) => services.catalogService.allocateException({ ...(payload?.allocation || {}), userId: payload?.actor?.id || null }), { authorize: requireInventoryAdjust });
+  wrapIpcHandler('inventory.allocations.reallocate', async (payload) => services.catalogService.reallocateSale({ ...(payload?.allocation || {}), userId: payload?.actor?.id || null }), { authorize: requireInventoryAdjust });
   wrapIpcHandler('supply.pattiyals.list', async (payload) => services.supplierSaleStatementService.list(payload?.filters || {}), { authorize: requireSettlementsView });
   wrapIpcHandler('supply.pattiyals.get', async (payload) => services.supplierSaleStatementService.get(payload?.statementId), { authorize: requireSettlementsView });
   wrapIpcHandler('supply.pattiyals.candidates.sales', async (payload) => services.supplierSaleStatementService.candidates(payload?.filters || {}), { authorize: requireSettlementsView });
@@ -702,6 +706,22 @@ function registerIpcHandlers(services) {
     },
     { authorize: requireBillingCreate }
   );
+
+  wrapIpcHandler('billing.lots.candidates', async (payload) => {
+    return services.billingEngineService.listAllocationLotCandidates({ ...(payload?.options || {}), userId: payload?.actor?.id || null });
+  }, { authorize: requireBillingCreate });
+
+  wrapIpcHandler('billing.lots.remember', async (payload) => {
+    return services.billingEngineService.rememberAllocationLot({ ...(payload?.options || {}), userId: payload?.actor?.id || null });
+  }, { authorize: requireBillingCreate });
+
+  wrapIpcHandler('billing.lots.clearRemembered', async (payload) => {
+    return services.billingEngineService.clearRememberedAllocationLot({ ...(payload?.options || {}), userId: payload?.actor?.id || null });
+  }, { authorize: requireBillingCreate });
+
+  wrapIpcHandler('billing.bill.setItemLotPriority', async (payload) => {
+    return services.billingEngineService.setLiveItemAllocationPriority({ ...(payload?.options || {}), userId: payload?.actor?.id || null });
+  }, { authorize: requireBillingCreate });
 
   // Refunds are separate, source-linked documents. The renderer can request
   // workflows, but the refund service revalidates source limits at completion.

@@ -55,6 +55,10 @@ function createCatalogService({ catalogRepository, partyRepository = null, issue
     ,listInventoryLots: catalogRepository.listInventoryLots
     ,listInventorySummary: catalogRepository.listInventorySummary
     ,finalizeStockCount: catalogRepository.finalizeStockCount
+    ,listAllocationExceptions: catalogRepository.listAllocationExceptions
+    ,listRecentLotAllocations: catalogRepository.listRecentLotAllocations
+    ,allocateException: catalogRepository.allocateException
+    ,reallocateSale: catalogRepository.reallocateSale
   };
 }
 

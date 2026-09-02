@@ -4,7 +4,7 @@ import { PrintingService } from '../services/printing.service';
 
 @Component({ selector: 'pos-supply-receiving', templateUrl: './supply-receiving.component.html', styleUrls: ['./supply-receiving.component.css'] })
 export class SupplyReceivingComponent implements OnInit {
-  suppliers: any[] = []; products: any[] = []; receipts: any[] = []; agreements: any[] = []; settlements: any[] = []; chargeTypes: any[] = []; lots: any[] = []; inventorySummary: any[] = []; bankAccounts: any[] = []; account: { entries: any[]; balance: number } = null as any; info = ''; error = ''; saving = false;
+  suppliers: any[] = []; products: any[] = []; receipts: any[] = []; agreements: any[] = []; settlements: any[] = []; chargeTypes: any[] = []; lots: any[] = []; inventorySummary: any[] = []; allocationExceptions: any[] = []; recentLotAllocations: any[] = []; bankAccounts: any[] = []; account: { entries: any[]; balance: number } = null as any; info = ''; error = ''; saving = false;
   activePanel: 'receive' | 'pattiyal' | 'settle' | 'inventory' | 'setup' = 'receive';
   panelInfo = ''; panelError = '';
   supplier = { supplierCode: '', name: '', phone: '', mobile: '', address: '' };
@@ -15,6 +15,8 @@ export class SupplyReceivingComponent implements OnInit {
   payment: any = { settlementId: null, method: 'cash', amount: null, reference: '', chequeDetails: { bankAccountId: null, chequeNumber: '', chequeDate: '' } };
   charge: any = { supplierId: null, chargeTypeId: null, amount: null, businessDate: new Date().toISOString().slice(0, 10), reason: '' };
   stockCount: any = { businessDate: new Date().toISOString().slice(0, 10), reason: '', lines: [] };
+  exceptionAllocation: any = { exceptionId: null, productId: null, saleDate: '', inventoryLotId: null, handlingQuantity: null, baseQuantity: null, reason: '' };
+  saleReallocation: any = { allocationId: null, productId: null, saleDate: '', fromLotId: null, toInventoryLotId: null, handlingQuantity: null, baseQuantity: null, reason: '' };
   grnPage = 1; grnPageSize = 10; grnTotal = 0; grnFilters: any = { term: '', supplierId: null, status: '', fromDate: '', toDate: '' };
   grnView: 'posted' | 'drafts' = 'posted'; grnEditorOpen = false; grnReviewMode = false; grnDetail: any = null; correctionSource: any = null; correctionReason = '';
   constructor(private session: SessionService, private printing: PrintingService) {}
@@ -38,16 +40,19 @@ export class SupplyReceivingComponent implements OnInit {
   async load(): Promise<void> {
     const api = this.api();
     if (!api) return;
-    const [suppliers, products, receipts, agreements, settlements, chargeTypes, lots, inventorySummary, bankAccounts] = await Promise.all([
+    const [suppliers, products, receipts, agreements, settlements, chargeTypes, lots, inventorySummary, allocationExceptions, recentLotAllocations, bankAccounts] = await Promise.all([
       api.listSuppliers(this.actor()), api.listProducts(), api.listGoodsReceipts({ ...this.grnFilters, scope: this.grnView, page: this.grnPage, pageSize: this.grnPageSize }, this.actor()), api.listSupplyAgreements(null, this.actor()),
-      api.listSupplierSettlements(null, this.actor()), api.listSupplierChargeTypes(this.actor()), api.listInventoryLots(null, this.origin().locCode, this.actor()), api.listInventorySummary(this.origin().locCode, this.actor()), api.listBusinessBankAccounts(false, this.actor())
+      api.listSupplierSettlements(null, this.actor()), api.listSupplierChargeTypes(this.actor()), api.listInventoryLots(null, this.origin().locCode, this.actor()), api.listInventorySummary(this.origin().locCode, this.actor()),
+      api.listAllocationExceptions(this.origin().locCode, this.actor()), api.listRecentLotAllocations(this.origin().locCode, 80, this.actor()), api.listBusinessBankAccounts(false, this.actor())
     ]);
     this.suppliers = suppliers.data || []; this.products = products.data || []; this.receipts = receipts.data?.rows || []; this.grnTotal = Number(receipts.data?.total || 0); this.agreements = agreements.data || [];
     this.settlements = settlements.data || []; this.chargeTypes = chargeTypes.data || []; this.lots = lots.data || [];
     this.inventorySummary = inventorySummary.data || [];
+    this.allocationExceptions = allocationExceptions.data || [];
+    this.recentLotAllocations = recentLotAllocations.data || [];
     this.bankAccounts = bankAccounts.data || [];
     this.stockCount.lines = this.lots.map((lot: any) => ({ inventoryLotId: lot.id, countedQuantity: lot.remaining_handling_quantity ?? lot.remaining_quantity, countedKilos: lot.remaining_base_quantity ?? lot.remaining_kilos }));
-    const failed = [suppliers, receipts, agreements, settlements, chargeTypes, lots, inventorySummary, bankAccounts].find((result: any) => !result.success);
+    const failed = [suppliers, receipts, agreements, settlements, chargeTypes, lots, inventorySummary, allocationExceptions, recentLotAllocations, bankAccounts].find((result: any) => !result.success);
     if (failed) this.reportError(failed.error || 'Some receiving data could not be loaded. Check the role permissions for this workflow.');
   }
   productForLine(line: any): any { return this.products.find((product: any) => Number(product.id) === Number(line.productId)) || null; }
@@ -109,6 +114,13 @@ export class SupplyReceivingComponent implements OnInit {
   async printGrn(id: number): Promise<void> { const detail = await this.receiptDetail(id); if (!detail) return; const result = await this.printing.printDocument(this.grnDocument(detail)); this.info = result.success ? 'GRN acknowledgement sent to the receipt printer.' : result.error || 'GRN print failed.'; }
   async saveGrnPdf(id: number): Promise<void> { const detail = await this.receiptDetail(id); if (!detail) return; const number = detail.receipt.grn_number; const result = await this.printing.savePdf(this.grnDocument(detail), { prompt: true, fileName: `${number}.pdf` }); this.info = result.success ? (result.canceled ? 'PDF save canceled.' : `GRN PDF saved to ${result.filePath}.`) : result.error || 'GRN PDF save failed.'; }
   async saveAdjustment(): Promise<void> { const result = await this.api().adjustStock({ ...this.adjustment, ...this.origin(this.adjustment.businessDate) }, this.actor()); if (!result.success) { this.error = result.error || 'Could not save stock adjustment.'; return; } this.info = 'Dual stock adjustment recorded.'; this.adjustment.handlingQuantity = null; this.adjustment.baseQuantity = null; this.adjustment.reason = ''; await this.load(); }
+  eligibleAllocationLots(productId: number, saleDate: string, excludeLotId: number | null = null): any[] { return this.lots.filter((lot: any) => Number(lot.product_id) === Number(productId) && Number(lot.id) !== Number(excludeLotId) && this.dateInput(lot.txn_date) <= this.dateInput(saleDate) && (Number(lot.remaining_handling_quantity || 0) > 0.0005 || Number(lot.remaining_base_quantity || 0) > 0.0005)); }
+  beginExceptionAllocation(item: any): void { const candidates = this.eligibleAllocationLots(item.product_id, item.txn_date); this.exceptionAllocation = { exceptionId: item.id, productId: item.product_id, saleDate: this.dateInput(item.txn_date), inventoryLotId: candidates[0]?.id || null, handlingQuantity: Number(item.unallocated_handling_quantity || 0), baseQuantity: item.unallocated_base_quantity == null ? null : Number(item.unallocated_base_quantity), reason: '' }; }
+  cancelExceptionAllocation(): void { this.exceptionAllocation = { exceptionId: null, productId: null, saleDate: '', inventoryLotId: null, handlingQuantity: null, baseQuantity: null, reason: '' }; }
+  async resolveAllocationException(): Promise<void> { const result = await this.api().allocateException(this.exceptionAllocation, this.actor()); if (!result.success) { this.reportError(result.error || 'Could not allocate the unmatched sale.'); return; } this.reportSuccess(result.data.resolved ? 'The unmatched sale is fully allocated.' : 'Part of the unmatched sale was allocated.'); this.cancelExceptionAllocation(); await this.load(); }
+  beginSaleReallocation(item: any): void { if (Number(item.linked_refund_count || 0) > 0) { this.reportError('This allocation has refund history. Use a stock correction so its audit trail remains intact.'); return; } const candidates = this.eligibleAllocationLots(item.product_id, item.txn_date, item.inventory_lot_id); this.saleReallocation = { allocationId: item.id, productId: item.product_id, saleDate: this.dateInput(item.txn_date), fromLotId: item.inventory_lot_id, toInventoryLotId: candidates[0]?.id || null, handlingQuantity: Number(item.handling_quantity || 0), baseQuantity: item.base_quantity == null ? null : Number(item.base_quantity), reason: '' }; }
+  cancelSaleReallocation(): void { this.saleReallocation = { allocationId: null, productId: null, saleDate: '', fromLotId: null, toInventoryLotId: null, handlingQuantity: null, baseQuantity: null, reason: '' }; }
+  async reallocateSale(): Promise<void> { const result = await this.api().reallocateSale(this.saleReallocation, this.actor()); if (!result.success) { this.reportError(result.error || 'Could not move the sale allocation.'); return; } this.reportSuccess('Sale allocation moved to the selected GRN lot. Overall stock was not changed.'); this.cancelSaleReallocation(); await this.load(); }
   async createAgreement(): Promise<void> { const result = await this.api().createSupplyAgreement(this.agreement, this.actor()); if (!result.success) { this.error = result.error || 'Could not save agreement.'; return; } this.info = 'Supplier agreement saved.'; await this.load(); }
   get selectedSettlement(): any { return this.settlements.find((item: any) => Number(item.id) === Number(this.payment.settlementId)) || null; }
   get selectedChargeType(): any { return this.chargeTypes.find((item: any) => Number(item.id) === Number(this.charge.chargeTypeId)) || null; }

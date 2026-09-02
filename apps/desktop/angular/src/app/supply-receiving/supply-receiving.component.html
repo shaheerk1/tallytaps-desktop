@@ -50,6 +50,55 @@
     </section>
 
     <section class="workflow-card"><div class="card-heading"><div><h2>Stock control</h2><p>Record Unit Count and Measured Qty together or perform a lot-by-lot dual count. Every variance is audited.</p></div></div><div class="split-cards"><section class="form-section"><h3>Manual stock adjustment</h3><div class="field-stack"><label>Product<select [(ngModel)]="adjustment.productId"><option [ngValue]="null">Choose product</option><option *ngFor="let product of products" [ngValue]="product.id">{{ product.sku }} - {{ product.name }}</option></select></label><label>Unit Count adjustment ({{ adjustmentProduct?.handling_uom || 'qty' }})<input type="number" step="0.001" [(ngModel)]="adjustment.handlingQuantity"></label><label *ngIf="adjustmentProduct?.dual_uom_enabled">Measured Qty adjustment ({{ adjustmentProduct?.base_uom || 'base' }})<input type="number" step="0.001" [(ngModel)]="adjustment.baseQuantity"></label><label>Business date<input type="date" [(ngModel)]="adjustment.businessDate"></label><label>Reason<input [(ngModel)]="adjustment.reason" placeholder="Damage, loss, count correction"></label></div><button type="button" class="button-secondary" (click)="saveAdjustment()">Record adjustment</button></section><section class="form-section"><h3>Lot stock count</h3><label>Count date<input type="date" [(ngModel)]="stockCount.businessDate"></label><label>Reason<input [(ngModel)]="stockCount.reason" placeholder="Daily count or measurement review"></label><div class="lot-list"><div *ngFor="let lot of lots; let i = index"><strong>{{ lot.product_name }}<small>{{ lot.lot_code }}</small></strong><span>{{ lot.supplier_name }} · {{ lot.remaining_handling_quantity }} {{ lot.handling_uom_snapshot }}<ng-container *ngIf="lot.remaining_base_quantity != null"> / {{ lot.remaining_base_quantity }} {{ lot.base_uom_snapshot }}</ng-container></span><input type="number" [placeholder]="'Counted ' + lot.handling_uom_snapshot" [(ngModel)]="stockCount.lines[i].countedQuantity"><input *ngIf="lot.remaining_base_quantity != null" type="number" [placeholder]="'Counted ' + lot.base_uom_snapshot" [(ngModel)]="stockCount.lines[i].countedKilos"></div></div><button type="button" class="button-primary" (click)="finalizeStockCount()">Finalize lot count</button></section></div></section>
+
+    <section class="workflow-card allocation-workspace">
+      <div class="card-heading"><div><h2>Lot allocation &amp; reconciliation</h2><p>Assign sales that could not find stock, or move an incorrect allocation between GRN lots. Overall item stock is never posted again.</p></div><span class="status-chip">{{ allocationExceptions.length }} unmatched</span></div>
+      <section class="allocation-section">
+        <div class="section-head"><div><h3>Unmatched finalized sales</h3><p>Oldest sale first. Allocate only against GRN lots dated on or before the sale.</p></div></div>
+        <div class="empty-state" *ngIf="!allocationExceptions.length">Every finalized sale currently has a GRN-lot allocation.</div>
+        <div class="allocation-list" *ngIf="allocationExceptions.length">
+          <div class="allocation-row allocation-head"><span>Sale</span><span>Item</span><span>Unmatched</span><span>Billing source</span><span></span></div>
+          <div class="allocation-row" *ngFor="let item of allocationExceptions">
+            <span><strong>{{ item.invoice_number }}</strong><small>{{ item.txn_date | date:'dd MMM yyyy' }} · line {{ item.line_no }}</small></span>
+            <span><strong>{{ item.item_code }}</strong><small>{{ item.product_name }}</small></span>
+            <span><strong>{{ item.unallocated_handling_quantity | number:'1.0-3' }} {{ item.handling_uom }}</strong><small *ngIf="item.unallocated_base_quantity != null">{{ item.unallocated_base_quantity | number:'1.0-3' }} {{ item.base_uom }}</small></span>
+            <span>{{ item.supplier_code || '—' }}<small>{{ item.customer_code || 'No customer code' }}</small></span>
+            <button type="button" class="button-secondary" (click)="beginExceptionAllocation(item)">Allocate</button>
+          </div>
+        </div>
+        <div class="allocation-editor" *ngIf="exceptionAllocation.exceptionId">
+          <div><strong>Allocate unmatched stock</strong><small>This reduces only the selected lot. It does not deduct overall stock a second time.</small></div>
+          <label>GRN lot<select [(ngModel)]="exceptionAllocation.inventoryLotId"><option [ngValue]="null">Choose active lot</option><option *ngFor="let lot of eligibleAllocationLots(exceptionAllocation.productId, exceptionAllocation.saleDate)" [ngValue]="lot.id">{{ lot.supplier_name }} · GRN {{ lot.grn_no }}/L{{ lot.line_no }} · Rem {{ lot.remaining_handling_quantity }} {{ lot.handling_uom_snapshot }}<ng-container *ngIf="lot.remaining_base_quantity != null"> / {{ lot.remaining_base_quantity }} {{ lot.base_uom_snapshot }}</ng-container></option></select></label>
+          <label>Unit Count<input type="number" min="0" step="0.001" [(ngModel)]="exceptionAllocation.handlingQuantity"></label>
+          <label *ngIf="exceptionAllocation.baseQuantity != null">Measured Qty<input type="number" min="0" step="0.001" [(ngModel)]="exceptionAllocation.baseQuantity"></label>
+          <label class="allocation-reason">Reason<input [(ngModel)]="exceptionAllocation.reason" placeholder="Why this GRN lot is the correct source"></label>
+          <div class="row-actions"><button type="button" class="button-quiet" (click)="cancelExceptionAllocation()">Cancel</button><button type="button" class="button-primary" [disabled]="!exceptionAllocation.inventoryLotId || !exceptionAllocation.reason" (click)="resolveAllocationException()">Save allocation</button></div>
+        </div>
+      </section>
+
+      <section class="allocation-section">
+        <div class="section-head"><div><h3>Recent sale allocations</h3><p>Move all or part of a recorded allocation when the wrong GRN lot was consumed.</p></div></div>
+        <div class="allocation-list compact" *ngIf="recentLotAllocations.length">
+          <div class="allocation-row allocation-head"><span>Sale</span><span>Item</span><span>Current GRN lot</span><span>Allocated</span><span></span></div>
+          <div class="allocation-row" *ngFor="let item of recentLotAllocations">
+            <span><strong>#{{ item.document_no }}</strong><small>{{ item.txn_date | date:'dd MMM yyyy' }} · line {{ item.line_no }}</small></span>
+            <span><strong>{{ item.item_code }}</strong><small>{{ item.description }}</small></span>
+            <span><strong>{{ item.lot_supplier_code || item.lot_supplier_name }}</strong><small>{{ item.grn_number }} · {{ item.lot_code }}</small></span>
+            <span><strong>{{ item.handling_quantity | number:'1.0-3' }} {{ item.handling_uom }}</strong><small *ngIf="item.base_quantity != null">{{ item.base_quantity | number:'1.0-3' }} {{ item.base_uom }}</small><small *ngIf="item.linked_refund_count">Locked by refund history</small></span>
+            <button type="button" class="button-quiet" [disabled]="item.linked_refund_count" [title]="item.linked_refund_count ? 'Refund history must remain tied to its original allocation' : 'Move this allocation'" (click)="beginSaleReallocation(item)">Move</button>
+          </div>
+        </div>
+        <div class="empty-state" *ngIf="!recentLotAllocations.length">No lot allocations have been recorded yet.</div>
+        <div class="allocation-editor" *ngIf="saleReallocation.allocationId">
+          <div><strong>Move sale allocation</strong><small>The source lot is restored and the destination lot is reduced in one transaction.</small></div>
+          <label>Destination lot<select [(ngModel)]="saleReallocation.toInventoryLotId"><option [ngValue]="null">Choose another lot</option><option *ngFor="let lot of eligibleAllocationLots(saleReallocation.productId, saleReallocation.saleDate, saleReallocation.fromLotId)" [ngValue]="lot.id">{{ lot.supplier_name }} · GRN {{ lot.grn_no }}/L{{ lot.line_no }} · Rem {{ lot.remaining_handling_quantity }} {{ lot.handling_uom_snapshot }}<ng-container *ngIf="lot.remaining_base_quantity != null"> / {{ lot.remaining_base_quantity }} {{ lot.base_uom_snapshot }}</ng-container></option></select></label>
+          <label>Unit Count<input type="number" min="0" step="0.001" [(ngModel)]="saleReallocation.handlingQuantity"></label>
+          <label *ngIf="saleReallocation.baseQuantity != null">Measured Qty<input type="number" min="0" step="0.001" [(ngModel)]="saleReallocation.baseQuantity"></label>
+          <label class="allocation-reason">Reason<input [(ngModel)]="saleReallocation.reason" placeholder="Reason for changing the GRN lot"></label>
+          <div class="row-actions"><button type="button" class="button-quiet" (click)="cancelSaleReallocation()">Cancel</button><button type="button" class="button-primary" [disabled]="!saleReallocation.toInventoryLotId || !saleReallocation.reason" (click)="reallocateSale()">Move allocation</button></div>
+        </div>
+      </section>
+    </section>
   </section>
 
   <section class="workflow-card" *ngIf="activePanel === 'setup'"><div class="card-heading"><div><h2>Supplier setup</h2><p>Create a supplier first, then optionally save their owned-purchase or consignment terms.</p></div></div><div class="split-cards"><section class="form-section"><h3>New supplier</h3><div class="field-stack"><label>Supplier code<input [(ngModel)]="supplier.supplierCode" placeholder="Optional unique code"></label><label>Name<input [(ngModel)]="supplier.name" placeholder="Supplier or farm name"></label><label>Phone<input [(ngModel)]="supplier.phone"></label><label>Mobile<input [(ngModel)]="supplier.mobile"></label></div><button type="button" class="button-primary" (click)="createSupplier()">Save supplier</button></section><section class="form-section"><h3>Supply agreement</h3><div class="field-stack"><label>Supplier<select [(ngModel)]="agreement.supplierId"><option [ngValue]="null">Select supplier</option><option *ngFor="let supplier of suppliers" [ngValue]="supplier.id">{{ supplier.name }}</option></select></label><label>Ownership<select [(ngModel)]="agreement.ownershipModel"><option value="owned">Owned purchase</option><option value="consignment">Consignment</option></select></label><label>Settlement basis<select [(ngModel)]="agreement.settlementBasis"><option value="net_sale">Net sale</option><option value="gross_sale">Gross sale</option><option value="collected_sale">Collected sale</option></select></label><label>Commission %<input type="number" min="0" step="0.01" [(ngModel)]="agreement.commissionRate"></label></div><button type="button" class="button-secondary" (click)="createAgreement()">Save agreement</button></section></div></section>

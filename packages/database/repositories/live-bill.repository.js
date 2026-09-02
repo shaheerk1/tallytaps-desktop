@@ -113,7 +113,10 @@ function createLiveBillRepository({ database, documentSequenceRepository, busine
       const [rows] = await connection.execute(
         `SELECT id, session_id AS sessionId, receipt_no AS receiptNo, seq_no AS seqNo,
                 customer_code AS customerCode, customer_account_id AS customerAccountId, product_id AS productId, supplier_code AS supplierCode, item_code AS itemCode, description,
-                quantity AS qty, kilos, handling_uom_snapshot AS handlingUom, base_uom_snapshot AS baseUom, requires_kilos AS requiresKilos, pricing_basis AS pricingBasis, quantity_step AS quantityStep, allow_zero_quantity AS allowZeroQuantity, unit_price AS unitPrice, discount, tax,
+                quantity AS qty, kilos, handling_uom_snapshot AS handlingUom, base_uom_snapshot AS baseUom,
+                allocation_priority_lot_id AS allocationPriorityLotId, allocation_priority_source AS allocationPrioritySource,
+                (SELECT lot_code FROM inventory_lots WHERE id = invoice_items.allocation_priority_lot_id) AS allocationPriorityLotCode,
+                requires_kilos AS requiresKilos, pricing_basis AS pricingBasis, quantity_step AS quantityStep, allow_zero_quantity AS allowZeroQuantity, unit_price AS unitPrice, discount, tax,
                 merchandise_total AS merchandiseTotal, bag_charge_rate AS bagChargeRate, bag_charge_total AS bagChargeTotal,
                 wage_charge_rate AS wageChargeRate, wage_basis AS wageBasis, wage_charge_total AS wageChargeTotal, total,
                 inv_stat, metadata, price_override_snapshot, created_at
@@ -145,7 +148,8 @@ function createLiveBillRepository({ database, documentSequenceRepository, busine
     sessionId, receiptNo, locCode, macCode, txnDate, userId,
     customerCode = '', customerAccountId = null, productId, supplierCode = '', itemCode, description, qty, kilos = null, handlingUom = 'qty', baseUom = null, requiresKilos = false, pricingBasis = 'qty', quantityStep = 1, allowZeroQuantity = false, unitPrice, discount, tax = 0,
     merchandiseTotal = 0, bagChargeRate = 0, bagChargeTotal = 0, wageChargeRate = 0, wageBasis = 'none', wageChargeTotal = 0,
-    total, metadata, priceOverrideSnapshot = null
+    total, metadata, priceOverrideSnapshot = null,
+    allocationPriorityLotId = null, allocationPrioritySource = null, allocationPrioritySetBy = null
   }) {
     return database.withConnection(async (connection) => {
       if (!businessDayRepository) throw new Error('Business-day control is not available.');
@@ -159,18 +163,31 @@ function createLiveBillRepository({ database, documentSequenceRepository, busine
       );
       const nextSeq = (maxSeq[0]?.maxSeq || 0) + 1;
       const normalized = normalizeLineMetadata(metadata, kilos);
+      const normalizedAllocationLotId = Number.isInteger(Number(allocationPriorityLotId)) && Number(allocationPriorityLotId) > 0
+        ? Number(allocationPriorityLotId)
+        : null;
+      const normalizedAllocationSource = normalizedAllocationLotId && ['automatic', 'remembered', 'manual'].includes(allocationPrioritySource)
+        ? allocationPrioritySource
+        : null;
+      const normalizedAllocationUserId = normalizedAllocationLotId && Number.isInteger(Number(allocationPrioritySetBy)) && Number(allocationPrioritySetBy) > 0
+        ? Number(allocationPrioritySetBy)
+        : null;
 
       const [result] = await connection.execute(
         `INSERT INTO invoice_items
            (invoice_id, business_day_id, session_id, loc_code, mac_code, receipt_no, customer_code, customer_account_id, txn_date, user_id,
-             seq_no, product_id, supplier_code, item_code, description, quantity, handling_quantity, kilos, base_quantity, handling_uom_snapshot, base_uom_snapshot, requires_kilos, pricing_basis, quantity_step, allow_zero_quantity, unit_price, discount, tax,
+             seq_no, product_id, supplier_code, item_code, description, quantity, handling_quantity, kilos, base_quantity, handling_uom_snapshot, base_uom_snapshot,
+             allocation_priority_lot_id, allocation_priority_source, allocation_priority_set_by, allocation_priority_set_at,
+             requires_kilos, pricing_basis, quantity_step, allow_zero_quantity, unit_price, discount, tax,
             merchandise_total, bag_charge_rate, bag_charge_total, wage_charge_rate, wage_basis, wage_charge_total, total,
             inv_stat, cre_by, upd_stat, metadata, price_override_snapshot)
-         VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, 1, CAST(? AS JSON), CAST(? AS JSON))`,
+         VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, 1, CAST(? AS JSON), CAST(? AS JSON))`,
         [
           businessDay.id, sessionId, locCode, macCode, receiptNo, customerCode, customerAccountId, txnDate, userId,
           nextSeq, productId || null, supplierCode, itemCode, description,
-          qty, qty, normalized.kilos, normalized.kilos, handlingUom, baseUom, requiresKilos ? 1 : 0, pricingBasis, quantityStep, allowZeroQuantity ? 1 : 0, unitPrice, discount, tax,
+          qty, qty, normalized.kilos, normalized.kilos, handlingUom, baseUom,
+          normalizedAllocationLotId, normalizedAllocationSource, normalizedAllocationUserId, normalizedAllocationLotId ? new Date() : null,
+          requiresKilos ? 1 : 0, pricingBasis, quantityStep, allowZeroQuantity ? 1 : 0, unitPrice, discount, tax,
           merchandiseTotal, bagChargeRate, bagChargeTotal, wageChargeRate, wageBasis, wageChargeTotal, total,
           userId, JSON.stringify(normalized.metadata || {}), JSON.stringify(priceOverrideSnapshot)
         ]
@@ -191,6 +208,8 @@ function createLiveBillRepository({ database, documentSequenceRepository, busine
           kilos: normalized.kilos,
           handlingUom,
           baseUom,
+          allocationPriorityLotId: normalizedAllocationLotId,
+          allocationPrioritySource: normalizedAllocationSource,
         requiresKilos,
         pricingBasis, quantityStep, allowZeroQuantity,
         unitPrice,
@@ -211,7 +230,10 @@ function createLiveBillRepository({ database, documentSequenceRepository, busine
       const [rows] = await connection.execute(
         `SELECT id, session_id AS sessionId, receipt_no AS receiptNo, seq_no AS seqNo,
                 customer_code AS customerCode, customer_account_id AS customerAccountId, product_id AS productId, supplier_code AS supplierCode, item_code AS itemCode, description,
-                quantity AS qty, kilos, handling_uom_snapshot AS handlingUom, base_uom_snapshot AS baseUom, requires_kilos AS requiresKilos, pricing_basis AS pricingBasis, quantity_step AS quantityStep, allow_zero_quantity AS allowZeroQuantity, unit_price AS unitPrice, discount, tax,
+                quantity AS qty, kilos, handling_uom_snapshot AS handlingUom, base_uom_snapshot AS baseUom,
+                allocation_priority_lot_id AS allocationPriorityLotId, allocation_priority_source AS allocationPrioritySource,
+                (SELECT lot_code FROM inventory_lots WHERE id = invoice_items.allocation_priority_lot_id) AS allocationPriorityLotCode,
+                requires_kilos AS requiresKilos, pricing_basis AS pricingBasis, quantity_step AS quantityStep, allow_zero_quantity AS allowZeroQuantity, unit_price AS unitPrice, discount, tax,
                 merchandise_total AS merchandiseTotal, bag_charge_rate AS bagChargeRate, bag_charge_total AS bagChargeTotal,
                 wage_charge_rate AS wageChargeRate, wage_basis AS wageBasis, wage_charge_total AS wageChargeTotal, total,
                 inv_stat, metadata, price_override_snapshot, created_at

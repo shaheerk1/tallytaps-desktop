@@ -13,6 +13,140 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
     const kilos = Number(value);
     return Number.isFinite(kilos) && kilos > 0 ? Math.round(kilos * 1000) / 1000 : null;
   }
+
+  function toStockQuantity(value) {
+    const number = Number(value || 0);
+    return Math.round((Number.isFinite(number) ? number : 0) * 1000) / 1000;
+  }
+
+  async function validateAllocationPriority(connection, { lotId, productId, locCode, txnDate }) {
+    const normalizedLotId = Number(lotId);
+    if (!Number.isInteger(normalizedLotId) || normalizedLotId < 1) return null;
+    const [rows] = await connection.execute(
+      `SELECT l.id
+       FROM inventory_lots l
+       JOIN products p ON p.id = l.product_id
+       JOIN goods_receipt_lines gl ON gl.id = l.goods_receipt_line_id
+       JOIN goods_receipts g ON g.id = gl.goods_receipt_id
+       WHERE l.id = ? AND l.product_id = ? AND l.loc_code = ? AND l.txn_date <= ?
+         AND g.status = 'finalized'
+         AND (CASE WHEN p.pricing_basis = 'kilos' OR p.requires_kilos = 1
+                   THEN COALESCE(l.remaining_base_quantity, 0) > 0
+                   ELSE l.remaining_handling_quantity > 0 END)
+       LIMIT 1`,
+      [normalizedLotId, Number(productId), String(locCode || '').trim(), txnDate]
+    );
+    return rows.length ? normalizedLotId : null;
+  }
+
+  async function listAllocationLotCandidates({ productId, locCode, txnDate, userId = null, limit = 12 } = {}) {
+    const normalizedProductId = Number(productId);
+    const normalizedLocation = String(locCode || '').trim();
+    if (!Number.isInteger(normalizedProductId) || normalizedProductId < 1 || !normalizedLocation || !txnDate) return [];
+    const rowLimit = Math.max(1, Math.min(30, Number(limit) || 12));
+    return database.withConnection(async (connection) => {
+      const [preferenceRows] = Number(userId) > 0
+        ? await connection.execute(
+          `SELECT inventory_lot_id FROM inventory_lot_preferences
+           WHERE loc_code = ? AND product_id = ? AND user_id = ? LIMIT 1`,
+          [normalizedLocation, normalizedProductId, Number(userId)]
+        )
+        : [[]];
+      const rememberedLotId = Number(preferenceRows[0]?.inventory_lot_id || 0) || null;
+      const [rows] = await connection.execute(
+        `SELECT l.id, l.lot_code, l.loc_code, l.mac_code, l.txn_date, l.grn_no, l.line_no,
+                l.received_handling_quantity, l.remaining_handling_quantity,
+                l.received_base_quantity, l.remaining_base_quantity,
+                l.handling_uom_snapshot, l.base_uom_snapshot, l.conversion_mode,
+                l.expected_base_per_handling, l.actual_base_per_handling, l.ownership_model,
+                s.id AS supplier_id, s.supplier_code, s.name AS supplier_name,
+                g.id AS goods_receipt_id, g.grn_number, g.external_reference, g.vehicle_no
+         FROM inventory_lots l
+         JOIN products p ON p.id = l.product_id
+         JOIN suppliers s ON s.id = l.supplier_id
+         JOIN goods_receipt_lines gl ON gl.id = l.goods_receipt_line_id
+         JOIN goods_receipts g ON g.id = gl.goods_receipt_id
+         WHERE l.product_id = ? AND l.loc_code = ? AND l.txn_date <= ? AND g.status = 'finalized'
+           AND (CASE WHEN p.pricing_basis = 'kilos' OR p.requires_kilos = 1
+                     THEN COALESCE(l.remaining_base_quantity, 0) > 0
+                     ELSE l.remaining_handling_quantity > 0 END)
+         ORDER BY CASE WHEN l.id = ? THEN 0 ELSE 1 END,
+                  l.txn_date ASC, l.grn_no ASC, l.line_no ASC, l.id ASC
+         LIMIT ${rowLimit}`,
+        [normalizedProductId, normalizedLocation, txnDate, rememberedLotId || 0]
+      );
+      if (rememberedLotId && !rows.some((row) => Number(row.id) === rememberedLotId)) {
+        await connection.execute(
+          `DELETE FROM inventory_lot_preferences
+           WHERE loc_code = ? AND product_id = ? AND user_id = ? AND inventory_lot_id = ?`,
+          [normalizedLocation, normalizedProductId, Number(userId), rememberedLotId]
+        );
+      }
+      return rows.map((row, index) => ({
+        ...row,
+        id: Number(row.id),
+        supplier_id: Number(row.supplier_id),
+        received_handling_quantity: toStockQuantity(row.received_handling_quantity),
+        remaining_handling_quantity: toStockQuantity(row.remaining_handling_quantity),
+        received_base_quantity: row.received_base_quantity == null ? null : toStockQuantity(row.received_base_quantity),
+        remaining_base_quantity: row.remaining_base_quantity == null ? null : toStockQuantity(row.remaining_base_quantity),
+        remembered: Number(row.id) === rememberedLotId,
+        priority: index + 1,
+        priority_reason: Number(row.id) === rememberedLotId ? 'remembered' : 'fifo'
+      }));
+    });
+  }
+
+  async function rememberAllocationLot({ productId, locCode, txnDate, userId, lotId }) {
+    const normalizedUserId = Number(userId);
+    if (!Number.isInteger(normalizedUserId) || normalizedUserId < 1) throw new Error('A signed-in cashier is required to remember a stock lot.');
+    return database.withConnection(async (connection) => {
+      const validLotId = await validateAllocationPriority(connection, { lotId, productId, locCode, txnDate });
+      if (!validLotId) throw new Error('That stock lot is no longer available for this product and date.');
+      await connection.execute(
+        `INSERT INTO inventory_lot_preferences (loc_code, product_id, user_id, inventory_lot_id)
+         VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE inventory_lot_id = VALUES(inventory_lot_id), updated_at = CURRENT_TIMESTAMP`,
+        [String(locCode).trim(), Number(productId), normalizedUserId, validLotId]
+      );
+      return { lotId: validLotId };
+    });
+  }
+
+  async function clearRememberedAllocationLot({ productId, locCode, userId }) {
+    return database.withConnection(async (connection) => {
+      await connection.execute(
+        'DELETE FROM inventory_lot_preferences WHERE loc_code = ? AND product_id = ? AND user_id = ?',
+        [String(locCode || '').trim(), Number(productId), Number(userId)]
+      );
+      return { cleared: true };
+    });
+  }
+
+  async function setLiveItemAllocationPriority({ itemId, lotId = null, source = null, userId = null }) {
+    return database.withConnection(async (connection) => {
+      const [items] = await connection.execute(
+        `SELECT id, product_id, loc_code, txn_date FROM invoice_items
+         WHERE id = ? AND invoice_id IS NULL LIMIT 1`, [Number(itemId)]
+      );
+      if (!items.length) throw new Error('The editable bill line was not found.');
+      const item = items[0];
+      const validLotId = lotId == null ? null : await validateAllocationPriority(connection, {
+        lotId, productId: item.product_id, locCode: item.loc_code, txnDate: item.txn_date
+      });
+      if (lotId != null && !validLotId) throw new Error('That stock lot is no longer available for this bill line.');
+      const normalizedSource = validLotId && ['automatic', 'remembered', 'manual'].includes(source) ? source : null;
+      const normalizedUserId = validLotId && Number.isInteger(Number(userId)) && Number(userId) > 0 ? Number(userId) : null;
+      await connection.execute(
+        `UPDATE invoice_items
+         SET allocation_priority_lot_id = ?, allocation_priority_source = ?,
+             allocation_priority_set_by = ?, allocation_priority_set_at = ?, upd_stat = 1
+         WHERE id = ? AND invoice_id IS NULL`,
+        [validLotId, normalizedSource, normalizedUserId, validLotId ? new Date() : null, Number(itemId)]
+      );
+      return { itemId: Number(itemId), lotId: validLotId, source: normalizedSource };
+    });
+  }
   inventoryLedgerRepository = inventoryLedgerRepository || createInventoryLedgerRepository({ database });
 
   function chequePaymentValues(payment = {}) {
@@ -60,27 +194,54 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
     if (!item.product_id) return;
     const baseQuantity = item.base_quantity == null && item.kilos == null ? null : Number(item.base_quantity ?? item.kilos);
     const byBase = baseQuantity != null;
-    let remaining = Number(byBase ? baseQuantity : (item.handling_quantity ?? item.qty ?? item.quantity));
-    const saleQuantity = Number(item.handling_quantity ?? item.qty ?? item.quantity ?? 0);
-    if (!Number.isFinite(remaining) || remaining <= 0) return;
+    let remainingBase = byBase ? toStockQuantity(baseQuantity) : null;
+    let remainingHandling = toStockQuantity(item.handling_quantity ?? item.qty ?? item.quantity);
+    const originalBase = remainingBase;
+    const originalHandling = remainingHandling;
+    const controllingOriginal = byBase ? originalBase : originalHandling;
+    if (!Number.isFinite(controllingOriginal) || controllingOriginal <= 0) return;
     const [lots] = await connection.execute(
-      `SELECT * FROM inventory_lots
-       WHERE product_id = ? AND loc_code = ?
-         AND ${byBase ? 'remaining_base_quantity' : 'remaining_handling_quantity'} > 0
-       ORDER BY id ASC FOR UPDATE`, [item.product_id, item.loc_code]
+      `SELECT l.* FROM inventory_lots l
+       JOIN goods_receipt_lines gl ON gl.id = l.goods_receipt_line_id
+       JOIN goods_receipts g ON g.id = gl.goods_receipt_id
+       WHERE l.product_id = ? AND l.loc_code = ? AND l.txn_date <= ? AND g.status = 'finalized'
+         AND l.${byBase ? 'remaining_base_quantity' : 'remaining_handling_quantity'} > 0
+       ORDER BY CASE WHEN l.id = ? THEN 0 ELSE 1 END,
+                l.txn_date ASC, l.grn_no ASC, l.line_no ASC, l.id ASC FOR UPDATE`,
+      [item.product_id, item.loc_code, item.txn_date, Number(item.allocation_priority_lot_id || 0)]
     );
-    const original = remaining;
     let allocationNo = 0;
     for (const lot of lots) {
-      if (remaining <= 0.0005) break;
-      const available = Number(byBase ? lot.remaining_base_quantity : lot.remaining_handling_quantity);
-      const taken = Math.min(remaining, available);
-      const saleValue = toMoney(Number(item.total) * (taken / original));
-      // A weighted sale can carry both bags and kilos. Allocate the package
-      // measure proportionally so the lot cannot later be oversold by bags.
-      const proportion = taken / original;
-      const quantity = byBase ? Math.round(saleQuantity * proportion * 1000) / 1000 : taken;
-      const base = byBase ? taken : null;
+      if ((byBase ? remainingBase : remainingHandling) <= 0.0005) break;
+      const availableHandling = Math.max(0, Number(lot.remaining_handling_quantity || 0));
+      const availableBase = Math.max(0, Number(lot.remaining_base_quantity || 0));
+      let quantity = 0;
+      let base = null;
+      if (byBase) {
+        const baseFraction = remainingBase > 0 ? availableBase / remainingBase : 0;
+        const handlingFraction = remainingHandling > 0 ? availableHandling / remainingHandling : 1;
+        const fraction = Math.max(0, Math.min(1, baseFraction, handlingFraction));
+        if (fraction <= 0.0000005) continue;
+        base = toStockQuantity(remainingBase * fraction);
+        quantity = remainingHandling > 0 ? toStockQuantity(remainingHandling * fraction) : 0;
+      } else {
+        quantity = toStockQuantity(Math.min(remainingHandling, availableHandling));
+      }
+      const selectedLotExhausted = byBase
+        ? availableBase - Number(base || 0) <= 0.0005
+        : availableHandling - quantity <= 0.0005;
+      if (Number(lot.id) === Number(item.allocation_priority_lot_id)
+          && ['manual', 'remembered'].includes(item.allocation_priority_source)
+          && selectedLotExhausted && Number(item.allocation_priority_set_by) > 0) {
+        await connection.execute(
+          `DELETE FROM inventory_lot_preferences
+           WHERE loc_code = ? AND product_id = ? AND user_id = ? AND inventory_lot_id = ?`,
+          [item.loc_code, item.product_id, Number(item.allocation_priority_set_by), lot.id]
+        );
+      }
+      const controllingTaken = byBase ? base : quantity;
+      if (!(controllingTaken > 0)) continue;
+      const saleValue = toMoney(Number(item.total) * (controllingTaken / controllingOriginal));
       allocationNo += 1;
       await connection.execute(
         `INSERT INTO lot_sale_allocations
@@ -90,7 +251,7 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
         [lot.id, item.loc_code, item.mac_code, item.txn_date, item.receipt_no, item.seq_no, allocationNo,
           item.id, quantity, quantity, base, base, saleValue]
       );
-      if (byBase && quantity > 0) {
+      if (byBase) {
         await connection.execute(
           `UPDATE inventory_lots
            SET remaining_kilos = remaining_kilos - ?,
@@ -98,14 +259,14 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
                remaining_quantity = GREATEST(0, remaining_quantity - ?),
                remaining_handling_quantity = GREATEST(0, remaining_handling_quantity - ?)
            WHERE id = ?`,
-          [taken, taken, quantity, quantity, lot.id]
+          [base, base, quantity, quantity, lot.id]
         );
       } else {
         await connection.execute(
           `UPDATE inventory_lots
            SET remaining_quantity = remaining_quantity - ?,
                remaining_handling_quantity = remaining_handling_quantity - ?
-           WHERE id = ?`, [taken, taken, lot.id]
+           WHERE id = ?`, [quantity, quantity, lot.id]
         );
       }
       const terms = typeof lot.terms_snapshot === 'string' ? JSON.parse(lot.terms_snapshot || '{}') : (lot.terms_snapshot || {});
@@ -122,7 +283,23 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
             JSON.stringify({ invoiceItemId: item.id, saleValue, commissionRate })]
         );
       }
-      remaining -= taken;
+      remainingHandling = toStockQuantity(Math.max(0, remainingHandling - quantity));
+      if (byBase) remainingBase = toStockQuantity(Math.max(0, remainingBase - base));
+    }
+    const unallocatedControlling = byBase ? remainingBase : remainingHandling;
+    if (unallocatedControlling > 0.0005 || remainingHandling > 0.0005) {
+      await connection.execute(
+        `INSERT INTO inventory_allocation_exceptions
+           (invoice_item_id, loc_code, mac_code, txn_date, document_no, line_no, product_id,
+            unallocated_handling_quantity, unallocated_base_quantity, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')
+         ON DUPLICATE KEY UPDATE
+           unallocated_handling_quantity = VALUES(unallocated_handling_quantity),
+           unallocated_base_quantity = VALUES(unallocated_base_quantity), status = 'open',
+           resolution_note = NULL, resolved_by = NULL, resolved_at = NULL`,
+        [item.id, item.loc_code, item.mac_code, item.txn_date, item.receipt_no, item.seq_no, item.product_id,
+          remainingHandling, byBase ? remainingBase : null]
+      );
     }
   }
 
@@ -398,6 +575,7 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
         const [items] = await connection.execute(
           `SELECT id, loc_code, mac_code, txn_date, receipt_no, seq_no, product_id, item_code, description,
                   quantity AS qty, handling_quantity, kilos, base_quantity, handling_uom_snapshot, base_uom_snapshot,
+                  allocation_priority_lot_id, allocation_priority_source, allocation_priority_set_by,
                   unit_price, discount, tax, merchandise_total, bag_charge_total, wage_charge_total, total
            FROM invoice_items
            WHERE invoice_id IS NULL AND loc_code = ? AND mac_code = ? AND txn_date = ? AND receipt_no = ?
@@ -597,6 +775,10 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
   }
 
   return {
+    listAllocationLotCandidates,
+    rememberAllocationLot,
+    clearRememberedAllocationLot,
+    setLiveItemAllocationPriority,
     collectInvoiceBalance,
     getInvoice,
     searchInvoices,

@@ -10,6 +10,11 @@ test('desktop archive stream definitions exclude held invoices and draft GRNs', 
   assert.equal(STREAMS.some((stream) => stream.entity === 'supplier_payment'), false);
 });
 
+test('desktop archive includes lot allocation exceptions and reconciliation events', () => {
+  assert.ok(STREAMS.some((stream) => stream.entity === 'inventory_allocation_exception'));
+  assert.ok(STREAMS.some((stream) => stream.entity === 'inventory_allocation_event'));
+});
+
 test('manual cloud sync registers a node, uploads ordered changes and publishes a catalog', async () => {
   const config = { installation_id: '734b5e3f-7d4a-4c5f-8df4-f302cf4efce1', host_id: 'TH-TEST', api_key_ciphertext: 'host-key',
     enabled: 0, interval_minutes: 15, batch_size: 100, max_batches_per_run: 4, node_nickname: 'Main', last_catalog_hash: null };

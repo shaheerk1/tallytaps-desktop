@@ -107,6 +107,8 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
   }
   if (!documentSequenceRepository) throw new Error('Catalog repository requires the document sequence repository.');
   inventoryLedgerRepository = inventoryLedgerRepository || createInventoryLedgerRepository({ database });
+  const stockQuantity = (value) => Math.round(Number(value || 0) * 1000) / 1000;
+  const money = (value) => Math.round(Number(value || 0) * 100) / 100;
 
   async function listProducts(options = {}) {
     return database.withConnection(async (connection) => {
@@ -1245,6 +1247,263 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
     });
   }
 
+  async function listAllocationExceptions(locCode) {
+    const location = String(locCode || '').trim();
+    if (!location) throw new Error('Location is required for allocation reconciliation.');
+    return database.withConnection(async (connection) => {
+      const [rows] = await connection.execute(
+        `SELECT e.*, p.sku, p.name AS product_name, p.handling_uom, p.base_uom, p.dual_uom_enabled,
+                i.invoice_id, i.item_code, i.description, i.supplier_code, i.customer_code,
+                i.handling_quantity AS sold_handling_quantity, i.base_quantity AS sold_base_quantity,
+                i.total AS sale_value, v.invoice_number
+         FROM inventory_allocation_exceptions e
+         JOIN invoice_items i ON i.id = e.invoice_item_id
+         JOIN invoices v ON v.id = i.invoice_id
+         JOIN products p ON p.id = e.product_id
+         WHERE e.loc_code = ? AND e.status = 'open'
+           AND (e.unallocated_handling_quantity > 0.0005 OR COALESCE(e.unallocated_base_quantity, 0) > 0.0005)
+         ORDER BY e.txn_date ASC, e.document_no ASC, e.line_no ASC, e.id ASC`,
+        [location]
+      );
+      return rows.map((row) => ({
+        ...row,
+        unallocated_handling_quantity: stockQuantity(row.unallocated_handling_quantity),
+        unallocated_base_quantity: row.unallocated_base_quantity == null ? null : stockQuantity(row.unallocated_base_quantity),
+        sold_handling_quantity: stockQuantity(row.sold_handling_quantity),
+        sold_base_quantity: row.sold_base_quantity == null ? null : stockQuantity(row.sold_base_quantity),
+        sale_value: money(row.sale_value)
+      }));
+    });
+  }
+
+  async function listRecentLotAllocations(locCode, limit = 80) {
+    const location = String(locCode || '').trim();
+    if (!location) throw new Error('Location is required for lot allocations.');
+    const rowLimit = Math.max(1, Math.min(200, Number(limit) || 80));
+    return database.withConnection(async (connection) => {
+      const [rows] = await connection.execute(
+        `SELECT a.id, a.invoice_item_id, a.inventory_lot_id, a.txn_date, a.document_no, a.line_no,
+                a.allocation_no, a.handling_quantity, a.base_quantity, a.sale_value,
+                i.item_code, i.description, i.supplier_code, i.customer_code,
+                p.id AS product_id, p.handling_uom, p.base_uom,
+                l.lot_code, l.remaining_handling_quantity, l.remaining_base_quantity,
+                g.grn_number, g.business_date AS grn_date, s.supplier_code AS lot_supplier_code, s.name AS lot_supplier_name,
+                (SELECT COUNT(*) FROM lot_sale_allocations refund_allocation
+                 WHERE refund_allocation.source_allocation_id = a.id) AS linked_refund_count
+         FROM lot_sale_allocations a
+         JOIN invoice_items i ON i.id = a.invoice_item_id
+         JOIN products p ON p.id = i.product_id
+         JOIN inventory_lots l ON l.id = a.inventory_lot_id
+         JOIN goods_receipt_lines gl ON gl.id = l.goods_receipt_line_id
+         JOIN goods_receipts g ON g.id = gl.goods_receipt_id
+         JOIN suppliers s ON s.id = l.supplier_id
+         WHERE a.loc_code = ? AND a.document_type = 'sale'
+           AND (a.handling_quantity > 0.0005 OR COALESCE(a.base_quantity, 0) > 0.0005)
+         ORDER BY a.txn_date DESC, a.document_no DESC, a.line_no DESC, a.allocation_no ASC
+         LIMIT ${rowLimit}`,
+        [location]
+      );
+      return rows.map((row) => ({ ...row,
+        handling_quantity: stockQuantity(row.handling_quantity),
+        base_quantity: row.base_quantity == null ? null : stockQuantity(row.base_quantity),
+        sale_value: money(row.sale_value),
+        remaining_handling_quantity: stockQuantity(row.remaining_handling_quantity),
+        remaining_base_quantity: row.remaining_base_quantity == null ? null : stockQuantity(row.remaining_base_quantity)
+      }));
+    });
+  }
+
+  function lotTerms(lot) {
+    if (!lot?.terms_snapshot) return {};
+    if (typeof lot.terms_snapshot === 'object') return lot.terms_snapshot;
+    try { return JSON.parse(lot.terms_snapshot); } catch { return {}; }
+  }
+
+  async function insertConsignmentEntry(connection, { lot, item, amount, entryType = 'consignment_accrual', reason, userId, metadata, documentType = 'sale', documentNo = null, lineNo = null }) {
+    if (lot.ownership_model !== 'consignment' || Math.abs(Number(amount || 0)) < 0.005) return;
+    const docNo = Number(documentNo ?? item.receipt_no ?? item.document_no);
+    const docLine = Number(lineNo ?? item.seq_no ?? item.line_no);
+    const [entryRows] = await connection.execute(
+      `SELECT COALESCE(MAX(entry_no), 0) AS max_no FROM supplier_payable_entries
+       WHERE loc_code = ? AND mac_code = ? AND business_date = ? AND document_type = ? AND document_no = ? AND line_no = ?`,
+      [item.loc_code, item.mac_code, item.txn_date, documentType, docNo, docLine]
+    );
+    const entryNo = Number(entryRows[0]?.max_no || 0) + 1;
+    await connection.execute(
+      `INSERT INTO supplier_payable_entries
+         (supplier_id, loc_code, mac_code, inventory_lot_id, entry_type, amount, business_date,
+          document_type, document_no, line_no, entry_no, reason, created_by, metadata)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON))`,
+      [lot.supplier_id, item.loc_code, item.mac_code, lot.id, entryType, money(amount), item.txn_date,
+        documentType, docNo, docLine, entryNo, reason, userId || null, JSON.stringify(metadata || {})]
+    );
+  }
+
+  async function allocateException({ exceptionId, inventoryLotId, handlingQuantity, baseQuantity = null, reason, userId = null }) {
+    const explanation = String(reason || '').trim();
+    if (!explanation) throw new Error('A reconciliation reason is required.');
+    const requestedHandling = stockQuantity(handlingQuantity);
+    const requestedBase = baseQuantity == null || baseQuantity === '' ? null : stockQuantity(baseQuantity);
+    if (!(requestedHandling > 0) && !(requestedBase > 0)) throw new Error('Enter a positive Unit Count or Measured Qty allocation.');
+    return database.withConnection(async (connection) => {
+      await connection.beginTransaction();
+      try {
+        const [exceptions] = await connection.execute(
+          `SELECT e.*, i.total, i.receipt_no, i.seq_no, i.base_quantity AS sold_base_quantity,
+                  i.handling_quantity AS sold_handling_quantity
+           FROM inventory_allocation_exceptions e JOIN invoice_items i ON i.id = e.invoice_item_id
+           WHERE e.id = ? AND e.status = 'open' FOR UPDATE`, [Number(exceptionId)]
+        );
+        if (!exceptions.length) throw new Error('This allocation exception is already resolved or no longer exists.');
+        const item = exceptions[0];
+        const [lots] = await connection.execute(
+          `SELECT l.* FROM inventory_lots l
+           JOIN goods_receipt_lines gl ON gl.id = l.goods_receipt_line_id
+           JOIN goods_receipts g ON g.id = gl.goods_receipt_id
+           WHERE l.id = ? AND l.product_id = ? AND l.loc_code = ? AND l.txn_date <= ?
+             AND g.status = 'finalized' FOR UPDATE`,
+          [Number(inventoryLotId), item.product_id, item.loc_code, item.txn_date]
+        );
+        if (!lots.length) throw new Error('Choose an eligible stock lot dated on or before the sale.');
+        const lot = lots[0];
+        if (requestedHandling > Number(item.unallocated_handling_quantity) + 0.0005 || requestedHandling > Number(lot.remaining_handling_quantity) + 0.0005) throw new Error('Unit Count exceeds the unmatched sale or selected lot balance.');
+        if (requestedBase != null && (requestedBase > Number(item.unallocated_base_quantity || 0) + 0.0005 || requestedBase > Number(lot.remaining_base_quantity || 0) + 0.0005)) throw new Error('Measured Qty exceeds the unmatched sale or selected lot balance.');
+        if (item.unallocated_base_quantity != null && requestedBase == null) throw new Error('A dual-UoM reconciliation requires both measures.');
+        const [allocationRows] = await connection.execute('SELECT COALESCE(MAX(allocation_no), 0) AS max_no FROM lot_sale_allocations WHERE invoice_item_id = ? FOR UPDATE', [item.invoice_item_id]);
+        const allocationNo = Number(allocationRows[0]?.max_no || 0) + 1;
+        const controllingTotal = item.sold_base_quantity == null ? Number(item.sold_handling_quantity || 0) : Number(item.sold_base_quantity || 0);
+        const controllingMoved = item.sold_base_quantity == null ? requestedHandling : requestedBase;
+        const saleValue = controllingTotal > 0 ? money(Number(item.total || 0) * Number(controllingMoved || 0) / controllingTotal) : 0;
+        await connection.execute(
+          `INSERT INTO lot_sale_allocations
+             (inventory_lot_id, loc_code, mac_code, txn_date, document_type, document_no, line_no, allocation_no,
+              invoice_item_id, quantity, handling_quantity, kilos, base_quantity, sale_value)
+           VALUES (?, ?, ?, ?, 'sale', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [lot.id, item.loc_code, item.mac_code, item.txn_date, item.document_no, item.line_no, allocationNo,
+            item.invoice_item_id, requestedHandling, requestedHandling, requestedBase, requestedBase, saleValue]
+        );
+        await connection.execute(
+          `UPDATE inventory_lots SET remaining_quantity = remaining_quantity - ?, remaining_handling_quantity = remaining_handling_quantity - ?,
+             remaining_kilos = IF(? IS NULL, remaining_kilos, remaining_kilos - ?),
+             remaining_base_quantity = IF(? IS NULL, remaining_base_quantity, remaining_base_quantity - ?)
+           WHERE id = ?`,
+          [requestedHandling, requestedHandling, requestedBase, requestedBase, requestedBase, requestedBase, lot.id]
+        );
+        const remainingHandling = stockQuantity(Number(item.unallocated_handling_quantity) - requestedHandling);
+        const remainingBase = item.unallocated_base_quantity == null ? null : stockQuantity(Number(item.unallocated_base_quantity) - Number(requestedBase || 0));
+        const resolved = remainingHandling <= 0.0005 && (remainingBase == null || remainingBase <= 0.0005);
+        await connection.execute(
+          `UPDATE inventory_allocation_exceptions
+           SET unallocated_handling_quantity = ?, unallocated_base_quantity = ?, status = ?, resolution_note = ?,
+               resolved_by = ?, resolved_at = IF(?, NOW(), NULL)
+           WHERE id = ?`,
+          [Math.max(0, remainingHandling), remainingBase == null ? null : Math.max(0, remainingBase), resolved ? 'resolved' : 'open', resolved ? explanation : null, resolved ? userId || null : null, resolved ? 1 : 0, item.id]
+        );
+        const [eventRows] = await connection.execute('SELECT COALESCE(MAX(event_no), 0) AS max_no FROM inventory_allocation_events WHERE invoice_item_id = ? FOR UPDATE', [item.invoice_item_id]);
+        const eventNo = Number(eventRows[0]?.max_no || 0) + 1;
+        await connection.execute(
+          `INSERT INTO inventory_allocation_events
+             (invoice_item_id, loc_code, mac_code, txn_date, document_no, line_no, event_no, event_type,
+              to_inventory_lot_id, handling_quantity, base_quantity, reason, details, created_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'manual_allocate', ?, ?, ?, ?, CAST(? AS JSON), ?)`,
+          [item.invoice_item_id, item.loc_code, item.mac_code, item.txn_date, item.document_no, item.line_no, eventNo,
+            lot.id, requestedHandling, requestedBase, explanation, JSON.stringify({ exceptionId: item.id, allocationNo }), userId || null]
+        );
+        const terms = lotTerms(lot); const commissionRate = Number(terms.commissionRate || 0);
+        await insertConsignmentEntry(connection, { lot, item, amount: saleValue * Math.max(0, 1 - commissionRate / 100), reason: 'Consignment accrual from reconciled sale allocation', userId,
+          metadata: { invoiceItemId: item.invoice_item_id, saleValue, commissionRate, reconciliationEventNo: eventNo } });
+        await connection.commit();
+        return { resolved, remainingHandling: Math.max(0, remainingHandling), remainingBase: remainingBase == null ? null : Math.max(0, remainingBase) };
+      } catch (error) { await connection.rollback(); throw error; }
+    });
+  }
+
+  async function reallocateSale({ allocationId, toInventoryLotId, handlingQuantity, baseQuantity = null, reason, userId = null }) {
+    const explanation = String(reason || '').trim();
+    if (!explanation) throw new Error('A reallocation reason is required.');
+    const moveHandling = stockQuantity(handlingQuantity);
+    const moveBase = baseQuantity == null || baseQuantity === '' ? null : stockQuantity(baseQuantity);
+    if (!(moveHandling > 0) && !(moveBase > 0)) throw new Error('Enter a positive quantity to move.');
+    return database.withConnection(async (connection) => {
+      await connection.beginTransaction();
+      try {
+        const [allocations] = await connection.execute(
+          `SELECT a.*, i.total, i.product_id, i.receipt_no, i.seq_no
+           FROM lot_sale_allocations a JOIN invoice_items i ON i.id = a.invoice_item_id
+           WHERE a.id = ? AND a.document_type = 'sale' FOR UPDATE`, [Number(allocationId)]
+        );
+        if (!allocations.length) throw new Error('The sale allocation was not found.');
+        const allocation = allocations[0];
+        const [linkedRefunds] = await connection.execute(
+          'SELECT id FROM lot_sale_allocations WHERE source_allocation_id = ? FOR UPDATE',
+          [allocation.id]
+        );
+        if (linkedRefunds.length) throw new Error('This allocation already has refund history and cannot be moved. Use a stock correction so the refund audit trail remains intact.');
+        if (moveHandling > Number(allocation.handling_quantity) + 0.0005 || (moveBase != null && moveBase > Number(allocation.base_quantity || 0) + 0.0005)) throw new Error('The requested move exceeds the current allocation.');
+        if (allocation.base_quantity != null && moveBase == null) throw new Error('A dual-UoM reallocation requires both measures.');
+        if (Number(allocation.inventory_lot_id) === Number(toInventoryLotId)) throw new Error('Choose a different destination lot.');
+        const [lots] = await connection.execute(
+          `SELECT l.* FROM inventory_lots l
+           JOIN goods_receipt_lines gl ON gl.id = l.goods_receipt_line_id
+           JOIN goods_receipts g ON g.id = gl.goods_receipt_id
+           WHERE l.id IN (?, ?) AND g.status = 'finalized' ORDER BY l.id FOR UPDATE`,
+          [allocation.inventory_lot_id, Number(toInventoryLotId)]
+        );
+        const fromLot = lots.find((lot) => Number(lot.id) === Number(allocation.inventory_lot_id));
+        const toLot = lots.find((lot) => Number(lot.id) === Number(toInventoryLotId));
+        if (!fromLot || !toLot || Number(toLot.product_id) !== Number(allocation.product_id) || toLot.loc_code !== allocation.loc_code || String(toLot.txn_date).slice(0, 10) > String(allocation.txn_date).slice(0, 10)) throw new Error('Choose an eligible destination lot for the same product, location, and sale date.');
+        if (moveHandling > Number(toLot.remaining_handling_quantity) + 0.0005 || (moveBase != null && moveBase > Number(toLot.remaining_base_quantity || 0) + 0.0005)) throw new Error('The destination lot does not have enough remaining stock.');
+        const controllingTotal = allocation.base_quantity == null ? Number(allocation.handling_quantity) : Number(allocation.base_quantity);
+        const controllingMoved = allocation.base_quantity == null ? moveHandling : moveBase;
+        const movedValue = controllingTotal > 0 ? money(Number(allocation.sale_value || 0) * Number(controllingMoved || 0) / controllingTotal) : 0;
+        await connection.execute(
+          `UPDATE inventory_lots SET remaining_quantity = remaining_quantity + ?, remaining_handling_quantity = remaining_handling_quantity + ?,
+             remaining_kilos = IF(? IS NULL, remaining_kilos, remaining_kilos + ?), remaining_base_quantity = IF(? IS NULL, remaining_base_quantity, remaining_base_quantity + ?)
+           WHERE id = ?`, [moveHandling, moveHandling, moveBase, moveBase, moveBase, moveBase, fromLot.id]
+        );
+        await connection.execute(
+          `UPDATE inventory_lots SET remaining_quantity = remaining_quantity - ?, remaining_handling_quantity = remaining_handling_quantity - ?,
+             remaining_kilos = IF(? IS NULL, remaining_kilos, remaining_kilos - ?), remaining_base_quantity = IF(? IS NULL, remaining_base_quantity, remaining_base_quantity - ?)
+           WHERE id = ?`, [moveHandling, moveHandling, moveBase, moveBase, moveBase, moveBase, toLot.id]
+        );
+        await connection.execute(
+          `UPDATE lot_sale_allocations SET quantity = quantity - ?, handling_quantity = handling_quantity - ?,
+             kilos = IF(? IS NULL, kilos, kilos - ?), base_quantity = IF(? IS NULL, base_quantity, base_quantity - ?), sale_value = sale_value - ? WHERE id = ?`,
+          [moveHandling, moveHandling, moveBase, moveBase, moveBase, moveBase, movedValue, allocation.id]
+        );
+        const [allocationRows] = await connection.execute('SELECT COALESCE(MAX(allocation_no), 0) AS max_no FROM lot_sale_allocations WHERE invoice_item_id = ? FOR UPDATE', [allocation.invoice_item_id]);
+        const newAllocationNo = Number(allocationRows[0]?.max_no || 0) + 1;
+        await connection.execute(
+          `INSERT INTO lot_sale_allocations
+             (inventory_lot_id, loc_code, mac_code, txn_date, document_type, document_no, line_no, allocation_no,
+              invoice_item_id, quantity, handling_quantity, kilos, base_quantity, sale_value)
+           VALUES (?, ?, ?, ?, 'sale', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [toLot.id, allocation.loc_code, allocation.mac_code, allocation.txn_date, allocation.document_no, allocation.line_no, newAllocationNo,
+            allocation.invoice_item_id, moveHandling, moveHandling, moveBase, moveBase, movedValue]
+        );
+        const [eventRows] = await connection.execute('SELECT COALESCE(MAX(event_no), 0) AS max_no FROM inventory_allocation_events WHERE invoice_item_id = ? FOR UPDATE', [allocation.invoice_item_id]);
+        const eventNo = Number(eventRows[0]?.max_no || 0) + 1;
+        const [eventResult] = await connection.execute(
+          `INSERT INTO inventory_allocation_events
+             (invoice_item_id, loc_code, mac_code, txn_date, document_no, line_no, event_no, event_type,
+              from_inventory_lot_id, to_inventory_lot_id, handling_quantity, base_quantity, reason, details, created_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'reallocate', ?, ?, ?, ?, ?, CAST(? AS JSON), ?)`,
+          [allocation.invoice_item_id, allocation.loc_code, allocation.mac_code, allocation.txn_date, allocation.document_no, allocation.line_no, eventNo,
+            fromLot.id, toLot.id, moveHandling, moveBase, explanation,
+            JSON.stringify({ sourceAllocationId: allocation.id, destinationAllocationNo: newAllocationNo, movedSaleValue: movedValue }), userId || null]
+        );
+        for (const [lot, sign, label] of [[fromLot, -1, 'Reversal from reallocated consignment sale'], [toLot, 1, 'Accrual for reallocated consignment sale']]) {
+          const terms = lotTerms(lot); const commissionRate = Number(terms.commissionRate || 0);
+          await insertConsignmentEntry(connection, { lot, item: allocation, amount: sign * movedValue * Math.max(0, 1 - commissionRate / 100), entryType: 'adjustment', reason: label, userId,
+            metadata: { allocationEventId: eventResult.insertId, invoiceItemId: allocation.invoice_item_id, movedSaleValue: movedValue, commissionRate },
+            documentType: 'allocation_reconciliation', documentNo: eventResult.insertId, lineNo: sign < 0 ? 1 : 2 });
+        }
+        await connection.commit();
+        return { allocationId: Number(allocation.id), destinationLotId: Number(toLot.id), handlingQuantity: moveHandling, baseQuantity: moveBase };
+      } catch (error) { await connection.rollback(); throw error; }
+    });
+  }
+
   async function updateCustomer(id, { customerCode, name, phone, mobile, email, address, notes, isActive }) {
     return database.withConnection(async (connection) => {
       const fields = { customer_code: customerCode, name, phone, mobile, email, address, notes, is_active: isActive };
@@ -1319,6 +1578,10 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
     ,listInventoryLots
     ,listInventorySummary
     ,finalizeStockCount
+    ,listAllocationExceptions
+    ,listRecentLotAllocations
+    ,allocateException
+    ,reallocateSale
   };
 }
 

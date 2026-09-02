@@ -693,6 +693,9 @@ export type BillItem = {
   kilos?: number | null;
   handlingUom?: string;
   baseUom?: string | null;
+  allocationPriorityLotId?: number | null;
+  allocationPriorityLotCode?: string | null;
+  allocationPrioritySource?: 'automatic' | 'remembered' | 'manual' | null;
   requiresKilos?: number | boolean;
   pricingBasis?: 'qty' | 'kilos';
   quantityStep?: number;
@@ -787,6 +790,30 @@ export type PaymentMode = {
   enabled?: boolean;
   pluginId?: string | null;
   core?: boolean;
+};
+
+export type InventoryLotCandidate = {
+  id: number;
+  lot_code: string;
+  txn_date: string;
+  grn_no: number;
+  line_no: number;
+  grn_number: string;
+  external_reference?: string | null;
+  supplier_code?: string | null;
+  supplier_name: string;
+  received_handling_quantity: number;
+  remaining_handling_quantity: number;
+  received_base_quantity?: number | null;
+  remaining_base_quantity?: number | null;
+  handling_uom_snapshot: string;
+  base_uom_snapshot?: string | null;
+  conversion_mode: 'fixed' | 'variable';
+  actual_base_per_handling?: number | null;
+  ownership_model?: string | null;
+  remembered: boolean;
+  priority: number;
+  priority_reason: 'remembered' | 'fifo';
 };
 
 export type ChequePaymentDetails = {
@@ -1425,6 +1452,8 @@ export interface PosApi {
       discount: number;
       tax?: number;
       metadata?: Record<string, unknown>;
+      allocationPriorityLotId?: number | null;
+      allocationPrioritySource?: 'automatic' | 'remembered' | 'manual' | null;
     }, actor?: ActorContext) => Promise<IpcResult<BillItem>>;
     updateCustomer: (bill: { locCode: string; macCode: string; txnDate: string; receiptNo: number; customerCode: string; customerAccountId?: number | null }, actor?: ActorContext) => Promise<IpcResult<{ customerCode: string; customerAccountId?: number | null }>>;
     updateItem: (itemId: number, updates: {
@@ -1475,6 +1504,10 @@ export interface PosApi {
       txnDate: string;
       receiptNo: number;
     }, actor?: ActorContext) => Promise<IpcResult<{ locCode: string; macCode: string; txnDate: string; receiptNo: number; customerCode?: string; customerAccountId?: number | null; items: BillItem[]; billHeader?: Record<string, Record<string, unknown>> }>>;
+    lotCandidates: (options: { productId: number; locCode: string; txnDate: string; limit?: number }, actor?: ActorContext) => Promise<IpcResult<InventoryLotCandidate[]>>;
+    rememberLot: (options: { productId: number; locCode: string; txnDate: string; lotId: number }, actor?: ActorContext) => Promise<IpcResult<{ lotId: number }>>;
+    clearRememberedLot: (options: { productId: number; locCode: string }, actor?: ActorContext) => Promise<IpcResult<{ cleared: boolean }>>;
+    setItemLotPriority: (options: { itemId: number; lotId: number | null; source: 'automatic' | 'remembered' | 'manual' | null }, actor?: ActorContext) => Promise<IpcResult<{ itemId: number; lotId: number | null; source: string | null }>>;
     searchProducts: (term: string, actor?: ActorContext) => Promise<IpcResult<unknown[]>>;
   };
   refunds: {

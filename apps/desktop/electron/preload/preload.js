@@ -108,6 +108,10 @@ contextBridge.exposeInMainWorld('posApi', {
     ,listInventoryLots: (productId, locCode, actor) => ipcRenderer.invoke('inventory.lots.list', { productId, locCode, actor })
     ,listInventorySummary: (locCode, actor) => ipcRenderer.invoke('inventory.summary.list', { locCode, actor })
     ,finalizeStockCount: (count, actor) => ipcRenderer.invoke('inventory.counts.finalize', { count, actor })
+    ,listAllocationExceptions: (locCode, actor) => ipcRenderer.invoke('inventory.allocations.exceptions', { locCode, actor })
+    ,listRecentLotAllocations: (locCode, limit, actor) => ipcRenderer.invoke('inventory.allocations.list', { locCode, limit, actor })
+    ,allocateException: (allocation, actor) => ipcRenderer.invoke('inventory.allocations.resolve', { allocation, actor })
+    ,reallocateSale: (allocation, actor) => ipcRenderer.invoke('inventory.allocations.reallocate', { allocation, actor })
   },
   pattiyals: {
     list: (filters, actor) => ipcRenderer.invoke('supply.pattiyals.list', { filters, actor }),
@@ -140,6 +144,10 @@ contextBridge.exposeInMainWorld('posApi', {
     abandonBill: (bill, actor) => ipcRenderer.invoke('billing.bill.abandon', { bill, actor }),
     recallBills: (locCode, macCode, txnDate, actor) => ipcRenderer.invoke('billing.bill.recallList', { locCode, macCode, txnDate, actor }),
     loadBill: (bill, actor) => ipcRenderer.invoke('billing.bill.load', { bill, actor }),
+    lotCandidates: (options, actor) => ipcRenderer.invoke('billing.lots.candidates', { options, actor }),
+    rememberLot: (options, actor) => ipcRenderer.invoke('billing.lots.remember', { options, actor }),
+    clearRememberedLot: (options, actor) => ipcRenderer.invoke('billing.lots.clearRemembered', { options, actor }),
+    setItemLotPriority: (options, actor) => ipcRenderer.invoke('billing.bill.setItemLotPriority', { options, actor }),
     searchProducts: (term, actor) => ipcRenderer.invoke('billing.searchProducts', { term, actor })
   },
   refunds: {

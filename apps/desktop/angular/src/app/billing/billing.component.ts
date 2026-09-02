@@ -4,7 +4,7 @@ import { SessionService } from '../services/session.service';
 import { PrintingService } from '../services/printing.service';
 import { ItemMeasureSummary, itemMeasureSummaryText, summarizeItemMeasures } from '../services/item-measure-summary';
 import type {
-  BillItem, HeldBill, OpenBillResult, FinalizeResult, PaymentMode, PaymentLine, ChequePaymentDetails, PluginField, PrintDocument, PrintDocItem, PrintTextLine, ReceiptLabels, ReceiptLanguage
+  BillItem, HeldBill, OpenBillResult, FinalizeResult, PaymentMode, PaymentLine, ChequePaymentDetails, PluginField, PrintDocument, PrintDocItem, PrintTextLine, ReceiptLabels, ReceiptLanguage, InventoryLotCandidate
 } from '../../../../../../packages/shared/ipc/pos-api';
 
 interface Product {
@@ -142,6 +142,16 @@ export class BillingComponent implements OnInit, OnDestroy {
   discount = 0;
   value = 0;
   selectedProductId: number | null = null;
+
+  // Optional stock-lot priority. Lookup is deliberately asynchronous and is
+  // never awaited by the cashier's normal item-entry path.
+  lotCandidates: InventoryLotCandidate[] = [];
+  selectedLot: InventoryLotCandidate | null = null;
+  selectedLotSource: 'automatic' | 'remembered' | 'manual' | null = null;
+  lotPickerOpen = false;
+  lotLookupLoading = false;
+  lotLookupMessage = '';
+  private lotLookupToken = 0;
 
   // Billed items (live invoice_items for the current receipt)
   billItems: BillItem[] = [];
@@ -311,6 +321,12 @@ export class BillingComponent implements OnInit, OnDestroy {
     event.preventDefault();
     if (event.shiftKey) void this.completeCurrentBillAsCash();
     else void this.showPaymentPopup();
+  }
+
+  @HostListener('document:click', ['$event'])
+  closeLotPickerFromOutside(event: MouseEvent): void {
+    const target = event.target as HTMLElement | null;
+    if (!target?.closest('.lot-priority-control')) this.lotPickerOpen = false;
   }
 
   loadSessionInfo(): void {
@@ -971,6 +987,109 @@ export class BillingComponent implements OnInit, OnDestroy {
     this.supplierCode = String(value || '').toUpperCase();
   }
 
+  toggleLotPicker(event: MouseEvent): void {
+    event.stopPropagation();
+    if (!this.selectedProductId || this.lotLookupLoading || this.lotCandidates.length === 0) return;
+    this.lotPickerOpen = !this.lotPickerOpen;
+  }
+
+  private clearLotLookup(): void {
+    this.lotLookupToken += 1;
+    this.lotCandidates = [];
+    this.selectedLot = null;
+    this.selectedLotSource = null;
+    this.lotPickerOpen = false;
+    this.lotLookupLoading = false;
+    this.lotLookupMessage = '';
+  }
+
+  private loadLotCandidates(productId: number): void {
+    this.clearLotLookup();
+    const token = this.lotLookupToken;
+    const api = window.posApi?.billing;
+    if (!api || !this.locationCode || !this.billingDate) return;
+    this.lotLookupLoading = true;
+    this.lotLookupMessage = 'Finding available stock…';
+    void api.lotCandidates({ productId, locCode: this.locationCode, txnDate: this.billingDate, limit: 12 }, this.actor())
+      .then((result) => {
+        if (token !== this.lotLookupToken || this.selectedProductId !== productId) return;
+        this.lotLookupLoading = false;
+        if (!result.success) {
+          this.lotLookupMessage = 'Stock lookup unavailable — billing can continue';
+          return;
+        }
+        this.lotCandidates = result.data || [];
+        this.selectedLot = this.lotCandidates[0] || null;
+        this.selectedLotSource = this.selectedLot
+          ? (this.selectedLot.remembered ? 'remembered' : 'automatic')
+          : null;
+        this.lotLookupMessage = this.selectedLot ? '' : 'No active GRN lot — allocation will be recorded as unmatched';
+      })
+      .catch(() => {
+        if (token !== this.lotLookupToken || this.selectedProductId !== productId) return;
+        this.lotLookupLoading = false;
+        this.lotLookupMessage = 'Stock lookup unavailable — billing can continue';
+      });
+  }
+
+  chooseLotCandidate(lot: InventoryLotCandidate, event?: MouseEvent): void {
+    event?.stopPropagation();
+    const productId = this.selectedProductId;
+    if (!productId) return;
+    this.selectedLot = lot;
+    this.selectedLotSource = 'manual';
+    this.lotPickerOpen = false;
+    this.lotLookupMessage = '';
+    void window.posApi?.billing.rememberLot({
+      productId, locCode: this.locationCode, txnDate: this.billingDate, lotId: lot.id
+    }, this.actor()).then((result) => {
+      if (!result.success && this.selectedProductId === productId && this.selectedLot?.id === lot.id) {
+        this.lotLookupMessage = result.error || 'Could not remember this stock lot.';
+      }
+    });
+  }
+
+  useAutomaticLotOrder(event?: MouseEvent): void {
+    event?.stopPropagation();
+    const productId = this.selectedProductId;
+    if (!productId) return;
+    this.lotPickerOpen = false;
+    void window.posApi?.billing.clearRememberedLot({ productId, locCode: this.locationCode }, this.actor())
+      .then(() => {
+        if (this.selectedProductId === productId) this.loadLotCandidates(productId);
+      });
+  }
+
+  lotMatchesSupplier(lot: InventoryLotCandidate): boolean {
+    const entered = this.supplierCode.trim().toUpperCase();
+    return Boolean(entered && String(lot.supplier_code || '').trim().toUpperCase() === entered);
+  }
+
+  get orderedLotCandidates(): InventoryLotCandidate[] {
+    if (!this.selectedLot) return this.lotCandidates;
+    return [this.selectedLot, ...this.lotCandidates.filter((lot) => lot.id !== this.selectedLot?.id)];
+  }
+
+  lotCoversCurrentLine(lot: InventoryLotCandidate): boolean {
+    const handlingCovered = Number(this.qty || 0) <= 0
+      || Number(lot.remaining_handling_quantity || 0) + 0.0005 >= Number(this.qty || 0);
+    const measuredCovered = !this.selectedProductRequiresKilos
+      || Number(lot.remaining_base_quantity || 0) + 0.0005 >= Number(this.kilos || 0);
+    return handlingCovered && measuredCovered;
+  }
+
+  lotPriorityLabel(lot: InventoryLotCandidate): string {
+    if (this.selectedLot?.id === lot.id) {
+      if (this.selectedLotSource === 'manual') return 'Selected · Manual';
+      if (this.selectedLotSource === 'remembered') return 'Selected · Remembered';
+      return 'Selected · FIFO #1';
+    }
+    const position = this.orderedLotCandidates.filter((entry) => entry.id !== this.selectedLot?.id).findIndex((entry) => entry.id === lot.id) + 1;
+    return this.selectedLotSource === 'manual' || this.selectedLotSource === 'remembered'
+      ? `Fallback #${Math.max(position, 1)}`
+      : `FIFO #${lot.priority}`;
+  }
+
   async persistCustomerCode(): Promise<void> {
     const customerCode = this.customerCode.trim().toUpperCase();
     this.customerCode = customerCode;
@@ -1087,6 +1206,7 @@ export class BillingComponent implements OnInit, OnDestroy {
     this.qty = 1;
     if (!truthyFlag(product.requires_kilos)) this.kilos = null;
     this.selectedProductId = product.id;
+    this.loadLotCandidates(product.id);
     this.lineFieldValues = this.defaultLineValues(product);
     this.lineError = '';
     this.updateValue();
@@ -1347,10 +1467,15 @@ export class BillingComponent implements OnInit, OnDestroy {
         discount: this.discount,
         tax: 0,
         kilos: this.kilos,
-        metadata: {}
+        metadata: {},
+        allocationPriorityLotId: this.selectedLot?.id || null,
+        allocationPrioritySource: this.selectedLotSource
       }, this.actor());
       if (result.success) {
         const saved = result.data as BillItem;
+        if (this.selectedLot && saved.allocationPriorityLotId === this.selectedLot.id) {
+          saved.allocationPriorityLotCode = this.selectedLot.lot_code;
+        }
         this.billItems.push(saved);
         this.resetInputs({ keepSupplier: true, focusSupplier: true });
         this.scheduleTotalsRefresh();
@@ -1481,6 +1606,7 @@ export class BillingComponent implements OnInit, OnDestroy {
     this.kilos = null;
     this.value = 0;
     this.selectedProductId = null;
+    this.clearLotLookup();
     this.lineFieldValues = {};
     this.lineError = '';
     setTimeout(() => {
@@ -1499,6 +1625,7 @@ export class BillingComponent implements OnInit, OnDestroy {
     this.discount = 0;
     this.value = 0;
     this.selectedProductId = null;
+    this.clearLotLookup();
   }
 
   get grossTotal(): number {
