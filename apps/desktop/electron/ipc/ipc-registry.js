@@ -37,6 +37,20 @@ function registerIpcHandlers(services) {
   const requireInventoryAdjust = services.ipcAuthorizationService.requirePermission('inventory.adjust');
   const requireSettlementsView = services.ipcAuthorizationService.requirePermission('supplier-settlements.view');
   const requireSettlementsManage = services.ipcAuthorizationService.requirePermission('supplier-settlements.manage');
+  const requireFundsView = services.ipcAuthorizationService.requirePermission('funds.view');
+  const requireFundsManage = services.ipcAuthorizationService.requirePermission('funds.manage');
+  const requireFundsTransfer = services.ipcAuthorizationService.requirePermission('funds.transfer');
+  const requireExpensesView = services.ipcAuthorizationService.requirePermission('expenses.view');
+  const requireExpensesCreate = services.ipcAuthorizationService.requirePermission('expenses.create');
+  const requireExpensesAllocate = services.ipcAuthorizationService.requirePermission('expenses.allocate');
+  const requireLotCostingView = services.ipcAuthorizationService.requirePermission('lot-costing.view');
+  const requireStakeholdersView = services.ipcAuthorizationService.requirePermission('stakeholders.view');
+  const requireStakeholdersManage = services.ipcAuthorizationService.requirePermission('stakeholders.manage');
+  const requireStakeholdersContribute = services.ipcAuthorizationService.requirePermission('stakeholders.contribute');
+  const requireStakeholdersDrawing = services.ipcAuthorizationService.requirePermission('stakeholders.drawing');
+  const requireStakeholdersProfitShare = services.ipcAuthorizationService.requirePermission('stakeholders.profit-share');
+  const requireJournalView = services.ipcAuthorizationService.requirePermission('accounting.journal.view');
+  const requirePeriodClose = services.ipcAuthorizationService.requirePermission('accounting.period.close');
   const requireFieldInboxView = services.ipcAuthorizationService.requirePermission('field-inbox.view');
   const requireFieldInboxResolve = services.ipcAuthorizationService.requirePermission('field-inbox.resolve');
 
@@ -479,6 +493,53 @@ function registerIpcHandlers(services) {
   wrapIpcHandler('customerAdvances.summary', async (payload) => services.customerAdvanceService.getSummary(payload || {}), { authorize: requireCustomerAdvancesView });
   wrapIpcHandler('customerAdvances.receive', async (payload) => services.customerAdvanceService.receive(payload || {}), { authorize: requireCustomerAdvancesCreate });
   wrapIpcHandler('customerAdvances.refund', async (payload) => services.customerAdvanceService.refundUnused(payload || {}), { authorize: requireCustomerAdvancesRefund });
+  // ── Funds and expenses ──────────────────────────────────────
+  // A fund is where money sits: the till, the safe, a bank account, or a
+  // stakeholder's pocket. Cashiers may record a till payout; setting up funds
+  // and moving money between them is management work.
+  wrapIpcHandler('funds.list', async (payload) => services.expenseService.listFundAccounts(payload || {}), { authorize: requireFundsView });
+  wrapIpcHandler('funds.save', async (payload) => services.expenseService.saveFundAccount(payload?.fund || {}), { authorize: requireFundsManage });
+  wrapIpcHandler('funds.ledger', async (payload) => services.expenseService.getFundLedger(payload || {}), { authorize: requireFundsView });
+  wrapIpcHandler('funds.transfer', async (payload) => services.expenseService.transferFunds(payload?.transfer || {}), { authorize: requireFundsTransfer });
+  wrapIpcHandler('expenses.categories.list', async (payload) => services.expenseService.listCategories(payload || {}), { authorize: requireExpensesView });
+  wrapIpcHandler('expenses.categories.save', async (payload) => services.expenseService.saveCategory(payload?.category || {}), { authorize: requireFundsManage });
+  wrapIpcHandler('expenses.list', async (payload) => services.expenseService.listExpenses(payload?.filters || {}), { authorize: requireExpensesView });
+  wrapIpcHandler('expenses.create', async (payload) => services.expenseService.recordExpense(payload?.expense || {}), { authorize: requireExpensesCreate });
+
+  // ── Lot costing ─────────────────────────────────────────────
+  // Attaching a cost to the goods it belongs to is receiving work, so it
+  // follows the receiving permissions rather than the cashier's.
+  wrapIpcHandler('lotCosting.lots.list', async (payload) => services.lotCostingService.listLots(payload?.filters || {}), { authorize: requireLotCostingView });
+  wrapIpcHandler('lotCosting.profitability', async (payload) => services.lotCostingService.getProfitability(payload?.filters || {}), { authorize: requireLotCostingView });
+  wrapIpcHandler('lotCosting.lot.detail', async (payload) => services.lotCostingService.getLotCostDetail(payload || {}), { authorize: requireLotCostingView });
+  wrapIpcHandler('lotCosting.reconcile', async (payload) => services.lotCostingService.reconcile(payload || {}), { authorize: requireLotCostingView });
+  wrapIpcHandler('lotCosting.allocate', async (payload) => services.lotCostingService.allocateExpense(payload?.allocation || {}), { authorize: requireExpensesAllocate });
+  wrapIpcHandler('lotCosting.reallocate', async (payload) => services.lotCostingService.reallocate(payload?.reallocation || {}), { authorize: requireExpensesAllocate });
+
+  // ── Stakeholders and equity ─────────────────────────────────
+  // Owner-level information. A cashier never receives any of these.
+  wrapIpcHandler('stakeholders.list', async (payload) => services.stakeholderService.list(payload || {}), { authorize: requireStakeholdersView });
+  wrapIpcHandler('stakeholders.statement', async (payload) => services.stakeholderService.statement(payload || {}), { authorize: requireStakeholdersView });
+  wrapIpcHandler('stakeholders.shares.list', async (payload) => services.stakeholderService.listShares(payload || {}), { authorize: requireStakeholdersView });
+  wrapIpcHandler('stakeholders.reconcile', async (payload) => services.stakeholderService.reconcile(payload || {}), { authorize: requireStakeholdersView });
+  wrapIpcHandler('stakeholders.save', async (payload) => services.stakeholderService.save(payload?.stakeholder || {}), { authorize: requireStakeholdersManage });
+  wrapIpcHandler('stakeholders.shares.save', async (payload) => services.stakeholderService.saveShare(payload?.share || {}), { authorize: requireStakeholdersManage });
+  wrapIpcHandler('stakeholders.contribute', async (payload) => services.stakeholderService.contribute(payload?.entry || {}), { authorize: requireStakeholdersContribute });
+  wrapIpcHandler('stakeholders.draw', async (payload) => services.stakeholderService.draw(payload?.entry || {}), { authorize: requireStakeholdersDrawing });
+  wrapIpcHandler('stakeholders.settle', async (payload) => services.stakeholderService.settle(payload?.entry || {}), { authorize: requireStakeholdersDrawing });
+  wrapIpcHandler('stakeholders.profitShare', async (payload) => services.stakeholderService.allocateProfitShare(payload?.entry || {}), { authorize: requireStakeholdersProfitShare });
+
+  // ── Accountant mode ─────────────────────────────────────────
+  // Read-only over derived postings; there is no manual journal entry.
+  wrapIpcHandler('accounting.accounts.list', async () => services.accountingService.listAccounts(), { authorize: requireJournalView });
+  wrapIpcHandler('accounting.journal.list', async (payload) => services.accountingService.listJournal(payload?.filters || {}), { authorize: requireJournalView });
+  wrapIpcHandler('accounting.trialBalance', async (payload) => services.accountingService.trialBalance(payload?.filters || {}), { authorize: requireJournalView });
+  wrapIpcHandler('accounting.profitAndLoss', async (payload) => services.accountingService.profitAndLoss(payload?.filters || {}), { authorize: requireJournalView });
+  wrapIpcHandler('accounting.balanceSheet', async (payload) => services.accountingService.balanceSheet(payload?.filters || {}), { authorize: requireJournalView });
+  wrapIpcHandler('accounting.periods.list', async (payload) => services.accountingService.listPeriods(payload || {}), { authorize: requireJournalView });
+  wrapIpcHandler('accounting.periods.close', async (payload) => services.accountingService.closePeriod(payload?.period || {}), { authorize: requirePeriodClose });
+  wrapIpcHandler('accounting.periods.reopen', async (payload) => services.accountingService.reopenPeriod(payload?.period || {}), { authorize: requirePeriodClose });
+
   wrapIpcHandler('catalog.cheques.list', async (payload) => services.catalogService.listCheques(payload?.filters || {}), { authorize: requireChequesView });
   wrapIpcHandler('catalog.cheques.get', async (payload) => services.catalogService.getCheque(payload?.chequeId), { authorize: requireChequesView });
   wrapIpcHandler('catalog.cheques.details', async (payload) => services.catalogService.updateChequeDetails(payload || {}), { authorize: requireChequesManage });

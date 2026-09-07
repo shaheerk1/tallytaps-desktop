@@ -20,6 +20,10 @@ const { createBusinessDayRepository } = require('../../../../packages/database/r
 const { createInventoryLedgerRepository } = require('../../../../packages/database/repositories/inventory-ledger.repository');
 const { createSupplierSaleStatementRepository } = require('../../../../packages/database/repositories/supplier-sale-statement.repository');
 const { createCustomerAdvanceRepository } = require('../../../../packages/database/repositories/customer-advance.repository');
+const { createExpenseRepository } = require('../../../../packages/database/repositories/expense.repository');
+const { createJournalRepository } = require('../../../../packages/database/repositories/journal.repository');
+const { createLotCostingRepository } = require('../../../../packages/database/repositories/lot-costing.repository');
+const { createStakeholderRepository } = require('../../../../packages/database/repositories/stakeholder.repository');
 const { seedAdminUser } = require('../../../../packages/database/seeders/seed-admin-user');
 const { seedDefaultSettings } = require('../../../../packages/database/seeders/seed-default-settings');
 const { createAuthService } = require('../../../../packages/core/auth/auth.service');
@@ -48,6 +52,10 @@ const { createCloudSyncScheduler } = require('../../../../packages/core/cloud-sy
 const { createBusinessDayService } = require('../../../../packages/core/business-days/business-day.service');
 const { createSupplierSaleStatementService } = require('../../../../packages/core/supplier-sale-statements/supplier-sale-statement.service');
 const { createCustomerAdvanceService } = require('../../../../packages/core/customer-advances/customer-advance.service');
+const { createExpenseService } = require('../../../../packages/core/expenses/expense.service');
+const { createLotCostingService } = require('../../../../packages/core/lot-costing/lot-costing.service');
+const { createStakeholderService } = require('../../../../packages/core/stakeholders/stakeholder.service');
+const { createAccountingService } = require('../../../../packages/core/accounting/accounting.service');
 const { safeStorage } = require('electron');
 
 function createSecretProtector() {
@@ -98,6 +106,12 @@ async function createServiceContainer() {
   const fieldInboxRepository = createFieldInboxRepository({ database });
   const cloudSyncRepository = createCloudSyncRepository({ database });
   const supplierSaleStatementRepository = createSupplierSaleStatementRepository({ database, documentSequenceRepository, businessDayRepository });
+  // The journal is created first: every money-side repository posts through it
+  // inside the same transaction as the business event it records.
+  const journalRepository = createJournalRepository({ database, documentSequenceRepository });
+  const expenseRepository = createExpenseRepository({ database, documentSequenceRepository, businessDayRepository, journalRepository });
+  const lotCostingRepository = createLotCostingRepository({ database, documentSequenceRepository, businessDayRepository, journalRepository });
+  const stakeholderRepository = createStakeholderRepository({ database, documentSequenceRepository, businessDayRepository, journalRepository, expenseRepository });
 
   const eventBus = createEventBus();
   const ipcAuthorizationService = createIpcAuthorizationService();
@@ -145,6 +159,10 @@ async function createServiceContainer() {
   const cloudSyncService = createCloudSyncService({ repository: cloudSyncRepository, secretProtector });
   const cloudSyncScheduler = createCloudSyncScheduler({ service: cloudSyncService });
   const supplierSaleStatementService = createSupplierSaleStatementService({ repository: supplierSaleStatementRepository });
+  const expenseService = createExpenseService({ expenseRepository });
+  const lotCostingService = createLotCostingService({ lotCostingRepository });
+  const stakeholderService = createStakeholderService({ stakeholderRepository });
+  const accountingService = createAccountingService({ journalRepository });
 
   return {
     database,
@@ -156,6 +174,10 @@ async function createServiceContainer() {
     paymentModeRepository,
     supplierSaleStatementRepository,
     customerAdvanceRepository,
+    expenseRepository,
+    journalRepository,
+    lotCostingRepository,
+    stakeholderRepository,
     billingRepository,
     liveBillRepository,
     refundRepository,
@@ -173,6 +195,10 @@ async function createServiceContainer() {
     catalogService,
     supplierSaleStatementService,
     customerAdvanceService,
+    expenseService,
+    lotCostingService,
+    stakeholderService,
+    accountingService,
     billingEngineService,
     refundService,
     cashManagementService,

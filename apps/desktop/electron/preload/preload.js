@@ -119,6 +119,48 @@ contextBridge.exposeInMainWorld('posApi', {
     receive: (advance, actor) => ipcRenderer.invoke('customerAdvances.receive', { ...advance, actor }),
     refund: (refund, actor) => ipcRenderer.invoke('customerAdvances.refund', { ...refund, actor })
   },
+  funds: {
+    list: (locCode, includeInactive, actor) => ipcRenderer.invoke('funds.list', { locCode, includeInactive, actor }),
+    save: (fund, actor) => ipcRenderer.invoke('funds.save', { fund, actor }),
+    ledger: (query, actor) => ipcRenderer.invoke('funds.ledger', { ...query, actor }),
+    transfer: (transfer, actor) => ipcRenderer.invoke('funds.transfer', { transfer, actor })
+  },
+  expenses: {
+    categories: (includeInactive, actor) => ipcRenderer.invoke('expenses.categories.list', { includeInactive, actor }),
+    saveCategory: (category, actor) => ipcRenderer.invoke('expenses.categories.save', { category, actor }),
+    list: (filters, actor) => ipcRenderer.invoke('expenses.list', { filters, actor }),
+    create: (expense, actor) => ipcRenderer.invoke('expenses.create', { expense, actor })
+  },
+  lotCosting: {
+    lots: (filters, actor) => ipcRenderer.invoke('lotCosting.lots.list', { filters, actor }),
+    profitability: (filters, actor) => ipcRenderer.invoke('lotCosting.profitability', { filters, actor }),
+    lotDetail: (query, actor) => ipcRenderer.invoke('lotCosting.lot.detail', { ...query, actor }),
+    reconcile: (locCode, actor) => ipcRenderer.invoke('lotCosting.reconcile', { locCode, actor }),
+    allocate: (allocation, actor) => ipcRenderer.invoke('lotCosting.allocate', { allocation, actor }),
+    reallocate: (reallocation, actor) => ipcRenderer.invoke('lotCosting.reallocate', { reallocation, actor })
+  },
+  stakeholders: {
+    list: (locCode, includeInactive, actor) => ipcRenderer.invoke('stakeholders.list', { locCode, includeInactive, actor }),
+    save: (stakeholder, actor) => ipcRenderer.invoke('stakeholders.save', { stakeholder, actor }),
+    statement: (query, actor) => ipcRenderer.invoke('stakeholders.statement', { ...query, actor }),
+    shares: (query, actor) => ipcRenderer.invoke('stakeholders.shares.list', { ...query, actor }),
+    saveShare: (share, actor) => ipcRenderer.invoke('stakeholders.shares.save', { share, actor }),
+    contribute: (entry, actor) => ipcRenderer.invoke('stakeholders.contribute', { entry, actor }),
+    draw: (entry, actor) => ipcRenderer.invoke('stakeholders.draw', { entry, actor }),
+    settle: (entry, actor) => ipcRenderer.invoke('stakeholders.settle', { entry, actor }),
+    profitShare: (entry, actor) => ipcRenderer.invoke('stakeholders.profitShare', { entry, actor }),
+    reconcile: (locCode, actor) => ipcRenderer.invoke('stakeholders.reconcile', { locCode, actor })
+  },
+  accounting: {
+    accounts: (actor) => ipcRenderer.invoke('accounting.accounts.list', { actor }),
+    journal: (filters, actor) => ipcRenderer.invoke('accounting.journal.list', { filters, actor }),
+    trialBalance: (filters, actor) => ipcRenderer.invoke('accounting.trialBalance', { filters, actor }),
+    profitAndLoss: (filters, actor) => ipcRenderer.invoke('accounting.profitAndLoss', { filters, actor }),
+    balanceSheet: (filters, actor) => ipcRenderer.invoke('accounting.balanceSheet', { filters, actor }),
+    periods: (locCode, actor) => ipcRenderer.invoke('accounting.periods.list', { locCode, actor }),
+    closePeriod: (period, actor) => ipcRenderer.invoke('accounting.periods.close', { period, actor }),
+    reopenPeriod: (period, actor) => ipcRenderer.invoke('accounting.periods.reopen', { period, actor })
+  },
   pattiyals: {
     list: (filters, actor) => ipcRenderer.invoke('supply.pattiyals.list', { filters, actor }),
     get: (statementId, actor) => ipcRenderer.invoke('supply.pattiyals.get', { statementId, actor }),

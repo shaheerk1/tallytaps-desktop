@@ -23,6 +23,7 @@ import { PattiyalWorkspaceComponent } from './supply-receiving/pattiyal-workspac
 import { ReportsComponent } from './reports/reports.component';
 import { FieldTransactionInboxComponent } from './field-transaction-inbox/field-transaction-inbox.component';
 import { BusinessDayComponent } from './business-day/business-day.component';
+import { ExpensesComponent } from './expenses/expenses.component';
 import { routes } from './app.routes';
 
 @NgModule({
@@ -46,7 +47,8 @@ import { routes } from './app.routes';
     PattiyalWorkspaceComponent,
     ReportsComponent,
     FieldTransactionInboxComponent,
-    BusinessDayComponent
+    BusinessDayComponent,
+    ExpensesComponent
   ],
   imports: [
     BrowserModule,

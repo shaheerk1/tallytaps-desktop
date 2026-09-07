@@ -18,6 +18,9 @@
     "verify:ddec-ledger": "node tools/e2e-verify/ddec-ledger-invariants.js",
     "verify:origin-identity": "node tools/e2e-verify/origin-identity-smoke.js",
     "verify:business-day": "node tools/e2e-verify/business-day-lifecycle.smoke.js",
+    "verify:expense-funds": "node tools/e2e-verify/expense-fund-invariants.js",
+    "verify:lot-costing": "node tools/e2e-verify/lot-costing-invariants.js",
+    "verify:equity-journal": "node tools/e2e-verify/equity-and-journal-invariants.js",
     "test": "ng test pos-shell"
   },
   "build": {

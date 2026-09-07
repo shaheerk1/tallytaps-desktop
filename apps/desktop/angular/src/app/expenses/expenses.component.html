@@ -1,0 +1,768 @@
+<div class="denied" *ngIf="!canView">
+  <h2>Money</h2>
+  <p>Your role does not include expense or fund access. Ask an administrator for <code>expenses.view</code>.</p>
+</div>
+
+<div class="expense-page" *ngIf="canView">
+  <header class="page-header">
+    <div>
+      <h1>Money <span>Costs · Goods · Partners</span></h1>
+      <p>Every cost the business pays, the goods it belongs to, and whose money is in the business.</p>
+    </div>
+    <div class="header-actions">
+      <button class="secondary" *ngIf="canTransfer && funds.length > 1" (click)="newTransfer()">Move money</button>
+      <button class="secondary" *ngIf="canManageFunds" (click)="newFund()">Add fund</button>
+      <button class="primary" *ngIf="canRecord" (click)="newExpense()">Record expense</button>
+    </div>
+  </header>
+
+  <!-- Progressive disclosure: a cashier sees only the first tab. -->
+  <nav class="tabs">
+    <button [class.active]="activeTab === 'expenses'" (click)="selectTab('expenses')">Expenses</button>
+    <button *ngIf="canSeeLots" [class.active]="activeTab === 'lots'" (click)="selectTab('lots')">Cost of goods</button>
+    <button *ngIf="canSeePartners" [class.active]="activeTab === 'partners'" (click)="selectTab('partners')">Partners</button>
+    <button *ngIf="canSeeAccounts" [class.active]="activeTab === 'accounts'" (click)="selectTab('accounts')">Accounts</button>
+  </nav>
+
+  <p class="alert error" *ngIf="error">{{ error }}</p>
+  <p class="alert success" *ngIf="info">{{ info }}</p>
+
+  <!-- Date range drives every tab. -->
+  <div class="toolbar">
+    <label class="search-field">
+      <span>Search</span>
+      <input type="search" [(ngModel)]="term" (keyup.enter)="reload()" placeholder="Reason, payee, voucher, lot or supplier" />
+    </label>
+    <label><span>From</span><input type="date" [(ngModel)]="fromDate" (change)="reload()" /></label>
+    <label><span>To</span><input type="date" [(ngModel)]="toDate" (change)="reload()" /></label>
+    <ng-container *ngIf="activeTab === 'expenses'">
+      <label>
+        <span>Category</span>
+        <select [(ngModel)]="filterCategoryId" (change)="search()">
+          <option [ngValue]="null">All categories</option>
+          <option *ngFor="let category of categories" [ngValue]="category.id">{{ category.name }}</option>
+        </select>
+      </label>
+      <label *ngIf="canSeeFunds">
+        <span>Paid from</span>
+        <select [(ngModel)]="filterFundId" (change)="search()">
+          <option [ngValue]="null">All funds</option>
+          <option *ngFor="let fund of funds" [ngValue]="fund.id">{{ fund.name }}</option>
+        </select>
+      </label>
+    </ng-container>
+    <label *ngIf="activeTab === 'lots'">
+      <span>Ownership</span>
+      <select [(ngModel)]="ownershipFilter" (change)="loadLotCosting()">
+        <option value="">Owned and consignment</option>
+        <option value="owned">Owned only</option>
+        <option value="consignment">Consignment only</option>
+      </select>
+    </label>
+    <button class="secondary" (click)="reload()">Apply</button>
+  </div>
+
+  <!-- ════════ EXPENSES ════════ -->
+  <ng-container *ngIf="activeTab === 'expenses'">
+    <section class="funds" *ngIf="canSeeFunds">
+      <div class="section-head">
+        <h2>Funds</h2>
+        <p>A fund is simply a place your money sits — the till, the safe, a bank account, or your own pocket. Recording which fund paid keeps every balance honest.</p>
+        <strong *ngIf="funds.length">{{ formatMoney(totalHeld) }} held</strong>
+      </div>
+      <div class="fund-grid" *ngIf="funds.length">
+        <article class="fund-card" *ngFor="let fund of funds"
+          [class.inactive]="!fund.isActive" [class.is-drawer]="fund.fundKind === 'pos_drawer'"
+          [class.is-pocket]="fund.fundKind === 'stakeholder'">
+          <header>
+            <em>{{ fundKindLabel(fund.fundKind) }}</em>
+            <button class="link" *ngIf="canManageFunds && fund.fundKind !== 'pos_drawer'" (click)="editFund(fund)">Edit</button>
+          </header>
+          <button class="fund-body" (click)="openLedger(fund)" [title]="fundBalanceHint(fund)">
+            <strong>{{ fund.name }}</strong>
+            <b [class.negative]="fund.balance < 0">{{ formatMoney(fund.balance) }}</b>
+            <small>{{ fund.holderName || fund.accountReference || fund.fundCode }}</small>
+          </button>
+          <footer>{{ fundBalanceHint(fund) }}</footer>
+        </article>
+      </div>
+      <p class="empty" *ngIf="!funds.length && !loading">
+        No funds yet. A till becomes a fund automatically when its workstation is set up; add a safe, a bank account, or a partner pocket to record money kept outside the till.
+      </p>
+    </section>
+
+    <div class="summary-strip" *ngIf="register">
+      <div><span>Total spent</span><strong>{{ formatMoney(register.total) }}</strong></div>
+      <div><span>Belongs to goods</span><strong>{{ formatMoney(register.goodsTotal) }}</strong></div>
+      <div><span>General business cost</span><strong>{{ formatMoney(register.overheadTotal) }}</strong></div>
+      <div><span>Entries</span><strong>{{ register.rows.length }}</strong></div>
+    </div>
+
+    <!-- The nudge that turns a recorded cost into a real cost price. -->
+    <div class="nudge" *ngIf="canAllocate && unattachedExpenses.length">
+      <div>
+        <strong>{{ unattachedExpenses.length }} goods-related {{ unattachedExpenses.length === 1 ? 'cost is' : 'costs are' }} not attached to a delivery yet</strong>
+        <span>Until they are attached, they count against this period's profit instead of raising what those goods cost.</span>
+      </div>
+      <button class="secondary" (click)="selectTab('lots')">Attach them</button>
+    </div>
+
+    <div class="register-layout">
+      <section class="register">
+        <div class="register-head">
+          <span>Voucher</span><span>Category</span><span>What it was for</span><span>Paid from</span><span class="right">Amount</span>
+        </div>
+        <div class="register-row" *ngFor="let row of register?.rows">
+          <span class="voucher">
+            <strong>{{ row.expenseNumber }}</strong>
+            <small>{{ formatDate(row.date) }} · {{ row.userName }}</small>
+          </span>
+          <span>
+            <strong>{{ row.categoryName }}</strong>
+            <em [class.goods]="row.categoryTreatment === 'lot_cost'">
+              {{ row.categoryTreatment === 'lot_cost' ? 'Goods' : row.categoryTreatment === 'supplier_deduction' ? 'Supplier' : 'General' }}
+            </em>
+          </span>
+          <span class="purpose">
+            <strong>{{ row.reason }}</strong>
+            <small *ngIf="row.payee || row.reference">{{ row.payee }}<ng-container *ngIf="row.payee && row.reference"> · </ng-container>{{ row.reference }}</small>
+            <small class="attach-state" *ngIf="row.categoryTreatment === 'lot_cost'">
+              <ng-container *ngIf="row.allocatedTotal > 0.005">On goods: {{ formatMoney(row.allocatedTotal) }}<ng-container *ngIf="row.grnNumber"> · {{ row.grnNumber }}</ng-container></ng-container>
+              <ng-container *ngIf="row.allocatedTotal <= 0.005">Not attached to any goods yet</ng-container>
+            </small>
+          </span>
+          <span>
+            <strong>{{ row.fundName }}</strong>
+            <small>{{ row.stakeholderName || fundKindLabel(row.fundKind) }}</small>
+          </span>
+          <b class="right">
+            {{ formatMoney(row.amount) }}
+            <button class="link" *ngIf="canAllocate && row.unallocatedTotal > 0.005 && row.categoryTreatment === 'lot_cost'"
+              (click)="openAttach(row)">Attach</button>
+          </b>
+        </div>
+        <p class="empty" *ngIf="register && !register.rows.length">
+          No expenses recorded for this period. When you pay for something — a lorry, unloading, rent — record it here so it counts against your profit.
+        </p>
+        <p class="empty" *ngIf="loading && !register">Loading the expense register…</p>
+      </section>
+
+      <aside class="breakdown" *ngIf="register && register.byCategory.length">
+        <h3>Where it went</h3>
+        <div class="breakdown-row" *ngFor="let row of register.byCategory">
+          <span><strong>{{ row.name }}</strong><small>{{ row.entryCount }} {{ row.entryCount === 1 ? 'entry' : 'entries' }}</small></span>
+          <span class="breakdown-value">
+            <b>{{ formatMoney(row.total) }}</b>
+            <i class="bar"><i [style.width.%]="categoryShare(row.total)" [class.goods]="row.treatment === 'lot_cost'"></i></i>
+          </span>
+        </div>
+        <ng-container *ngIf="register.byFund.length">
+          <h3>Which pocket paid</h3>
+          <div class="breakdown-row" *ngFor="let row of register.byFund">
+            <span><strong>{{ row.name }}</strong><small>{{ fundKindLabel(row.fundKind) }}</small></span>
+            <b>{{ formatMoney(row.total) }}</b>
+          </div>
+        </ng-container>
+      </aside>
+    </div>
+  </ng-container>
+
+  <!-- ════════ COST OF GOODS ════════ -->
+  <ng-container *ngIf="activeTab === 'lots'">
+    <div class="section-head">
+      <h2>What each delivery really cost</h2>
+      <p>Purchase price plus every cost you attached to it. Owned goods and consignment goods are worked out differently.</p>
+      <button class="link" (click)="runReconcile()">Check the figures</button>
+    </div>
+
+    <div class="summary-strip" *ngIf="profitability">
+      <div><span>Sold</span><strong>{{ formatMoney(profitability.totals.saleValue) }}</strong></div>
+      <div><span>Real cost of goods</span><strong>{{ formatMoney(profitability.totals.landedCostTotal) }}</strong></div>
+      <div><span>Owed to suppliers</span><strong>{{ formatMoney(profitability.totals.supplierDue) }}</strong></div>
+      <div><span>Made on goods</span><strong [class.negative]="profitability.totals.margin < 0">{{ formatMoney(profitability.totals.margin) }}</strong></div>
+    </div>
+
+    <div class="nudge" *ngIf="canAllocate && unattachedExpenses.length">
+      <div>
+        <strong>{{ unattachedExpenses.length }} goods-related {{ unattachedExpenses.length === 1 ? 'cost' : 'costs' }} waiting to be attached</strong>
+        <span>Attach each one to the delivery it belongs to so these cost figures are complete.</span>
+      </div>
+    </div>
+    <div class="attach-queue" *ngIf="canAllocate && unattachedExpenses.length">
+      <button class="queue-item" *ngFor="let row of unattachedExpenses" (click)="openAttach(row)">
+        <strong>{{ row.categoryName }}</strong>
+        <small>{{ row.reason }}</small>
+        <b>{{ formatMoney(row.unallocatedTotal) }}</b>
+      </button>
+    </div>
+
+    <section class="register lot-register">
+      <div class="register-head lot-head">
+        <span>Lot</span><span>Supplier</span><span class="right">Real cost</span>
+        <span class="right">Cost each</span><span class="right">Sold</span><span class="right">Made</span>
+      </div>
+      <div class="register-row lot-row" *ngFor="let lot of profitability?.lots" (click)="openLotDetail(lot.id)">
+        <span class="voucher">
+          <strong>{{ lot.lotCode }}</strong>
+          <small>{{ lot.productName }} · {{ formatDate(lot.date) }}</small>
+        </span>
+        <span>
+          <strong>{{ lot.supplierName }}</strong>
+          <em [class.goods]="lot.ownershipModel === 'consignment'">{{ lot.ownershipModel === 'owned' ? 'Bought' : 'Consignment' }}</em>
+        </span>
+        <b class="right">
+          {{ formatMoney(lot.landedCostTotal) }}
+          <small *ngIf="lot.allocatedCost > 0.005">incl. {{ formatMoney(lot.allocatedCost) }} added</small>
+        </b>
+        <b class="right">
+          <ng-container *ngIf="lot.landedCostPerBase != null">{{ formatMoney(lot.landedCostPerBase) }}<small>per {{ lot.baseUom || 'kg' }}</small></ng-container>
+          <ng-container *ngIf="lot.landedCostPerBase == null && lot.landedCostPerHandling != null">{{ formatMoney(lot.landedCostPerHandling) }}<small>per {{ lot.handlingUom }}</small></ng-container>
+          <ng-container *ngIf="lot.landedCostPerBase == null && lot.landedCostPerHandling == null">—</ng-container>
+        </b>
+        <b class="right">
+          {{ formatMoney(lot.saleValue) }}
+          <small>{{ formatQty(lot.soldHandlingQuantity, lot.handlingUom) }}</small>
+        </b>
+        <b class="right" [class.negative]="lot.margin < 0" [class.positive]="lot.margin > 0">
+          {{ formatMoney(lot.margin) }}
+          <small *ngIf="lot.marginPercent != null">{{ lot.marginPercent }}%</small>
+        </b>
+      </div>
+      <p class="empty" *ngIf="profitability && !profitability.lots.length">
+        No received goods in this period. Record a delivery in Supplier Receiving, then attach its costs here.
+      </p>
+    </section>
+  </ng-container>
+
+  <!-- ════════ PARTNERS ════════ -->
+  <ng-container *ngIf="activeTab === 'partners'">
+    <div class="section-head">
+      <h2>Whose money is in the business</h2>
+      <p>What each person put in, what they paid for from their own hand, and what they may still take out.</p>
+      <button class="secondary" *ngIf="canManagePartners" (click)="newPartner()">Add partner</button>
+    </div>
+
+    <p class="guidance" *ngIf="equityCheck && !equityCheck.inBalance">
+      These claims and the accounting journal disagree by {{ formatMoney(equityCheck.difference) }}. Show this to whoever maintains the system before relying on the figures.
+    </p>
+
+    <div class="fund-grid" *ngIf="partners.length">
+      <article class="fund-card partner-card" *ngFor="let partner of partners" [class.inactive]="!partner.isActive">
+        <header>
+          <em>{{ partner.stakeholderType }}</em>
+          <button class="link" *ngIf="canManagePartners" (click)="editPartner(partner)">Edit</button>
+        </header>
+        <button class="fund-body" (click)="openPartnerStatement(partner)">
+          <strong>{{ partner.displayName }}</strong>
+          <b [class.negative]="partner.claim < 0">{{ formatMoney(partner.claim) }}</b>
+          <small *ngIf="partner.businessSharePercent != null">{{ partner.businessSharePercent }}% of the business</small>
+          <small *ngIf="partner.businessSharePercent == null">No share recorded</small>
+        </button>
+        <div class="partner-figures">
+          <span><i>Put in</i><b>{{ formatMoney(partner.contributed) }}</b></span>
+          <span><i>Paid for us</i><b>{{ formatMoney(partner.borne) }}</b></span>
+          <span><i>Profit share</i><b>{{ formatMoney(partner.profitShare) }}</b></span>
+          <span><i>Taken out</i><b>{{ formatMoney(partner.drawn + partner.settled) }}</b></span>
+        </div>
+        <footer class="partner-actions">
+          <button class="link" *ngIf="canContribute" (click)="openPartnerMove(partner, 'contribute')">Put in</button>
+          <button class="link" *ngIf="canDraw" (click)="openPartnerMove(partner, 'draw')">Take out</button>
+          <button class="link" *ngIf="canDraw" (click)="openPartnerMove(partner, 'settle')">Repay</button>
+          <button class="link" *ngIf="canProfitShare" (click)="openPartnerMove(partner, 'profit_share')">Profit share</button>
+        </footer>
+      </article>
+    </div>
+    <p class="empty" *ngIf="!partners.length">
+      No partners recorded yet. Add the people whose money is in this business so the system can tell their money apart from the business's own.
+    </p>
+  </ng-container>
+
+  <!-- ════════ ACCOUNTS ════════ -->
+  <ng-container *ngIf="activeTab === 'accounts'">
+    <div class="section-head">
+      <h2>Accountant view</h2>
+      <p>This view is for your accountant. Everything here is built automatically from the entries you already made — there is nothing extra to type.</p>
+      <button class="secondary" *ngIf="canClosePeriod" (click)="openClosePeriod()">Close a period</button>
+    </div>
+
+    <div class="summary-strip" *ngIf="trialBalance">
+      <div><span>Total debits</span><strong>{{ formatMoney(trialBalance.totalDebit) }}</strong></div>
+      <div><span>Total credits</span><strong>{{ formatMoney(trialBalance.totalCredit) }}</strong></div>
+      <div><span>Costs this period</span><strong>{{ formatMoney(profitAndLoss?.expenseTotal) }}</strong></div>
+      <div [class.balanced]="trialBalance.inBalance" [class.unbalanced]="!trialBalance.inBalance">
+        <span>Books balance</span>
+        <strong>{{ trialBalance.inBalance ? 'Yes' : 'Out by ' + formatMoney(trialBalance.difference) }}</strong>
+      </div>
+    </div>
+
+    <p class="guidance" *ngIf="profitAndLoss?.coversCostsOnly">
+      Sales are still tracked in the billing records rather than here, so this view shows what the business spent, not a full profit figure.
+    </p>
+
+    <div class="accounts-layout">
+      <section class="statement">
+        <h3>Trial balance</h3>
+        <div class="statement-row head"><span>Account</span><b class="right">Debit</b><b class="right">Credit</b></div>
+        <div class="statement-row" *ngFor="let row of trialBalance?.accounts">
+          <span><strong>{{ row.accountCode }} {{ row.name }}</strong><small>{{ row.accountType }}</small></span>
+          <b class="right">{{ row.debitTotal ? formatMoney(row.debitTotal) : '' }}</b>
+          <b class="right">{{ row.creditTotal ? formatMoney(row.creditTotal) : '' }}</b>
+        </div>
+        <div class="statement-row total" *ngIf="trialBalance">
+          <span><strong>Total</strong></span>
+          <b class="right">{{ formatMoney(trialBalance.totalDebit) }}</b>
+          <b class="right">{{ formatMoney(trialBalance.totalCredit) }}</b>
+        </div>
+
+        <h3>Balance sheet</h3>
+        <div class="statement-row" *ngIf="balanceSheet">
+          <span><strong>What the business holds</strong></span><b class="right">{{ formatMoney(balanceSheet.assetTotal) }}</b><b></b>
+        </div>
+        <div class="statement-row" *ngIf="balanceSheet">
+          <span><strong>What it owes others</strong></span><b class="right">{{ formatMoney(balanceSheet.liabilityTotal) }}</b><b></b>
+        </div>
+        <div class="statement-row" *ngIf="balanceSheet">
+          <span><strong>Owners' share</strong></span><b class="right">{{ formatMoney(balanceSheet.equityTotal) }}</b><b></b>
+        </div>
+        <div class="statement-row total" *ngIf="balanceSheet">
+          <span><strong>{{ balanceSheet.inBalance ? 'Balanced' : 'Out by ' + formatMoney(balanceSheet.difference) }}</strong></span>
+          <b class="right">{{ formatMoney(balanceSheet.retainedResult) }}</b><b></b>
+        </div>
+      </section>
+
+      <aside class="breakdown">
+        <h3>Periods</h3>
+        <div class="breakdown-row" *ngFor="let period of periods">
+          <span>
+            <strong>{{ formatDate(period.periodStart) }} – {{ formatDate(period.periodEnd) }}</strong>
+            <small>{{ period.status }}<ng-container *ngIf="period.reopenCount"> · reopened {{ period.reopenCount }}×</ng-container></small>
+          </span>
+          <button class="link" *ngIf="period.status === 'closed' && canClosePeriod" (click)="reopenPeriod(period)">Reopen</button>
+        </div>
+        <p class="empty inline" *ngIf="!periods.length">No period has been closed yet.</p>
+
+        <h3>Recent postings</h3>
+        <div class="journal-entry" *ngFor="let entry of journal">
+          <div class="journal-head">
+            <strong>{{ entry.journalNumber }}</strong>
+            <small>{{ formatDate(entry.date) }}</small>
+          </div>
+          <p>{{ entry.narration }}</p>
+          <div class="journal-line" *ngFor="let line of entry.lines">
+            <span>{{ line.accountCode }} {{ line.accountName }}</span>
+            <b>{{ line.debit ? formatMoney(line.debit) : '(' + formatMoney(line.credit) + ')' }}</b>
+          </div>
+        </div>
+        <p class="empty inline" *ngIf="!journal.length">Nothing posted in this period yet.</p>
+      </aside>
+    </div>
+  </ng-container>
+</div>
+
+<!-- ── Record an expense ─────────────────────────────────── -->
+<div class="workspace-overlay" *ngIf="expenseDraft" (click)="closeAll()">
+  <section class="workspace-drawer" (click)="$event.stopPropagation()">
+    <button class="drawer-close" (click)="closeAll()" title="Close">×</button>
+    <div class="panel-head">
+      <div><p class="eyebrow">MONEY OUT</p><h2>Record an expense</h2><p>Say what it was for, how much, and which pocket paid.</p></div>
+    </div>
+    <div class="form-grid">
+      <label class="wide">
+        <span>What was this for?</span>
+        <select [(ngModel)]="expenseDraft.expenseCategoryId">
+          <option *ngFor="let category of categories" [ngValue]="category.id">{{ category.name }}</option>
+        </select>
+        <small *ngIf="draftCategory?.helpText">{{ draftCategory?.helpText }}</small>
+      </label>
+      <p class="guidance wide" *ngIf="draftTreatmentHint">{{ draftTreatmentHint }}</p>
+      <label><span>Amount</span><input type="number" min="0" step="0.01" [(ngModel)]="expenseDraft.amount" placeholder="0.00" /></label>
+      <label>
+        <span>Paid from</span>
+        <select [(ngModel)]="expenseDraft.fundAccountId">
+          <option *ngFor="let fund of spendableFunds" [ngValue]="fund.id">{{ fund.name }} — {{ formatMoney(fund.balance) }}</option>
+        </select>
+        <small *ngIf="draftFund">{{ fundBalanceHint(draftFund!) }}</small>
+      </label>
+      <p class="guidance wide" *ngIf="draftPocketHint">{{ draftPocketHint }}</p>
+      <p class="guidance warn wide" *ngIf="draftShortfall">
+        {{ draftFund?.name }} holds only {{ formatMoney(draftFund?.balance) }}. Record the money coming in first, or choose the pocket that really paid.
+      </p>
+      <label><span>Paid to (optional)</span><input type="text" [(ngModel)]="expenseDraft.payee" placeholder="Lorry driver, landlord, shop name" /></label>
+      <label><span>Bill or reference (optional)</span><input type="text" [(ngModel)]="expenseDraft.reference" placeholder="Receipt or bill number" /></label>
+      <label class="wide">
+        <span>Reason</span>
+        <input type="text" [(ngModel)]="expenseDraft.reason" placeholder="Onion lorry from Dambulla, 12 bags" />
+        <small>Write it so it still makes sense to you in three months.</small>
+      </label>
+    </div>
+    <div class="drawer-actions">
+      <button class="secondary" (click)="closeAll()">Cancel</button>
+      <button class="primary" (click)="saveExpense()"
+        [disabled]="saving || !expenseDraft.amount || !expenseDraft.reason || !expenseDraft.fundAccountId || draftShortfall">
+        {{ saving ? 'Recording…' : 'Record expense' }}
+      </button>
+    </div>
+  </section>
+</div>
+
+<!-- ── Attach a cost to goods ────────────────────────────── -->
+<div class="workspace-overlay" *ngIf="attachDraft" (click)="closeAll()">
+  <section class="workspace-drawer" (click)="$event.stopPropagation()">
+    <button class="drawer-close" (click)="closeAll()" title="Close">×</button>
+    <div class="panel-head">
+      <div>
+        <p class="eyebrow">COST OF GOODS</p>
+        <h2>Attach this cost to goods</h2>
+        <p>{{ attachDraft.expense.categoryName }} · {{ formatMoney(attachDraft.expense.unallocatedTotal) }} unattached</p>
+      </div>
+    </div>
+    <p class="guidance">
+      Costs added to a delivery raise what those goods really cost you. Costs left as a general business cost affect your profit for the period instead.
+    </p>
+    <div class="form-grid">
+      <label class="wide">
+        <span>Attach to</span>
+        <select [(ngModel)]="attachDraft.scope">
+          <option value="goods_receipt">A whole delivery, split across its lots</option>
+          <option value="lot">One lot only</option>
+        </select>
+      </label>
+      <label class="wide" *ngIf="attachDraft.scope === 'goods_receipt'">
+        <span>Delivery</span>
+        <select [(ngModel)]="attachDraft.goodsReceiptId">
+          <option *ngFor="let grn of attachGrns" [ngValue]="grn.id">{{ grn.label }} ({{ grn.lotCount }} lots)</option>
+        </select>
+      </label>
+      <label class="wide" *ngIf="attachDraft.scope === 'lot'">
+        <span>Lot</span>
+        <select [(ngModel)]="attachDraft.inventoryLotId">
+          <option *ngFor="let lot of lots" [ngValue]="lot.id">{{ lot.lotCode }} · {{ lot.productName }} · {{ lot.supplierName }}</option>
+        </select>
+      </label>
+      <label class="wide" *ngIf="attachDraft.scope === 'goods_receipt'">
+        <span>How should it be divided?</span>
+        <select [(ngModel)]="attachDraft.basis">
+          <option value="base_quantity">By weight</option>
+          <option value="handling_quantity">By number of bags</option>
+          <option value="sale_value">By what each lot sold for</option>
+          <option value="equal">Equally between the lots</option>
+        </select>
+        <small>{{ attachBasisHint }}</small>
+      </label>
+      <label>
+        <span>Amount to attach</span>
+        <input type="number" min="0" step="0.01" [(ngModel)]="attachDraft.amount" />
+        <small>Leave the full amount unless only part of this bill belongs to these goods.</small>
+      </label>
+    </div>
+    <div class="drawer-actions">
+      <button class="secondary" (click)="closeAll()">Cancel</button>
+      <button class="primary" (click)="saveAttach()"
+        [disabled]="saving || (attachDraft.scope === 'lot' ? !attachDraft.inventoryLotId : !attachDraft.goodsReceiptId)">
+        {{ saving ? 'Attaching…' : 'Attach cost' }}
+      </button>
+    </div>
+  </section>
+</div>
+
+<!-- ── One lot's cost history ────────────────────────────── -->
+<div class="workspace-overlay" *ngIf="lotDetail" (click)="closeAll()">
+  <section class="workspace-drawer" (click)="$event.stopPropagation()">
+    <button class="drawer-close" (click)="closeAll()" title="Close">×</button>
+    <div class="panel-head">
+      <div>
+        <p class="eyebrow">{{ lotDetail.lot.ownershipModel === 'owned' ? 'BOUGHT' : 'CONSIGNMENT' }}</p>
+        <h2>{{ lotDetail.lot.lotCode }}</h2>
+        <p>{{ lotDetail.lot.productName }} · {{ lotDetail.lot.supplierName }} · {{ lotDetail.lot.grnNumber }}</p>
+      </div>
+      <b class="ledger-balance">{{ formatMoney(lotDetail.lot.landedCostTotal) }}</b>
+    </div>
+    <div class="metrics">
+      <div><span>Purchase price</span><strong>{{ formatMoney(lotDetail.lot.purchaseCostTotal) }}</strong></div>
+      <div><span>Costs added</span><strong>{{ formatMoney(lotDetail.lot.allocatedCostTotal) }}</strong></div>
+      <div><span>Received</span><strong>{{ formatQty(lotDetail.lot.receivedHandlingQuantity, lotDetail.lot.handlingUom) }}</strong></div>
+      <div><span>Still in stock</span><strong>{{ formatQty(lotDetail.lot.remainingHandlingQuantity, lotDetail.lot.handlingUom) }}</strong></div>
+    </div>
+    <p class="guidance" *ngIf="lotDetail.lot.ownershipModel === 'consignment'">
+      You did not buy these goods, so there is no purchase price. Your earning is the commission, minus the costs you paid yourself.
+    </p>
+    <h3>Costs attached to this lot</h3>
+    <div class="ledger-list">
+      <div class="ledger-row" *ngFor="let allocation of lotDetail.allocations">
+        <span>
+          <strong>{{ allocation.categoryName }}</strong>
+          <small>{{ allocation.expenseNumber }} · {{ formatDate(allocation.date) }} · {{ allocation.documentType === 'reallocation' ? 'moved' : allocation.basis.replace('_', ' ') }}</small>
+        </span>
+        <b [class.credit]="allocation.amount < 0" [class.debit]="allocation.amount > 0">{{ formatMoney(allocation.amount) }}</b>
+      </div>
+      <p class="empty" *ngIf="!lotDetail.allocations.length">No costs attached to this lot yet.</p>
+    </div>
+    <div class="drawer-actions" *ngIf="canAllocate && lotDetail.allocations.length">
+      <button class="secondary" (click)="openMoveCost(lotDetail.allocations[0])">Move a cost to another lot</button>
+    </div>
+  </section>
+</div>
+
+<!-- ── Move a cost between lots ──────────────────────────── -->
+<div class="workspace-overlay" *ngIf="moveCostDraft" (click)="closeAll()">
+  <section class="workspace-drawer" (click)="$event.stopPropagation()">
+    <button class="drawer-close" (click)="closeAll()" title="Close">×</button>
+    <div class="panel-head">
+      <div><p class="eyebrow">CORRECTION</p><h2>Move a cost to another lot</h2><p>Nothing is deleted. Both lots keep a record of the move.</p></div>
+    </div>
+    <div class="form-grid">
+      <label class="wide"><span>From lot</span><input type="text" [value]="lotName(moveCostDraft.fromInventoryLotId)" disabled /></label>
+      <label class="wide">
+        <span>To lot</span>
+        <select [(ngModel)]="moveCostDraft.toInventoryLotId">
+          <option *ngFor="let lot of lots" [ngValue]="lot.id" [disabled]="lot.id === moveCostDraft.fromInventoryLotId">
+            {{ lot.lotCode }} · {{ lot.productName }}
+          </option>
+        </select>
+      </label>
+      <label><span>Amount</span><input type="number" min="0" step="0.01" [(ngModel)]="moveCostDraft.amount" /></label>
+      <label class="wide">
+        <span>Reason</span>
+        <input type="text" [(ngModel)]="moveCostDraft.reason" placeholder="Those bags actually travelled with the later load" />
+      </label>
+    </div>
+    <div class="drawer-actions">
+      <button class="secondary" (click)="closeAll()">Cancel</button>
+      <button class="primary" (click)="saveMoveCost()"
+        [disabled]="saving || !moveCostDraft.toInventoryLotId || !moveCostDraft.amount || !moveCostDraft.reason">
+        {{ saving ? 'Moving…' : 'Move cost' }}
+      </button>
+    </div>
+  </section>
+</div>
+
+<!-- ── Partner money movement ────────────────────────────── -->
+<div class="workspace-overlay" *ngIf="partnerMove" (click)="closeAll()">
+  <section class="workspace-drawer" (click)="$event.stopPropagation()">
+    <button class="drawer-close" (click)="closeAll()" title="Close">×</button>
+    <div class="panel-head">
+      <div>
+        <p class="eyebrow">{{ partnerMove.stakeholder.displayName.toUpperCase() }}</p>
+        <h2>{{ partnerMoveTitle }}</h2>
+        <p>Currently owed: {{ formatMoney(partnerMove.stakeholder.claim) }}</p>
+      </div>
+    </div>
+    <p class="guidance">{{ partnerMoveHint }}</p>
+    <div class="form-grid">
+      <label *ngIf="partnerMove.mode !== 'profit_share'">
+        <span>{{ partnerMove.mode === 'contribute' ? 'Received into' : 'Paid from' }}</span>
+        <select [(ngModel)]="partnerMove.fundAccountId">
+          <option *ngFor="let fund of businessFunds" [ngValue]="fund.id">{{ fund.name }} — {{ formatMoney(fund.balance) }}</option>
+        </select>
+        <small>A partner's own pocket is the person, not a business fund, so it is not listed here.</small>
+      </label>
+      <label><span>Amount</span><input type="number" min="0" step="0.01" [(ngModel)]="partnerMove.amount" placeholder="0.00" /></label>
+      <label class="wide">
+        <span>Reason</span>
+        <input type="text" [(ngModel)]="partnerMove.reason" placeholder="Opening capital for the season" />
+      </label>
+      <ng-container *ngIf="partnerMoveOverLimit">
+        <p class="guidance warn wide">
+          This is more than {{ partnerMove.stakeholder.displayName }} has available. Taking it now means the business owes the difference back, and the approval is recorded against your name.
+        </p>
+        <label class="wide">
+          <span>Why is this being allowed?</span>
+          <input type="text" [(ngModel)]="partnerMove.overrideReason" placeholder="Owner approved in the partners meeting" />
+        </label>
+      </ng-container>
+    </div>
+    <div class="drawer-actions">
+      <button class="secondary" (click)="closeAll()">Cancel</button>
+      <button class="primary" (click)="savePartnerMove()"
+        [disabled]="saving || !partnerMove.amount || !partnerMove.reason || (partnerMove.mode !== 'profit_share' && !partnerMove.fundAccountId) || (partnerMoveOverLimit && !partnerMove.overrideReason)">
+        {{ saving ? 'Recording…' : 'Record' }}
+      </button>
+    </div>
+  </section>
+</div>
+
+<!-- ── Partner statement ─────────────────────────────────── -->
+<div class="workspace-overlay" *ngIf="partnerStatement" (click)="closeAll()">
+  <section class="workspace-drawer" (click)="$event.stopPropagation()">
+    <button class="drawer-close" (click)="closeAll()" title="Close">×</button>
+    <div class="panel-head">
+      <div>
+        <p class="eyebrow">PARTNER STATEMENT</p>
+        <h2>{{ partnerStatement.stakeholder.displayName }}</h2>
+        <p>{{ partnerStatement.stakeholder.borneCostTreatment === 'capital'
+          ? 'Money they spend for the business becomes part of their investment.'
+          : 'Money they spend for the business is a debt the business repays.' }}</p>
+      </div>
+      <b class="ledger-balance" [class.negative]="partnerStatement.stakeholder.claim < 0">
+        {{ formatMoney(partnerStatement.stakeholder.claim) }}
+      </b>
+    </div>
+    <div class="ledger-list">
+      <div class="ledger-row" *ngFor="let entry of partnerStatement.entries">
+        <span>
+          <strong>{{ entryTypeLabel(entry.entryType) }}</strong>
+          <small>{{ entry.entryNumber }} · {{ formatDate(entry.date) }} · {{ entry.reason }}</small>
+          <small class="override" *ngIf="entry.overrideApprover">Approved past the limit by {{ entry.overrideApprover }}: {{ entry.overrideReason }}</small>
+        </span>
+        <b [class.credit]="entry.amount > 0" [class.debit]="entry.amount < 0">{{ formatMoney(entry.amount) }}</b>
+      </div>
+      <p class="empty" *ngIf="!partnerStatement.entries.length">Nothing recorded for this person yet.</p>
+    </div>
+  </section>
+</div>
+
+<!-- ── Add or edit a partner ─────────────────────────────── -->
+<div class="workspace-overlay" *ngIf="partnerDraft" (click)="closeAll()">
+  <section class="workspace-drawer" (click)="$event.stopPropagation()">
+    <button class="drawer-close" (click)="closeAll()" title="Close">×</button>
+    <div class="panel-head">
+      <div><p class="eyebrow">STAKEHOLDER</p><h2>{{ partnerDraft.id ? 'Edit partner' : 'Add a partner' }}</h2>
+        <p>A pocket fund is created for each person, so a cost they pay themselves has somewhere to come from.</p></div>
+    </div>
+    <div class="form-grid">
+      <label><span>Name</span><input type="text" [(ngModel)]="partnerDraft.displayName" placeholder="Nuwan Perera" /></label>
+      <label>
+        <span>Role</span>
+        <select [(ngModel)]="partnerDraft.stakeholderType">
+          <option value="owner">Owner</option><option value="partner">Partner</option><option value="investor">Investor</option>
+        </select>
+      </label>
+      <label class="wide">
+        <span>When they pay for the business from their own money…</span>
+        <select [(ngModel)]="partnerDraft.borneCostTreatment">
+          <option value="capital">…it becomes part of their investment</option>
+          <option value="liability">…the business owes it back to them</option>
+        </select>
+        <small>Choose once per person; you can change it later for new entries.</small>
+      </label>
+      <label><span>Mobile (optional)</span><input type="text" [(ngModel)]="partnerDraft.mobile" /></label>
+      <label class="check inline"><input type="checkbox" [(ngModel)]="partnerDraft.isActive" /><span>Active</span></label>
+      <label class="wide"><span>Notes (optional)</span><textarea [(ngModel)]="partnerDraft.notes" rows="2"></textarea></label>
+    </div>
+    <div class="drawer-actions">
+      <button class="secondary" (click)="closeAll()">Cancel</button>
+      <button class="primary" (click)="savePartner()" [disabled]="saving || !partnerDraft.displayName">
+        {{ saving ? 'Saving…' : 'Save partner' }}
+      </button>
+    </div>
+  </section>
+</div>
+
+<!-- ── Close a period ────────────────────────────────────── -->
+<div class="workspace-overlay" *ngIf="closeDraft" (click)="closeAll()">
+  <section class="workspace-drawer" (click)="$event.stopPropagation()">
+    <button class="drawer-close" (click)="closeAll()" title="Close">×</button>
+    <div class="panel-head">
+      <div><p class="eyebrow">PERIOD CONTROL</p><h2>Close a period</h2></div>
+    </div>
+    <p class="guidance">
+      Closing a period locks it so past figures cannot change. You can still record today's work. Reopening needs authorisation and the reason is recorded.
+    </p>
+    <div class="form-grid">
+      <label><span>From</span><input type="date" [(ngModel)]="closeDraft.periodStart" /></label>
+      <label><span>To</span><input type="date" [(ngModel)]="closeDraft.periodEnd" /></label>
+      <label class="wide"><span>Note (optional)</span><input type="text" [(ngModel)]="closeDraft.notes" placeholder="Season close" /></label>
+    </div>
+    <div class="drawer-actions">
+      <button class="secondary" (click)="closeAll()">Cancel</button>
+      <button class="primary" (click)="saveClosePeriod()" [disabled]="saving">{{ saving ? 'Closing…' : 'Close period' }}</button>
+    </div>
+  </section>
+</div>
+
+<!-- ── Move money between funds ──────────────────────────── -->
+<div class="workspace-overlay" *ngIf="transferDraft" (click)="closeAll()">
+  <section class="workspace-drawer" (click)="$event.stopPropagation()">
+    <button class="drawer-close" (click)="closeAll()" title="Close">×</button>
+    <div class="panel-head">
+      <div><p class="eyebrow">MONEY MOVED</p><h2>Move money between funds</h2>
+        <p>Nothing is spent here. The same money simply changes place — till to safe, safe to bank.</p></div>
+    </div>
+    <div class="form-grid">
+      <label>
+        <span>Leaves from</span>
+        <select [(ngModel)]="transferDraft.fromFundAccountId">
+          <option *ngFor="let fund of spendableFunds" [ngValue]="fund.id">{{ fund.name }} — {{ formatMoney(fund.balance) }}</option>
+        </select>
+      </label>
+      <label>
+        <span>Goes to</span>
+        <select [(ngModel)]="transferDraft.toFundAccountId">
+          <option *ngFor="let fund of spendableFunds" [ngValue]="fund.id" [disabled]="fund.id === transferDraft.fromFundAccountId">
+            {{ fund.name }} — {{ formatMoney(fund.balance) }}
+          </option>
+        </select>
+      </label>
+      <label><span>Amount</span><input type="number" min="0" step="0.01" [(ngModel)]="transferDraft.amount" placeholder="0.00" /></label>
+      <label><span>Reason</span><input type="text" [(ngModel)]="transferDraft.reason" placeholder="End of day drop to the safe" /></label>
+      <p class="guidance warn wide" *ngIf="transferShortfall">{{ transferFrom?.name }} holds only {{ formatMoney(transferFrom?.balance) }}.</p>
+    </div>
+    <div class="drawer-actions">
+      <button class="secondary" (click)="closeAll()">Cancel</button>
+      <button class="primary" (click)="saveTransfer()"
+        [disabled]="saving || !transferDraft.amount || !transferDraft.reason || !transferDraft.fromFundAccountId || !transferDraft.toFundAccountId || transferDraft.fromFundAccountId === transferDraft.toFundAccountId || transferShortfall">
+        {{ saving ? 'Moving…' : 'Move money' }}
+      </button>
+    </div>
+  </section>
+</div>
+
+<!-- ── Add or edit a fund ────────────────────────────────── -->
+<div class="workspace-overlay" *ngIf="fundDraft" (click)="closeAll()">
+  <section class="workspace-drawer" (click)="$event.stopPropagation()">
+    <button class="drawer-close" (click)="closeAll()" title="Close">×</button>
+    <div class="panel-head">
+      <div><p class="eyebrow">FUND ACCOUNT</p><h2>{{ fundDraft.id ? 'Edit fund' : 'Add a fund' }}</h2>
+        <p>Tills are created with their workstation. Add the other places your money sits.</p></div>
+    </div>
+    <div class="form-grid">
+      <label><span>Name</span><input type="text" [(ngModel)]="fundDraft.name" placeholder="Cash safe, BOC current account" /></label>
+      <label>
+        <span>Kind</span>
+        <select [(ngModel)]="fundDraft.fundKind">
+          <option value="cash_safe">Cash safe</option><option value="bank">Bank account</option><option value="stakeholder">Stakeholder pocket</option>
+        </select>
+      </label>
+      <p class="guidance wide" *ngIf="fundDraft.fundKind === 'stakeholder'">
+        Money here belongs to the partner, not the business. When it pays a business cost, the business owes them that amount. Adding the person under Partners creates their pocket automatically.
+      </p>
+      <label><span>Held by (optional)</span><input type="text" [(ngModel)]="fundDraft.holderName" placeholder="Partner or bank name" /></label>
+      <label><span>Account reference (optional)</span><input type="text" [(ngModel)]="fundDraft.accountReference" placeholder="Account number or branch" /></label>
+      <label *ngIf="!fundDraft.id">
+        <span>Opening balance</span>
+        <input type="number" min="0" step="0.01" [(ngModel)]="fundDraft.openingBalance" placeholder="0.00" />
+        <small>What is already in this fund today. Everything after this is recorded as it happens.</small>
+      </label>
+      <label class="check inline"><input type="checkbox" [(ngModel)]="fundDraft.isActive" /><span>Active</span></label>
+      <label class="wide"><span>Notes (optional)</span><textarea [(ngModel)]="fundDraft.notes" rows="2"></textarea></label>
+    </div>
+    <div class="drawer-actions">
+      <button class="secondary" (click)="closeAll()">Cancel</button>
+      <button class="primary" (click)="saveFund()" [disabled]="saving || !fundDraft.name">{{ saving ? 'Saving…' : 'Save fund' }}</button>
+    </div>
+  </section>
+</div>
+
+<!-- ── One fund's ledger ─────────────────────────────────── -->
+<div class="workspace-overlay" *ngIf="ledger" (click)="closeAll()">
+  <section class="workspace-drawer" (click)="$event.stopPropagation()">
+    <button class="drawer-close" (click)="closeAll()" title="Close">×</button>
+    <div class="panel-head">
+      <div><p class="eyebrow">{{ fundKindLabel(ledger.fund.fundKind).toUpperCase() }}</p><h2>{{ ledger.fund.name }}</h2>
+        <p>{{ fundBalanceHint(ledger.fund) }}</p></div>
+      <b class="ledger-balance" [class.negative]="ledger.fund.balance < 0">{{ formatMoney(ledger.fund.balance) }}</b>
+    </div>
+    <div class="ledger-list">
+      <div class="ledger-row" *ngFor="let movement of ledger.movements">
+        <span>
+          <strong>{{ movement.reason }}</strong>
+          <small>{{ formatDate(movement.date) }} · {{ movementLabel(movement.kind) }} · {{ movement.userName }}</small>
+        </span>
+        <b [class.credit]="movement.direction === 'in'" [class.debit]="movement.direction === 'out'">
+          {{ movement.direction === 'in' ? '+' : '−' }}{{ formatMoney(movement.amount) }}
+        </b>
+      </div>
+      <p class="empty" *ngIf="!ledger.movements.length">Nothing recorded in this fund for the selected dates.</p>
+    </div>
+  </section>
+</div>

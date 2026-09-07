@@ -18,6 +18,7 @@ import { SupplyReceivingComponent } from './supply-receiving/supply-receiving.co
 import { ReportsComponent } from './reports/reports.component';
 import { FieldTransactionInboxComponent } from './field-transaction-inbox/field-transaction-inbox.component';
 import { BusinessDayComponent } from './business-day/business-day.component';
+import { ExpensesComponent } from './expenses/expenses.component';
 import { AuthGuard } from './guards/auth.guard';
 
 export const routes: Routes = [
@@ -55,6 +56,7 @@ export const routes: Routes = [
   { path: 'customers', component: CustomerAccountsComponent, title: 'Customer Accounts', canActivate: [AuthGuard] },
   { path: 'cheques', component: ChequeRegisterComponent, title: 'Cheque Register', canActivate: [AuthGuard] },
   { path: 'receiving', component: SupplyReceivingComponent, title: 'Supplier Receiving', canActivate: [AuthGuard] },
+  { path: 'expenses', component: ExpensesComponent, title: 'Money', canActivate: [AuthGuard] },
   { path: 'reports', component: ReportsComponent, title: 'Reports', canActivate: [AuthGuard] },
   { path: 'field-inbox', component: FieldTransactionInboxComponent, title: 'Field Transaction Inbox', canActivate: [AuthGuard] },
   {

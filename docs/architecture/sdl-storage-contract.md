@@ -1,7 +1,16 @@
 # SDL Storage Contract
 
-Status: active rebuild contract
+Status: superseded historical contract
+Superseded: 2026-09-07
 Last validated against code: 2026-08-05
+
+> **AI development rule:** The SDL and plugin systems this document describes
+> were removed from the code by migrations 041, 042, and 057. The matching
+> source folders (`packages/core/sdl`, `packages/core/plugins`,
+> `packages/core/platform-config`, `packages/shared/expressions`, and the
+> Angular `configuration-studio` / `plugin-host` / `plugin-manager` folders)
+> are empty. Read this only as history. Build new behavior as explicit core
+> services, tables, permissions, and reports.
 
 SDL describes business fields, but it does not get unrestricted control of the
 database. Every segment has a storage intent that is compiled into the active

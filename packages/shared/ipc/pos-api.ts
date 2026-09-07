@@ -801,6 +801,275 @@ export type CustomerAdvanceSummary = {
   entries: Array<{ id: number; advanceReceiptId: number; advanceNumber: string; type: string; amount: number; reason: string; date: string; invoiceId: number | null; metadata: Record<string, unknown>; userName: string; createdAt: string }>;
 };
 
+export type FundKind = 'pos_drawer' | 'cash_safe' | 'bank' | 'stakeholder';
+
+/**
+ * A named place money sits. A `pos_drawer` fund mirrors a real till, so its
+ * balance is what the open shift holds; every other kind keeps its own ledger.
+ */
+export type FundAccount = {
+  id: number;
+  fundCode: string;
+  name: string;
+  fundKind: FundKind;
+  cashDrawerId: number | null;
+  locationCode: string;
+  currencyCode: string;
+  openingBalance: number;
+  holderName: string | null;
+  accountReference: string | null;
+  notes: string | null;
+  isActive: boolean;
+  sortOrder: number;
+  balance: number;
+  lastMovementAt: string | null;
+  metadata: Record<string, unknown>;
+};
+
+export type FundMovement = {
+  id: number;
+  direction: 'in' | 'out';
+  amount: number;
+  reason: string;
+  kind: string;
+  date: string;
+  userName: string;
+  createdAt: string;
+};
+
+export type ExpenseTreatment = 'lot_cost' | 'overhead' | 'supplier_deduction';
+
+export type ExpenseCategory = {
+  id: number;
+  categoryCode: string;
+  name: string;
+  defaultTreatment: ExpenseTreatment;
+  helpText: string | null;
+  isActive: boolean;
+  sortOrder: number;
+};
+
+export type ExpenseEntry = {
+  id: number;
+  expenseNumber: string;
+  date: string;
+  amount: number;
+  payee: string | null;
+  reference: string | null;
+  reason: string;
+  status: 'recorded' | 'void';
+  allocationTarget: 'none' | 'lot' | 'goods_receipt';
+  allocatedTotal: number;
+  unallocatedTotal: number;
+  goodsReceiptId: number | null;
+  grnNumber: string | null;
+  stakeholderName: string | null;
+  categoryId: number;
+  categoryName: string;
+  categoryTreatment: ExpenseTreatment;
+  fundAccountId: number;
+  fundName: string;
+  fundKind: FundKind;
+  locationCode: string;
+  machineCode: string;
+  userName: string;
+  createdAt: string;
+  metadata: Record<string, unknown>;
+};
+
+export type ExpenseRegister = {
+  rows: ExpenseEntry[];
+  total: number;
+  goodsTotal: number;
+  overheadTotal: number;
+  attachedTotal: number;
+  unattachedTotal: number;
+  byCategory: Array<{ id: number; name: string; treatment: ExpenseTreatment; entryCount: number; total: number }>;
+  byFund: Array<{ id: number; name: string; fundKind: FundKind; entryCount: number; total: number }>;
+};
+
+export type StakeholderMovementInput = {
+  stakeholderId: number;
+  fundAccountId: number;
+  amount: number;
+  reason: string;
+  userId: number;
+  overrideApprovedBy?: number | null;
+  overrideReason?: string;
+  origin: { locCode: string; macCode: string; txnDate: string };
+};
+
+export type StakeholderMovementResult = {
+  entryNumber: string; amount: number; stakeholderName: string;
+  fundName: string; claim: number; overrideUsed: boolean;
+};
+
+export type CostedLot = {
+  id: number;
+  lotCode: string;
+  grnNumber: string | null;
+  goodsReceiptId: number | null;
+  date: string;
+  productId: number;
+  productName: string;
+  sku: string;
+  supplierId: number;
+  supplierName: string;
+  ownershipModel: 'owned' | 'consignment';
+  receivedHandlingQuantity: number;
+  remainingHandlingQuantity: number;
+  receivedBaseQuantity: number | null;
+  handlingUom: string;
+  baseUom: string | null;
+  purchaseCostTotal: number;
+  allocatedCostTotal: number;
+  landedCostTotal: number;
+};
+
+export type AllocationBasis = 'direct' | 'base_quantity' | 'handling_quantity' | 'sale_value' | 'equal';
+
+/** One lot's real cost and what it actually made. */
+export type LotProfitRow = {
+  id: number;
+  lotCode: string;
+  grnNumber: string | null;
+  date: string;
+  productName: string;
+  sku: string;
+  supplierId: number;
+  supplierName: string;
+  ownershipModel: 'owned' | 'consignment';
+  handlingUom: string;
+  baseUom: string | null;
+  receivedHandlingQuantity: number;
+  receivedBaseQuantity: number | null;
+  remainingHandlingQuantity: number;
+  soldHandlingQuantity: number;
+  soldBaseQuantity: number;
+  saleValue: number;
+  purchaseCost: number;
+  allocatedCost: number;
+  supplierDue: number;
+  landedCostTotal: number;
+  landedCostPerHandling: number | null;
+  landedCostPerBase: number | null;
+  margin: number;
+  marginPercent: number | null;
+  fullySold: boolean;
+};
+
+export type LotProfitability = {
+  lots: LotProfitRow[];
+  totals: {
+    saleValue: number; purchaseCost: number; allocatedCost: number;
+    supplierDue: number; landedCostTotal: number; margin: number;
+  };
+};
+
+export type LotCostAllocation = {
+  id: number;
+  expenseEntryId: number;
+  expenseNumber: string;
+  categoryName: string;
+  payee: string | null;
+  documentType: 'expense' | 'reallocation';
+  basis: AllocationBasis;
+  basisValue: number | null;
+  amount: number;
+  reason: string;
+  date: string;
+  userName: string;
+};
+
+export type Stakeholder = {
+  id: number;
+  stakeholderCode: string;
+  displayName: string;
+  stakeholderType: 'owner' | 'partner' | 'investor';
+  fundAccountId: number | null;
+  fundName: string | null;
+  borneCostTreatment: 'capital' | 'liability';
+  locationCode: string;
+  mobile: string | null;
+  notes: string | null;
+  isActive: boolean;
+  sortOrder: number;
+  contributed: number;
+  borne: number;
+  profitShare: number;
+  drawn: number;
+  settled: number;
+  claim: number;
+  businessSharePercent: number | null;
+};
+
+export type StakeholderEntry = {
+  id: number;
+  entryNumber: string;
+  date: string;
+  entryType: 'capital_contribution' | 'expense_borne' | 'drawing' | 'profit_share_allocation' | 'settlement';
+  amount: number;
+  fundName: string | null;
+  lotCode: string | null;
+  reason: string;
+  overrideApprover: string | null;
+  overrideReason: string | null;
+  userName: string;
+};
+
+export type StakeholderShare = {
+  id: number;
+  stakeholderId: number;
+  stakeholderName: string;
+  scope: 'business' | 'lot';
+  inventoryLotId: number | null;
+  lotCode: string | null;
+  sharePercent: number;
+  effectiveFrom: string;
+  notes: string | null;
+};
+
+export type LedgerAccount = {
+  id: number;
+  accountCode: string;
+  name: string;
+  accountType: 'asset' | 'liability' | 'equity' | 'income' | 'expense';
+  normalBalance: 'debit' | 'credit';
+  description: string | null;
+};
+
+export type JournalEntry = {
+  id: number;
+  journalNumber: string;
+  date: string;
+  narration: string;
+  sourceType: string;
+  sourceId: string;
+  totalDebit: number;
+  totalCredit: number;
+  userName: string;
+  lines: Array<{
+    lineNo: number; accountCode: string; accountName: string;
+    accountType: string; debit: number; credit: number; memo: string | null;
+  }>;
+};
+
+export type TrialBalanceRow = {
+  accountCode: string; name: string; accountType: string;
+  normalBalance: 'debit' | 'credit'; debitTotal: number; creditTotal: number; balance: number;
+};
+
+export type TrialBalance = {
+  accounts: TrialBalanceRow[];
+  totalDebit: number; totalCredit: number; difference: number; inBalance: boolean;
+};
+
+export type AccountingPeriod = {
+  id: number; locationCode: string; periodStart: string; periodEnd: string;
+  status: 'open' | 'closed'; closedByName: string | null; closedAt: string | null;
+  reopenCount: number; notes: string | null;
+};
+
 export type InventoryLotCandidate = {
   id: number;
   lot_code: string;
@@ -1422,6 +1691,48 @@ export interface PosApi {
     summary: (customerAccountId: number, locCode: string, actor?: ActorContext | null) => Promise<IpcResult<CustomerAdvanceSummary>>;
     receive: (advance: { customerAccountId: number; sessionId: number; userId: number; reason: string; payments: PaymentLine[] }, actor?: ActorContext | null) => Promise<IpcResult<{ id: number; advanceNumber: string; amount: number; availableBalance: number }>>;
     refund: (refund: { customerAccountId: number; sessionId: number; userId: number; amount: number; method: string; providerRef?: string | null; reason: string }, actor?: ActorContext | null) => Promise<IpcResult<{ id: number; refundNumber: string; amount: number; availableBalance: number }>>;
+  };
+  funds: {
+    list: (locCode: string, includeInactive?: boolean, actor?: ActorContext | null) => Promise<IpcResult<FundAccount[]>>;
+    save: (fund: Partial<FundAccount> & { locCode: string }, actor?: ActorContext | null) => Promise<IpcResult<FundAccount>>;
+    ledger: (query: { fundAccountId: number; locCode: string; fromDate?: string; toDate?: string; limit?: number }, actor?: ActorContext | null) => Promise<IpcResult<{ fund: FundAccount; movements: FundMovement[] }>>;
+    transfer: (transfer: { fromFundAccountId: number; toFundAccountId: number; amount: number; reason: string; userId: number; origin: { locCode: string; macCode: string; txnDate: string } }, actor?: ActorContext | null) => Promise<IpcResult<{ transferNumber: string; amount: number; fromFund: string; toFund: string; fromBalance: number; toBalance: number }>>;
+  };
+  expenses: {
+    categories: (includeInactive?: boolean, actor?: ActorContext | null) => Promise<IpcResult<ExpenseCategory[]>>;
+    saveCategory: (category: Partial<ExpenseCategory>, actor?: ActorContext | null) => Promise<IpcResult<ExpenseCategory>>;
+    list: (filters: { locCode: string; fromDate?: string; toDate?: string; categoryId?: number; fundAccountId?: number; term?: string; unallocatedOnly?: boolean; limit?: number }, actor?: ActorContext | null) => Promise<IpcResult<ExpenseRegister>>;
+    create: (expense: { expenseCategoryId: number; fundAccountId: number; amount: number; reason: string; payee?: string; reference?: string; userId: number; origin: { locCode: string; macCode: string; txnDate: string } }, actor?: ActorContext | null) => Promise<IpcResult<{ id: number; expenseNumber: string; amount: number; categoryName: string; categoryTreatment: ExpenseTreatment; fundName: string; fundBalance: number; stakeholderName: string | null; stakeholderEntryNumber: string | null }>>;
+  };
+  lotCosting: {
+    lots: (filters: { locCode: string; term?: string; goodsReceiptId?: number; supplierId?: number; fromDate?: string; toDate?: string; limit?: number }, actor?: ActorContext | null) => Promise<IpcResult<CostedLot[]>>;
+    profitability: (filters: { locCode: string; fromDate?: string; toDate?: string; supplierId?: number; goodsReceiptId?: number; ownershipModel?: string; term?: string; limit?: number }, actor?: ActorContext | null) => Promise<IpcResult<LotProfitability>>;
+    lotDetail: (query: { inventoryLotId: number; locCode: string }, actor?: ActorContext | null) => Promise<IpcResult<{ lot: CostedLot; allocations: LotCostAllocation[] }>>;
+    reconcile: (locCode: string, actor?: ActorContext | null) => Promise<IpcResult<{ checked: number; drifted: number; lots: Array<{ id: number; lotCode: string; storedLandedCost: number; expectedLandedCost: number }> }>>;
+    allocate: (allocation: { expenseEntryId: number; inventoryLotId?: number | null; goodsReceiptId?: number | null; basis?: AllocationBasis; amount?: number | null; reason?: string; userId: number; origin: { locCode: string; macCode: string; txnDate: string } }, actor?: ActorContext | null) => Promise<IpcResult<{ expenseNumber: string; allocatedTotal: number; unallocatedTotal: number; basis: AllocationBasis; allocations: Array<{ lotId: number; lotCode: string; amount: number }>; lots: CostedLot[] }>>;
+    reallocate: (reallocation: { expenseEntryId: number; fromInventoryLotId: number; toInventoryLotId: number; amount: number; reason: string; userId: number; origin: { locCode: string; macCode: string; txnDate: string } }, actor?: ActorContext | null) => Promise<IpcResult<{ reallocationNumber: string; amount: number; lots: CostedLot[] }>>;
+  };
+  stakeholders: {
+    list: (locCode: string, includeInactive?: boolean, actor?: ActorContext | null) => Promise<IpcResult<Stakeholder[]>>;
+    save: (stakeholder: Partial<Stakeholder> & { locCode: string }, actor?: ActorContext | null) => Promise<IpcResult<Stakeholder>>;
+    statement: (query: { stakeholderId: number; locCode: string; fromDate?: string; toDate?: string; limit?: number }, actor?: ActorContext | null) => Promise<IpcResult<{ stakeholder: Stakeholder; entries: StakeholderEntry[] }>>;
+    shares: (query: { stakeholderId?: number; inventoryLotId?: number }, actor?: ActorContext | null) => Promise<IpcResult<StakeholderShare[]>>;
+    saveShare: (share: { stakeholderId: number; scope: 'business' | 'lot'; inventoryLotId?: number | null; sharePercent: number; effectiveFrom: string; notes?: string; userId: number }, actor?: ActorContext | null) => Promise<IpcResult<StakeholderShare[]>>;
+    contribute: (entry: StakeholderMovementInput, actor?: ActorContext | null) => Promise<IpcResult<StakeholderMovementResult>>;
+    draw: (entry: StakeholderMovementInput, actor?: ActorContext | null) => Promise<IpcResult<StakeholderMovementResult>>;
+    settle: (entry: StakeholderMovementInput, actor?: ActorContext | null) => Promise<IpcResult<StakeholderMovementResult>>;
+    profitShare: (entry: { stakeholderId: number; amount: number; inventoryLotId?: number | null; reason: string; userId: number; origin: { locCode: string; macCode: string; txnDate: string } }, actor?: ActorContext | null) => Promise<IpcResult<{ entryNumber: string; amount: number; stakeholderName: string; claim: number }>>;
+    reconcile: (locCode: string, actor?: ActorContext | null) => Promise<IpcResult<{ ledgerTotal: number; journalTotal: number; difference: number; inBalance: boolean }>>;
+  };
+  accounting: {
+    accounts: (actor?: ActorContext | null) => Promise<IpcResult<LedgerAccount[]>>;
+    journal: (filters: { locCode: string; fromDate?: string; toDate?: string; limit?: number }, actor?: ActorContext | null) => Promise<IpcResult<JournalEntry[]>>;
+    trialBalance: (filters: { locCode: string; fromDate?: string; toDate?: string }, actor?: ActorContext | null) => Promise<IpcResult<TrialBalance>>;
+    profitAndLoss: (filters: { locCode: string; fromDate?: string; toDate?: string }, actor?: ActorContext | null) => Promise<IpcResult<{ income: TrialBalanceRow[]; expenses: TrialBalanceRow[]; incomeTotal: number; expenseTotal: number; netResult: number; coversCostsOnly: boolean }>>;
+    balanceSheet: (filters: { locCode: string; fromDate?: string; toDate?: string }, actor?: ActorContext | null) => Promise<IpcResult<{ assets: TrialBalanceRow[]; liabilities: TrialBalanceRow[]; equity: TrialBalanceRow[]; assetTotal: number; liabilityTotal: number; equityTotal: number; retainedResult: number; difference: number; inBalance: boolean }>>;
+    periods: (locCode: string, actor?: ActorContext | null) => Promise<IpcResult<AccountingPeriod[]>>;
+    closePeriod: (period: { locCode: string; periodStart: string; periodEnd: string; userId: number; notes?: string }, actor?: ActorContext | null) => Promise<IpcResult<{ id: number; periodStart: string; periodEnd: string; status: string }>>;
+    reopenPeriod: (period: { periodId: number; userId: number; reason: string }, actor?: ActorContext | null) => Promise<IpcResult<{ id: number; status: string; reopenCount: number }>>;
   };
   pattiyals: {
     list: (filters: Record<string, unknown>, actor?: ActorContext | null) => Promise<IpcResult<{ rows: Array<Record<string, any>>; total: number; page: number; pageSize: number }>>;
