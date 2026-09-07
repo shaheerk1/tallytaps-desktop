@@ -374,6 +374,8 @@
 .pm-mode-name { font-weight: 600; font-size: 0.9rem; flex: 1; }
 .pm-mode-name small { display:block; margin-top:2px; color:var(--ui-ink-muted); font-size:10px; font-weight:650; }
 .pm-advance-note { display:grid; gap:3px; padding:9px 10px; border:1px solid #b9d9c5; border-radius:var(--ui-radius-sm); background:#f1faf5; color:var(--ui-success); font-size:11px; }
+.pm-fund-destination { display:grid; gap:4px; padding:9px 10px; border:1px solid var(--ui-border); border-radius:var(--ui-radius-sm); background:var(--ui-warm-surface); color:var(--ui-ink-muted); font-size:11px; }
+.pm-fund-destination select { width:100%; min-height:36px; }
 .pm-advance-note span { color:var(--ui-ink-muted); }
 .pm-mode-tag {
   display: inline-block; font-size: 0.6rem; font-weight: 700; text-transform: uppercase;

@@ -539,7 +539,7 @@ function createPartyRepository({ database, businessDayRepository }) {
     });
   }
 
-  async function updateChequeStatus({ chequeId, status, reason = '', depositedTo = '', userId = null, origin: originValue }) {
+  async function updateChequeStatus({ chequeId, status, reason = '', depositedTo = '', depositedFundAccountId = null, userId = null, origin: originValue }) {
     const origin = requireOrigin(originValue);
     if (!origin.txnDate) throw new Error('The current business date is required.');
     const transitions = {
@@ -561,6 +561,18 @@ function createPartyRepository({ database, businessDayRepository }) {
         const nextStatus = String(status || '').toLowerCase();
         if (!transitions[cheque.status]?.has(nextStatus)) {
           throw new Error(`Cheque cannot move from ${cheque.status} to ${nextStatus}.`);
+        }
+        let depositFund = null;
+        const requestedFundId = Number(depositedFundAccountId || cheque.deposited_fund_account_id || 0);
+        if (['deposited', 'cleared'].includes(nextStatus)) {
+          if (!requestedFundId) throw new Error('Choose the business bank account receiving this cheque.');
+          const [fundRows] = await connection.execute(
+            `SELECT id, name FROM fund_accounts
+             WHERE id = ? AND loc_code = ? AND fund_kind = 'bank' AND is_active = 1 FOR UPDATE`,
+            [requestedFundId, origin.locCode]
+          );
+          if (!fundRows.length) throw new Error('Choose an active business bank account for this location.');
+          depositFund = fundRows[0];
         }
         const businessDay = businessDayRepository
           ? await businessDayRepository.assertOpenWithConnection(connection, { locationCode: origin.locCode, businessDate: origin.txnDate })
@@ -596,13 +608,15 @@ function createPartyRepository({ database, businessDayRepository }) {
           }
         }
         await connection.execute(
-          `UPDATE cheques SET status = ?, deposited_to = CASE WHEN ? = 'deposited' THEN ? ELSE deposited_to END,
+          `UPDATE cheques SET status = ?, deposited_to = CASE WHEN ? IN ('deposited','cleared') THEN ? ELSE deposited_to END,
+             deposited_fund_account_id = CASE WHEN ? IN ('deposited','cleared') THEN ? ELSE deposited_fund_account_id END,
              deposited_at = CASE WHEN ? = 'deposited' THEN NOW() ELSE deposited_at END,
              cleared_at = CASE WHEN ? = 'cleared' THEN NOW() ELSE cleared_at END,
              closed_at = CASE WHEN ? IN ('dishonoured','returned','cancelled','replaced') THEN NOW() ELSE closed_at END,
              dishonour_reason = CASE WHEN ? = 'dishonoured' THEN ? ELSE dishonour_reason END
            WHERE id = ?`,
-          [nextStatus, nextStatus, text(depositedTo, 160), nextStatus, nextStatus, nextStatus, nextStatus, text(reason, 255), chequeId]
+          [nextStatus, nextStatus, depositFund?.name || text(depositedTo, 160), nextStatus, depositFund?.id || null,
+            nextStatus, nextStatus, nextStatus, nextStatus, text(reason, 255), chequeId]
         );
         const [eventNos] = await connection.execute(`SELECT COALESCE(MAX(event_no), 0) AS max_no FROM cheque_status_events WHERE cheque_id = ? FOR UPDATE`, [chequeId]);
         await connection.execute(
@@ -610,7 +624,10 @@ function createPartyRepository({ database, businessDayRepository }) {
              (cheque_id, event_no, loc_code, mac_code, txn_date, from_status, to_status, reason, details, changed_by)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), ?)`,
           [chequeId, Number(eventNos[0]?.max_no || 0) + 1, origin.locCode, origin.macCode, origin.txnDate,
-            cheque.status, nextStatus, text(reason, 255), JSON.stringify({ depositedTo: text(depositedTo, 160) }), userId]
+            cheque.status, nextStatus, text(reason, 255), JSON.stringify({
+              depositedTo: depositFund?.name || text(depositedTo, 160),
+              depositedFundAccountId: depositFund?.id || null
+            }), userId]
         );
         await connection.commit();
         return getCheque(chequeId);

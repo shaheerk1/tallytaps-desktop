@@ -10,6 +10,8 @@
  * so the parts always add back to the whole to the cent. A bill of 100.00 over
  * three equal lots becomes 33.34 + 33.33 + 33.33, never 33.33 x 3 = 99.99.
  */
+const rules = require('../../core/accounting/posting-rules');
+
 function createLotCostingRepository({ database, documentSequenceRepository, businessDayRepository, journalRepository }) {
   if (!database) throw new Error('Lot costing repository requires a database instance.');
   if (!documentSequenceRepository || !businessDayRepository) {
@@ -85,6 +87,93 @@ function createLotCostingRepository({ database, documentSequenceRepository, busi
     );
   }
 
+  /**
+   * Rebuild the cost already consumed by sales for each lot and post only the
+   * difference from the last run.  This is deliberately rerunnable: a lorry or
+   * repacking bill may arrive after some or all of the lot has sold.
+   */
+  async function recognizeSoldCostWithConnection(connection, { lotIds, day, origin, userId }) {
+    const ids = [...new Set((lotIds || []).map(Number).filter(Boolean))];
+    if (!ids.length) return [];
+    const [lots] = await connection.query(
+      `SELECT l.id, l.lot_code, l.ownership_model, l.received_handling_quantity,
+              l.received_base_quantity, l.purchase_cost_total, l.allocated_cost_total,
+              COALESCE(s.sold_handling, 0) AS sold_handling,
+              COALESCE(s.sold_base, 0) AS sold_base
+       FROM inventory_lots l
+       LEFT JOIN (
+         SELECT inventory_lot_id,
+                SUM(CASE WHEN document_type = 'refund' THEN -handling_quantity ELSE handling_quantity END) AS sold_handling,
+                SUM(CASE WHEN document_type = 'refund' THEN -COALESCE(base_quantity, 0) ELSE COALESCE(base_quantity, 0) END) AS sold_base
+         FROM lot_sale_allocations GROUP BY inventory_lot_id
+       ) s ON s.inventory_lot_id = l.id
+       WHERE l.id IN (?) ORDER BY l.id FOR UPDATE`, [ids]
+    );
+    const changed = [];
+    for (const lot of lots) {
+      const receivedBase = Number(lot.received_base_quantity || 0);
+      const receivedHandling = Number(lot.received_handling_quantity || 0);
+      const soldBase = Math.max(0, Number(lot.sold_base || 0));
+      const soldHandling = Math.max(0, Number(lot.sold_handling || 0));
+      const ratio = receivedBase > 0
+        ? Math.min(1, soldBase / receivedBase)
+        : receivedHandling > 0 ? Math.min(1, soldHandling / receivedHandling) : 0;
+      const costPool = lot.ownership_model === 'consignment'
+        ? money(lot.allocated_cost_total)
+        : money(Number(lot.purchase_cost_total || 0) + Number(lot.allocated_cost_total || 0));
+      const target = money(costPool * ratio);
+      const [states] = await connection.execute(
+        'SELECT * FROM lot_cost_recognition_state WHERE inventory_lot_id = ? FOR UPDATE', [lot.id]
+      );
+      const previous = money(states[0]?.recognized_cost || 0);
+      const delta = money(target - previous);
+      if (Math.abs(delta) <= 0.005) continue;
+      const version = Number(states[0]?.recognition_version || 0) + 1;
+      const reason = `Recognized sold cost for ${lot.lot_code} (${Math.round(ratio * 10000) / 100}% sold)`;
+      const journal = await journalRepository.postWithConnection(connection, {
+        businessDayId: day.id, ...origin,
+        documentType: 'lot_cost_recognition', documentNo: Number(lot.id),
+        sourceType: 'lot_cost_recognition', sourceId: `${lot.id}:${version}`,
+        posting: rules.lotCostRecognitionPosting({
+          lot: { id: Number(lot.id), ownershipModel: lot.ownership_model }, delta, reason
+        }),
+        userId,
+        metadata: { lotCode: lot.lot_code, previous, target, ratio, version }
+      });
+      await connection.execute(
+        `INSERT INTO lot_cost_recognition_state
+           (inventory_lot_id, recognized_cost, recognition_version, last_journal_entry_id)
+         VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE recognized_cost = VALUES(recognized_cost),
+           recognition_version = VALUES(recognition_version), last_journal_entry_id = VALUES(last_journal_entry_id)`,
+        [lot.id, target, version, journal.id]
+      );
+      changed.push({ lotId: Number(lot.id), lotCode: lot.lot_code, previous, target, delta, ratio });
+    }
+    return changed;
+  }
+
+  async function reconcileRecognizedCosts({ locCode, macCode, txnDate, userId, lotIds = null }) {
+    const origin = { locCode: text(locCode), macCode: text(macCode), txnDate: dateOnly(txnDate) };
+    return database.withConnection(async (connection) => {
+      await connection.beginTransaction();
+      try {
+        const day = await businessDayRepository.assertOpenWithConnection(connection, {
+          locationCode: origin.locCode, businessDate: origin.txnDate
+        });
+        let ids = (lotIds || []).map(Number).filter(Boolean);
+        if (!ids.length) {
+          const [rows] = await connection.execute('SELECT id FROM inventory_lots WHERE loc_code = ? ORDER BY id', [origin.locCode]);
+          ids = rows.map((row) => Number(row.id));
+        }
+        await recomputeLotCostsWithConnection(connection, ids);
+        const changed = await recognizeSoldCostWithConnection(connection, { lotIds: ids, day, origin, userId });
+        await connection.commit();
+        return { checked: ids.length, changed: changed.length, lots: changed };
+      } catch (error) { await connection.rollback(); throw error; }
+    });
+  }
+
   async function refreshExpenseProjection(connection, expenseEntryId, target, goodsReceiptId) {
     const [rows] = await connection.execute(
       'SELECT COALESCE(SUM(amount), 0) AS allocated FROM expense_allocations WHERE expense_entry_id = ?',
@@ -120,18 +209,22 @@ function createLotCostingRepository({ database, documentSequenceRepository, busi
       baseUom: row.base_uom_snapshot,
       purchaseCostTotal: money(row.purchase_cost_total),
       allocatedCostTotal: money(row.allocated_cost_total),
-      landedCostTotal: money(row.landed_cost_total)
+      landedCostTotal: money(row.landed_cost_total),
+      recognizedCost: money(row.recognized_cost),
+      remainingCost: money(Math.max(0, money(row.landed_cost_total) - money(row.recognized_cost)))
     };
   }
 
   const LOT_SELECT = `
     SELECT l.*, p.name AS product_name, p.sku, s.name AS supplier_name,
+           COALESCE(rc.recognized_cost, 0) AS recognized_cost,
            g.grn_number, g.id AS goods_receipt_id
     FROM inventory_lots l
     JOIN products p ON p.id = l.product_id
     JOIN suppliers s ON s.id = l.supplier_id
     JOIN goods_receipt_lines gl ON gl.id = l.goods_receipt_line_id
-    JOIN goods_receipts g ON g.id = gl.goods_receipt_id`;
+    JOIN goods_receipts g ON g.id = gl.goods_receipt_id
+    LEFT JOIN lot_cost_recognition_state rc ON rc.inventory_lot_id = l.id`;
 
   async function listLots(filters = {}) {
     return database.withConnection(async (connection) => {
@@ -188,7 +281,7 @@ function createLotCostingRepository({ database, documentSequenceRepository, busi
       await connection.beginTransaction();
       try {
         const [expenses] = await connection.execute(
-          `SELECT e.*, c.name AS category_name, c.default_treatment, c.id AS category_id
+          `SELECT e.*, c.name AS category_name, e.treatment_snapshot AS default_treatment, c.id AS category_id
            FROM expense_entries e JOIN expense_categories c ON c.id = e.expense_category_id
            WHERE e.id = ? FOR UPDATE`, [Number(input.expenseEntryId)]
         );
@@ -196,6 +289,7 @@ function createLotCostingRepository({ database, documentSequenceRepository, busi
         if (!expense) throw new Error('This expense no longer exists.');
         if (expense.status !== 'recorded') throw new Error('A voided expense cannot be attached to goods.');
         if (expense.loc_code !== origin.locCode) throw new Error('This expense belongs to another location.');
+        if (expense.default_treatment !== 'lot_cost') throw new Error('Only a goods-related cost can be attached to a stock lot.');
 
         const basis = text(input.basis) || (input.inventoryLotId ? 'direct' : 'base_quantity');
         if (!BASES.includes(basis)) throw new Error('Choose how the cost should be divided.');
@@ -252,7 +346,7 @@ function createLotCostingRepository({ database, documentSequenceRepository, busi
             posting: require('../../core/accounting/posting-rules').allocationPosting({
               allocation: { amount: share, reason },
               category: { id: expense.category_id, name: expense.category_name, defaultTreatment: expense.default_treatment },
-              lot: { id: Number(lot.id), lotCode: lot.lot_code }
+              lot: { id: Number(lot.id), lotCode: lot.lot_code, ownershipModel: lot.ownership_model }
             }),
             userId: input.userId,
             metadata: { expenseNumber: expense.expense_number, lotCode: lot.lot_code }
@@ -261,6 +355,9 @@ function createLotCostingRepository({ database, documentSequenceRepository, busi
         }
 
         await recomputeLotCostsWithConnection(connection, lots.map((lot) => lot.id));
+        await recognizeSoldCostWithConnection(connection, {
+          lotIds: lots.map((lot) => lot.id), day, origin, userId: input.userId
+        });
         const allocated = await refreshExpenseProjection(connection, expense.id, target, goodsReceiptId);
         await connection.commit();
 
@@ -299,12 +396,13 @@ function createLotCostingRepository({ database, documentSequenceRepository, busi
         if (fromLotId === toLotId) throw new Error('Choose two different lots.');
 
         const [expenses] = await connection.execute(
-          `SELECT e.*, c.name AS category_name, c.default_treatment, c.id AS category_id
+          `SELECT e.*, c.name AS category_name, e.treatment_snapshot AS default_treatment, c.id AS category_id
            FROM expense_entries e JOIN expense_categories c ON c.id = e.expense_category_id
            WHERE e.id = ? FOR UPDATE`, [Number(input.expenseEntryId)]
         );
         const expense = expenses[0];
         if (!expense) throw new Error('This expense no longer exists.');
+        if (expense.default_treatment !== 'lot_cost') throw new Error('Only a goods-related cost can be moved between stock lots.');
 
         const [held] = await connection.execute(
           `SELECT COALESCE(SUM(amount), 0) AS total FROM expense_allocations
@@ -353,7 +451,7 @@ function createLotCostingRepository({ database, documentSequenceRepository, busi
             posting: rules.allocationPosting({
               allocation: { amount: side.amount, reason },
               category,
-              lot: { id: Number(side.lot.id), lotCode: side.lot.lot_code }
+              lot: { id: Number(side.lot.id), lotCode: side.lot.lot_code, ownershipModel: side.lot.ownership_model }
             }),
             userId: input.userId,
             metadata: { reallocationNumber, lotCode: side.lot.lot_code }
@@ -371,6 +469,9 @@ function createLotCostingRepository({ database, documentSequenceRepository, busi
         );
 
         await recomputeLotCostsWithConnection(connection, [fromLotId, toLotId]);
+        await recognizeSoldCostWithConnection(connection, {
+          lotIds: [fromLotId, toLotId], day, origin, userId: input.userId
+        });
         await refreshExpenseProjection(connection, expense.id, expense.allocation_target === 'none' ? 'lot' : expense.allocation_target, expense.goods_receipt_id);
         await connection.commit();
 
@@ -411,7 +512,8 @@ function createLotCostingRepository({ database, documentSequenceRepository, busi
                 COALESCE(sales.sale_value, 0) AS sale_value,
                 COALESCE(sales.sold_handling, 0) AS sold_handling,
                 COALESCE(sales.sold_base, 0) AS sold_base,
-                COALESCE(accrual.supplier_due, 0) AS supplier_due
+                COALESCE(accrual.supplier_due, 0) AS supplier_due,
+                COALESCE(recognized.recognized_cost, 0) AS recognized_cost
          FROM inventory_lots l
          JOIN products p ON p.id = l.product_id
          JOIN suppliers s ON s.id = l.supplier_id
@@ -430,6 +532,7 @@ function createLotCostingRepository({ database, documentSequenceRepository, busi
            WHERE entry_type = 'consignment_accrual' AND inventory_lot_id IS NOT NULL
            GROUP BY inventory_lot_id
          ) accrual ON accrual.inventory_lot_id = l.id
+         LEFT JOIN lot_cost_recognition_state recognized ON recognized.inventory_lot_id = l.id
          WHERE ${clauses.join(' AND ')}
          ORDER BY l.txn_date DESC, l.id DESC LIMIT ${limit}`, params
       );
@@ -440,12 +543,13 @@ function createLotCostingRepository({ database, documentSequenceRepository, busi
         const purchaseCost = money(row.purchase_cost_total);
         const allocatedCost = money(row.allocated_cost_total);
         const supplierDue = money(row.supplier_due);
+        const recognizedCost = money(row.recognized_cost);
         // Owned: the shop bought the goods, so their cost is the shop's.
         // Consignment: the shop never bought them; what it owes the supplier is
         // the accrual, and its earning is what is left after its own costs.
         const margin = owned
-          ? money(saleValue - purchaseCost - allocatedCost)
-          : money(saleValue - supplierDue - allocatedCost);
+          ? money(saleValue - recognizedCost)
+          : money(saleValue - supplierDue - recognizedCost);
         const receivedHandling = Number(row.received_handling_quantity || 0);
         const receivedBase = row.received_base_quantity == null ? null : Number(row.received_base_quantity);
         const landed = money(row.landed_cost_total);
@@ -469,6 +573,8 @@ function createLotCostingRepository({ database, documentSequenceRepository, busi
           saleValue,
           purchaseCost,
           allocatedCost,
+          recognizedCost,
+          remainingCost: money(Math.max(0, landed - recognizedCost)),
           supplierDue,
           landedCostTotal: landed,
           // What one bag, or one kilo, actually cost once every attached cost
@@ -478,6 +584,8 @@ function createLotCostingRepository({ database, documentSequenceRepository, busi
           margin,
           marginPercent: saleValue > 0 ? Math.round((margin / saleValue) * 1000) / 10 : null,
           fullySold: Number(row.remaining_handling_quantity || 0) <= 0.0005
+            && (receivedBase == null || Number(row.received_base_quantity || 0) <= 0
+              || Number(row.received_base_quantity || 0) - Number(row.sold_base || 0) <= 0.0005)
         };
       });
 
@@ -490,6 +598,8 @@ function createLotCostingRepository({ database, documentSequenceRepository, busi
           allocatedCost: sum('allocatedCost'),
           supplierDue: sum('supplierDue'),
           landedCostTotal: sum('landedCostTotal'),
+          recognizedCost: sum('recognizedCost'),
+          remainingCost: sum('remainingCost'),
           margin: sum('margin')
         }
       };
@@ -570,6 +680,8 @@ function createLotCostingRepository({ database, documentSequenceRepository, busi
     getLotProfitability,
     getLotCostDetail,
     reconcileLandedCost,
+    reconcileRecognizedCosts,
+    recognizeSoldCostWithConnection,
     recomputeLotCostsWithConnection,
     splitAmount
   };

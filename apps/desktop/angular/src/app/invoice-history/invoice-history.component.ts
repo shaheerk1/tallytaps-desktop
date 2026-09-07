@@ -2,7 +2,7 @@ import { Component, OnInit } from '@angular/core';
 import { SessionService } from '../services/session.service';
 import { PrintingService } from '../services/printing.service';
 import { ItemMeasureSummary, itemMeasureSummaryText, summarizeItemMeasures } from '../services/item-measure-summary';
-import type { InvoiceArchive, PaymentMode, PrintDocument, PrintTextLine } from '../../../../../../packages/shared/ipc/pos-api';
+import type { FundAccount, InvoiceArchive, PaymentMode, PrintDocument, PrintTextLine } from '../../../../../../packages/shared/ipc/pos-api';
 
 type InvoiceRow = Pick<InvoiceArchive, 'id' | 'invoice_number' | 'loc_code' | 'mac_code' | 'receipt_no' | 'txn_date' | 'status' | 'subtotal' | 'grandTotal' | 'paidTotal' | 'balance' | 'customer_code'>;
 
@@ -11,6 +11,7 @@ export class InvoiceHistoryComponent implements OnInit {
   term = ''; customerCode = ''; locCode = ''; macCode = ''; txnDate = '';
   rows: InvoiceRow[] = []; invoice: any = null;
   paymentModes: PaymentMode[] = []; collectionAmount = 0; collectionMethod = 'cash'; collecting = false;
+  settlementFunds: FundAccount[] = []; collectionFundAccountId: number | null = null;
   advanceAvailable = 0; advanceBalanceLoading = false;
   error = ''; info = ''; loading = false;
   accountTerm = ''; accountMatches: any[] = []; assignmentReason = ''; assigningCustomer = false;
@@ -22,7 +23,17 @@ export class InvoiceHistoryComponent implements OnInit {
   async ngOnInit(): Promise<void> {
     const ws = this.session.getWorkstationSession();
     this.locCode = ws?.locationCode || ''; this.macCode = ws?.machineCode || ''; this.txnDate = ws?.billingDate || '';
-    await Promise.all([this.search(), this.loadReceiptContext(), this.loadPaymentModes()]);
+    await Promise.all([this.search(), this.loadReceiptContext(), this.loadPaymentModes(), this.loadSettlementFunds()]);
+  }
+
+  async loadSettlementFunds(): Promise<void> {
+    if (!window.posApi || !this.locCode) return;
+    const result = await window.posApi.funds.list(this.locCode, false, this.actor());
+    this.settlementFunds = result.success
+      ? (result.data || []).filter((fund) => fund.fundKind === 'bank' || fund.fundKind === 'cash_safe')
+      : [];
+    this.collectionFundAccountId = this.settlementFunds.find((fund) => fund.fundKind === 'bank')?.id
+      || this.settlementFunds[0]?.id || null;
   }
 
   async loadPaymentModes(): Promise<void> {
@@ -90,6 +101,7 @@ export class InvoiceHistoryComponent implements OnInit {
   onCollectionMethodChange(): void {
     if (this.collectionAmount > this.maxCollectionAmount) this.collectionAmount = this.maxCollectionAmount;
   }
+  get collectionNeedsFund(): boolean { return !['cash', 'cheque', 'advance'].includes(this.collectionMethod); }
 
   async collectBalance(): Promise<void> {
     if (!window.posApi || !this.invoice || this.collecting) return;
@@ -108,7 +120,7 @@ export class InvoiceHistoryComponent implements OnInit {
         invoiceId: this.invoice.id,
         sessionId: workstation.sessionId,
         userId: user.id,
-        payments: [{ method: this.collectionMethod, amount: Number(this.collectionAmount) }]
+        payments: [{ method: this.collectionMethod, amount: Number(this.collectionAmount), fundAccountId: this.collectionNeedsFund ? this.collectionFundAccountId : null }]
       }, this.actor());
       if (!result.success) throw new Error(result.error || 'Could not collect the outstanding balance.');
       this.info = this.collectionMethod === 'advance'

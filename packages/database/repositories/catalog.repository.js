@@ -973,7 +973,7 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
     });
   }
 
-  async function recordSupplierPayment({ settlementId, method, amount, reference = null, chequeDetails = null, businessDate, locCode, macCode, txnDate, sessionId = null, userId = null }) {
+  async function recordSupplierPayment({ settlementId, method, fundAccountId = null, amount, reference = null, chequeDetails = null, businessDate, locCode, macCode, txnDate, sessionId = null, userId = null }) {
     const paid = Math.round(Number(amount || 0) * 100) / 100;
     if (!settlementId || !method || !businessDate || !Number.isFinite(paid) || paid <= 0) throw new Error('Settlement, payment method, business date, and positive amount are required.');
     return database.withConnection(async (connection) => {
@@ -993,6 +993,14 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
         const settlement = rows[0];
         const remaining = Math.round((Number(settlement.total_due) - Number(settlement.paid_total)) * 100) / 100;
         if (paid > remaining + 0.005) throw new Error(`Supplier payment exceeds settlement balance (${remaining.toFixed(2)}).`);
+        if (method === 'bank') {
+          const [funds] = await connection.execute(
+            `SELECT id FROM fund_accounts
+             WHERE id = ? AND loc_code = ? AND fund_kind = 'bank' AND is_active = 1 FOR UPDATE`,
+            [Number(fundAccountId) || 0, locCode]
+          );
+          if (!funds.length) throw new Error('Choose the business bank account paying this supplier.');
+        }
         let cashShiftId = null;
         if (method === 'cash') {
           const [shifts] = await connection.execute(
@@ -1010,9 +1018,10 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
         });
         const [payment] = await connection.execute(
           `INSERT INTO supplier_payments
-             (business_day_id, supplier_settlement_id, loc_code, mac_code, txn_date, payment_no, method, amount, reference, cash_shift_id, paid_by)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [businessDay.id, settlementId, locCode, macCode, paymentDate, paymentNo, method, paid, reference || null, cashShiftId, userId || null]
+             (business_day_id, supplier_settlement_id, loc_code, mac_code, txn_date, payment_no, method, fund_account_id, amount, reference, cash_shift_id, paid_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [businessDay.id, settlementId, locCode, macCode, paymentDate, paymentNo, method, Number(fundAccountId) || null,
+            paid, reference || null, cashShiftId, userId || null]
         );
         let issuedChequeId = null;
         if (method === 'cheque') {

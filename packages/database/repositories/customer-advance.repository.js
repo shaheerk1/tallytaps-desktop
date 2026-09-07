@@ -137,9 +137,10 @@ function createCustomerAdvanceRepository({ database, documentSequenceRepository,
           paymentNo += 1;
           await connection.execute(
             `INSERT INTO customer_advance_payments
-               (advance_receipt_id, payment_no, method, amount, provider_ref, details)
-             VALUES (?, ?, ?, ?, ?, CAST(? AS JSON))`,
-            [result.insertId, paymentNo, payment.method, money(payment.amount), payment.providerRef || null, JSON.stringify(payment.details || {})]
+               (advance_receipt_id, payment_no, method, fund_account_id, amount, provider_ref, details)
+             VALUES (?, ?, ?, ?, ?, ?, CAST(? AS JSON))`,
+            [result.insertId, paymentNo, payment.method, Number(payment.fundAccountId) || null,
+              money(payment.amount), payment.providerRef || null, JSON.stringify(payment.details || {})]
           );
         }
         await connection.execute(
@@ -284,7 +285,7 @@ function createCustomerAdvanceRepository({ database, documentSequenceRepository,
     }
   }
 
-  async function refundUnused({ customerAccountId, locCode, macCode, txnDate, cashShiftId, userId, amount, method, providerRef, reason }) {
+  async function refundUnused({ customerAccountId, locCode, macCode, txnDate, cashShiftId, userId, amount, method, fundAccountId, providerRef, reason }) {
     const origin = { locCode: String(locCode || '').trim(), macCode: String(macCode || '').trim(), txnDate: dateOnly(txnDate) };
     return database.withConnection(async (connection) => {
       await connection.beginTransaction();
@@ -299,10 +300,10 @@ function createCustomerAdvanceRepository({ database, documentSequenceRepository,
         const [result] = await connection.execute(
           `INSERT INTO customer_advance_refunds
              (business_day_id, customer_account_id, cash_shift_id, loc_code, mac_code, txn_date,
-              refund_no, refund_number, method, amount, provider_ref, reason, created_by)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              refund_no, refund_number, method, fund_account_id, amount, provider_ref, reason, created_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [day.id, customerAccountId, shift.id, origin.locCode, origin.macCode, origin.txnDate,
-            refundNo, refundNumber, method, refundAmount, providerRef || null, String(reason || '').trim(), userId]
+            refundNo, refundNumber, method, Number(fundAccountId) || null, refundAmount, providerRef || null, String(reason || '').trim(), userId]
         );
         await allocateDebit(connection, { customerAccountId, locCode: origin.locCode, amount: refundAmount,
           entry: { businessDayId: day.id, ...origin, documentType: 'customer_advance_refund', documentNo: refundNo,

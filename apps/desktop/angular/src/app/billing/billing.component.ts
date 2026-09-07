@@ -4,7 +4,7 @@ import { SessionService } from '../services/session.service';
 import { PrintingService } from '../services/printing.service';
 import { ItemMeasureSummary, itemMeasureSummaryText, summarizeItemMeasures } from '../services/item-measure-summary';
 import type {
-  BillItem, HeldBill, OpenBillResult, FinalizeResult, PaymentMode, PaymentLine, ChequePaymentDetails, PluginField, PrintDocument, PrintDocItem, PrintTextLine, ReceiptLabels, ReceiptLanguage, InventoryLotCandidate
+  BillItem, HeldBill, OpenBillResult, FinalizeResult, PaymentMode, PaymentLine, ChequePaymentDetails, PluginField, PrintDocument, PrintDocItem, PrintTextLine, ReceiptLabels, ReceiptLanguage, InventoryLotCandidate, FundAccount
 } from '../../../../../../packages/shared/ipc/pos-api';
 
 interface Product {
@@ -217,6 +217,8 @@ export class BillingComponent implements OnInit, OnDestroy {
   paymentModes: PaymentMode[] = [];
   private modeMap = new Map<string, PaymentMode>();
   payments: PaymentLine[] = [];
+  settlementFunds: FundAccount[] = [];
+  selectedSettlementFundId: number | null = null;
   selectedModeId = 'cash';
   enteredAmount = '';
   chequeDetails: ChequePaymentDetails = {};
@@ -1834,6 +1836,10 @@ export class BillingComponent implements OnInit, OnDestroy {
   }
 
   get isAdvanceModeSelected(): boolean { return this.selectedMode?.id === 'advance'; }
+  get needsSettlementFund(): boolean {
+    const mode = this.selectedMode;
+    return Boolean(mode && mode.type === 'tender' && !['cash', 'cheque', 'advance'].includes(mode.id));
+  }
   get queuedAdvanceAmount(): number {
     return this.payments.filter((payment) => payment.method === 'advance')
       .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
@@ -1905,6 +1911,12 @@ export class BillingComponent implements OnInit, OnDestroy {
         const firstTender = this.paymentModes.find((m) => m.type === 'tender');
         this.selectedModeId = firstTender?.id || this.paymentModes[0]?.id || 'cash';
         this.enteredAmount = this.netTotal.toFixed(2);
+        const fundsResult = await window.posApi.funds.list(this.locationCode, false, this.actor());
+        this.settlementFunds = fundsResult.success
+          ? (fundsResult.data || []).filter((fund) => fund.fundKind === 'bank' || fund.fundKind === 'cash_safe')
+          : [];
+        this.selectedSettlementFundId = this.settlementFunds.find((fund) => fund.fundKind === 'bank')?.id
+          || this.settlementFunds[0]?.id || null;
         await this.loadAdvanceBalance();
         this.focusAmountInput();
       } else {
@@ -1956,6 +1968,10 @@ export class BillingComponent implements OnInit, OnDestroy {
   selectMode(modeId: string): void {
     this.selectedModeId = modeId;
     this.showChequeDetailsEditor = false;
+    if (!this.selectedSettlementFundId && this.needsSettlementFund) {
+      this.selectedSettlementFundId = this.settlementFunds.find((fund) => fund.fundKind === 'bank')?.id
+        || this.settlementFunds[0]?.id || null;
+    }
     const remaining = this.outstanding > 0 ? this.outstanding : this.netTotal;
     this.enteredAmount = (modeId === 'advance'
       ? Math.min(remaining, Math.max(this.advanceAvailable - this.queuedAdvanceAmount, 0))
@@ -2138,6 +2154,10 @@ export class BillingComponent implements OnInit, OnDestroy {
     }
 
     const chequeDetails = mode.id === 'cheque' ? this.currentChequeDetails() : null;
+    if (this.needsSettlementFund && this.settlementFunds.length && !this.selectedSettlementFundId) {
+      this.paymentError = 'Choose the bank or business account that received this payment.';
+      return;
+    }
     if ((mode.type === 'credit' || mode.id === 'cheque' || mode.id === 'advance') && !this.customerAccountId) {
       this.paymentError = mode.id === 'cheque'
         ? 'Link a real customer account before accepting a cheque.'
@@ -2174,6 +2194,7 @@ export class BillingComponent implements OnInit, OnDestroy {
     const payment: PaymentLine = {
       method: mode.id,
       amount,
+      fundAccountId: this.needsSettlementFund ? this.selectedSettlementFundId : null,
       providerRef: chequeDetails?.number || null,
       chequeDetails
     };
@@ -2183,7 +2204,7 @@ export class BillingComponent implements OnInit, OnDestroy {
       this.payments.push(payment);
       this.resetChequeDetails();
     } else {
-      const existing = this.payments.find((p) => p.method === mode.id);
+      const existing = this.payments.find((p) => p.method === mode.id && Number(p.fundAccountId || 0) === Number(payment.fundAccountId || 0));
       if (existing) {
         existing.amount = Math.round((existing.amount + amount) * 100) / 100;
       } else {
@@ -2251,6 +2272,7 @@ export class BillingComponent implements OnInit, OnDestroy {
         payments: this.payments.map((p) => ({
           method: p.method,
           amount: p.amount,
+          fundAccountId: p.fundAccountId || null,
           providerRef: p.providerRef || null,
           chequeDetails: p.chequeDetails || null
         })),

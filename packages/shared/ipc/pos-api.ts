@@ -902,6 +902,7 @@ export type StakeholderMovementInput = {
 export type StakeholderMovementResult = {
   entryNumber: string; amount: number; stakeholderName: string;
   fundName: string; claim: number; overrideUsed: boolean;
+  capitalBalance: number; repayableBalance: number; profitBalance: number; availableToDraw: number;
 };
 
 export type CostedLot = {
@@ -924,6 +925,29 @@ export type CostedLot = {
   purchaseCostTotal: number;
   allocatedCostTotal: number;
   landedCostTotal: number;
+  recognizedCost: number;
+  remainingCost: number;
+};
+
+export type RecurringExpense = {
+  id: number;
+  locationCode: string;
+  name: string;
+  expenseCategoryId: number;
+  categoryName: string;
+  fundAccountId: number;
+  fundName: string;
+  amount: number;
+  payee: string;
+  reference: string;
+  reason: string;
+  cadence: 'weekly' | 'monthly' | 'yearly' | 'custom_days';
+  intervalCount: number;
+  nextDueDate: string;
+  endDate: string | null;
+  isActive: boolean;
+  lastExpenseNumber: string | null;
+  lastRecordedAt: string | null;
 };
 
 export type AllocationBasis = 'direct' | 'base_quantity' | 'handling_quantity' | 'sale_value' | 'equal';
@@ -951,6 +975,8 @@ export type LotProfitRow = {
   allocatedCost: number;
   supplierDue: number;
   landedCostTotal: number;
+  recognizedCost: number;
+  remainingCost: number;
   landedCostPerHandling: number | null;
   landedCostPerBase: number | null;
   margin: number;
@@ -962,7 +988,7 @@ export type LotProfitability = {
   lots: LotProfitRow[];
   totals: {
     saleValue: number; purchaseCost: number; allocatedCost: number;
-    supplierDue: number; landedCostTotal: number; margin: number;
+    supplierDue: number; landedCostTotal: number; recognizedCost: number; remainingCost: number; margin: number;
   };
 };
 
@@ -999,6 +1025,12 @@ export type Stakeholder = {
   profitShare: number;
   drawn: number;
   settled: number;
+  capitalBalance: number;
+  repayableBalance: number;
+  profitBalance: number;
+  drawingsBalance: number;
+  availableToDraw: number;
+  totalInterest: number;
   claim: number;
   businessSharePercent: number | null;
 };
@@ -1008,6 +1040,7 @@ export type StakeholderEntry = {
   entryNumber: string;
   date: string;
   entryType: 'capital_contribution' | 'expense_borne' | 'drawing' | 'profit_share_allocation' | 'settlement';
+  balanceBucket: 'capital' | 'repayable' | 'profit' | 'drawing';
   amount: number;
   fundName: string | null;
   lotCode: string | null;
@@ -1108,6 +1141,7 @@ export type ChequePaymentDetails = {
 export type PaymentLine = {
   method: string;
   amount: number;
+  fundAccountId?: number | null;
   providerRef?: string | null;
   /** Present only when the tender was received by cheque. */
   chequeDetails?: ChequePaymentDetails | null;
@@ -1259,6 +1293,31 @@ export type CashMovement = {
   amount: number;
   reason: string | null;
   created_at: string;
+  reference_type?: string | null;
+  reference_id?: string | null;
+  editable?: boolean;
+};
+
+export type CashMovementHistoryRow = {
+  id: number;
+  movementType: string;
+  direction: 'in' | 'out';
+  amount: number;
+  status: 'active' | 'void';
+  referenceType: string | null;
+  referenceId: string | null;
+  reason: string | null;
+  voidReason: string | null;
+  voidedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  cashShiftId: number;
+  businessDate: string;
+  shiftNo: number;
+  machineCode: string;
+  createdByName: string;
+  voidedByName: string | null;
+  editable: boolean;
 };
 
 export type CashShiftReportPrint = {
@@ -1690,7 +1749,7 @@ export interface PosApi {
     balance: (customerAccountId: number, locCode: string, actor?: ActorContext | null) => Promise<IpcResult<number>>;
     summary: (customerAccountId: number, locCode: string, actor?: ActorContext | null) => Promise<IpcResult<CustomerAdvanceSummary>>;
     receive: (advance: { customerAccountId: number; sessionId: number; userId: number; reason: string; payments: PaymentLine[] }, actor?: ActorContext | null) => Promise<IpcResult<{ id: number; advanceNumber: string; amount: number; availableBalance: number }>>;
-    refund: (refund: { customerAccountId: number; sessionId: number; userId: number; amount: number; method: string; providerRef?: string | null; reason: string }, actor?: ActorContext | null) => Promise<IpcResult<{ id: number; refundNumber: string; amount: number; availableBalance: number }>>;
+    refund: (refund: { customerAccountId: number; sessionId: number; userId: number; amount: number; method: string; fundAccountId?: number | null; providerRef?: string | null; reason: string }, actor?: ActorContext | null) => Promise<IpcResult<{ id: number; refundNumber: string; amount: number; availableBalance: number }>>;
   };
   funds: {
     list: (locCode: string, includeInactive?: boolean, actor?: ActorContext | null) => Promise<IpcResult<FundAccount[]>>;
@@ -1702,7 +1761,10 @@ export interface PosApi {
     categories: (includeInactive?: boolean, actor?: ActorContext | null) => Promise<IpcResult<ExpenseCategory[]>>;
     saveCategory: (category: Partial<ExpenseCategory>, actor?: ActorContext | null) => Promise<IpcResult<ExpenseCategory>>;
     list: (filters: { locCode: string; fromDate?: string; toDate?: string; categoryId?: number; fundAccountId?: number; term?: string; unallocatedOnly?: boolean; limit?: number }, actor?: ActorContext | null) => Promise<IpcResult<ExpenseRegister>>;
-    create: (expense: { expenseCategoryId: number; fundAccountId: number; amount: number; reason: string; payee?: string; reference?: string; userId: number; origin: { locCode: string; macCode: string; txnDate: string } }, actor?: ActorContext | null) => Promise<IpcResult<{ id: number; expenseNumber: string; amount: number; categoryName: string; categoryTreatment: ExpenseTreatment; fundName: string; fundBalance: number; stakeholderName: string | null; stakeholderEntryNumber: string | null }>>;
+    create: (expense: { expenseCategoryId: number; fundAccountId: number; amount: number; reason: string; payee?: string; reference?: string; requestId?: string; userId: number; origin: { locCode: string; macCode: string; txnDate: string } }, actor?: ActorContext | null) => Promise<IpcResult<{ id: number; expenseNumber: string; amount: number; categoryName: string; categoryTreatment: ExpenseTreatment; fundName: string; fundBalance: number; stakeholderName: string | null; stakeholderEntryNumber: string | null; replayed?: boolean }>>;
+    listRecurring: (locCode: string, includeInactive?: boolean, actor?: ActorContext | null) => Promise<IpcResult<RecurringExpense[]>>;
+    saveRecurring: (template: Omit<Partial<RecurringExpense>, 'expenseCategoryId' | 'fundAccountId' | 'amount'> & { locCode: string; userId: number; expenseCategoryId: number | null; fundAccountId: number | null; amount: number | null }, actor?: ActorContext | null) => Promise<IpcResult<RecurringExpense>>;
+    recordRecurring: (payload: { templateId: number; userId: number; origin: { locCode: string; macCode: string; txnDate: string } }, actor?: ActorContext | null) => Promise<IpcResult<{ expense: { id: number; expenseNumber: string }; schedule: { templateId: number; nextDueDate: string } }>>;
   };
   lotCosting: {
     lots: (filters: { locCode: string; term?: string; goodsReceiptId?: number; supplierId?: number; fromDate?: string; toDate?: string; limit?: number }, actor?: ActorContext | null) => Promise<IpcResult<CostedLot[]>>;
@@ -1725,13 +1787,14 @@ export interface PosApi {
     reconcile: (locCode: string, actor?: ActorContext | null) => Promise<IpcResult<{ ledgerTotal: number; journalTotal: number; difference: number; inBalance: boolean }>>;
   };
   accounting: {
+    reconcile: (options: { locCode: string; macCode?: string; txnDate?: string; userId?: number }, actor?: ActorContext | null) => Promise<IpcResult<{ operational: Record<string, number>; lotCosts: { checked: number; changed: number; lots: unknown[] }; posted: number }>>;
     accounts: (actor?: ActorContext | null) => Promise<IpcResult<LedgerAccount[]>>;
     journal: (filters: { locCode: string; fromDate?: string; toDate?: string; limit?: number }, actor?: ActorContext | null) => Promise<IpcResult<JournalEntry[]>>;
     trialBalance: (filters: { locCode: string; fromDate?: string; toDate?: string }, actor?: ActorContext | null) => Promise<IpcResult<TrialBalance>>;
     profitAndLoss: (filters: { locCode: string; fromDate?: string; toDate?: string }, actor?: ActorContext | null) => Promise<IpcResult<{ income: TrialBalanceRow[]; expenses: TrialBalanceRow[]; incomeTotal: number; expenseTotal: number; netResult: number; coversCostsOnly: boolean }>>;
     balanceSheet: (filters: { locCode: string; fromDate?: string; toDate?: string }, actor?: ActorContext | null) => Promise<IpcResult<{ assets: TrialBalanceRow[]; liabilities: TrialBalanceRow[]; equity: TrialBalanceRow[]; assetTotal: number; liabilityTotal: number; equityTotal: number; retainedResult: number; difference: number; inBalance: boolean }>>;
     periods: (locCode: string, actor?: ActorContext | null) => Promise<IpcResult<AccountingPeriod[]>>;
-    closePeriod: (period: { locCode: string; periodStart: string; periodEnd: string; userId: number; notes?: string }, actor?: ActorContext | null) => Promise<IpcResult<{ id: number; periodStart: string; periodEnd: string; status: string }>>;
+    closePeriod: (period: { locCode: string; periodStart: string; periodEnd: string; macCode?: string; txnDate?: string; userId: number; notes?: string }, actor?: ActorContext | null) => Promise<IpcResult<{ id: number; periodStart: string; periodEnd: string; status: string }>>;
     reopenPeriod: (period: { periodId: number; userId: number; reason: string }, actor?: ActorContext | null) => Promise<IpcResult<{ id: number; status: string; reopenCount: number }>>;
   };
   pattiyals: {
@@ -1916,6 +1979,9 @@ export interface PosApi {
       reason: string;
       userId: number;
     }, actor?: ActorContext) => Promise<IpcResult<CashShift>>;
+    correctMovement: (movement: { movementId: number; direction: 'in' | 'out'; amount: number; reason: string; userId?: number }, actor?: ActorContext) => Promise<IpcResult<CashShift>>;
+    removeMovement: (movement: { movementId: number; reason: string; userId?: number }, actor?: ActorContext) => Promise<IpcResult<CashShift>>;
+    movementHistory: (filters: { locCode: string; fromDate?: string; toDate?: string; direction?: 'in' | 'out' | ''; movementType?: string; term?: string; includeVoided?: boolean; limit?: number }, actor?: ActorContext) => Promise<IpcResult<CashMovementHistoryRow[]>>;
     blindClose: (count: { shiftId: number; userId: number; closingLines: CashCountLine[] }, actor?: ActorContext) => Promise<IpcResult<CashShift>>;
     closeShift: (close: { shiftId: number; userId: number; varianceReason?: string }, actor?: ActorContext) => Promise<IpcResult<CashShift>>;
   };

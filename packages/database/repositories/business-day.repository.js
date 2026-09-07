@@ -152,7 +152,7 @@ function createBusinessDayRepository({ database }) {
       `SELECT m.direction, m.movement_type, COALESCE(SUM(m.amount), 0) AS amount
        FROM cash_movements m
        JOIN cash_shifts s ON s.id = m.cash_shift_id
-       WHERE s.business_day_id = ?
+       WHERE s.business_day_id = ? AND m.status = 'active'
        GROUP BY m.direction, m.movement_type`,
       [dayId]
     );

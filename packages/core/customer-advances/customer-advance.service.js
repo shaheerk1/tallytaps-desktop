@@ -33,7 +33,7 @@ function createCustomerAdvanceService({ repository, paymentModes, paymentModeRep
     if (method === 'cheque') throw new Error('Cheque advances require clearance tracking and are not available yet.');
     const amount = money(payment?.amount);
     if (amount <= 0) throw new Error('Advance payment amount must be greater than zero.');
-    return { method, amount, providerRef: String(payment?.providerRef || '').trim() || null, details: payment?.details || {} };
+    return { method, amount, fundAccountId: Number(payment?.fundAccountId) || null, providerRef: String(payment?.providerRef || '').trim() || null, details: payment?.details || {} };
   }
 
   async function receive(input) {
@@ -51,7 +51,7 @@ function createCustomerAdvanceService({ repository, paymentModes, paymentModeRep
     if (!Number(input?.customerAccountId) || !Number(input?.userId)) throw new Error('A customer account and signed-in user are required.');
     const reason = String(input.reason || '').trim();
     if (!reason) throw new Error('A reason is required to refund unused advance money.');
-    const payment = normalizePayment({ method: input.method, amount: input.amount, providerRef: input.providerRef });
+    const payment = normalizePayment({ method: input.method, amount: input.amount, fundAccountId: input.fundAccountId, providerRef: input.providerRef });
     const context = await shiftContext(input);
     const available = await repository.getBalance(input.customerAccountId, context.locCode);
     if (payment.amount > available + 0.005) throw new Error(`Only ${available.toFixed(2)} of unused advance is available at this location.`);

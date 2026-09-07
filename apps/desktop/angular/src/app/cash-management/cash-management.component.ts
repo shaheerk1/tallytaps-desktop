@@ -3,8 +3,11 @@ import { SessionService } from '../services/session.service';
 import { PrintingService } from '../services/printing.service';
 import type {
   CashCountLine,
+  CashMovement,
+  CashMovementHistoryRow,
   CashShift,
   CashShiftReportPrint,
+  FundAccount,
   PrintDocument
 } from '../../../../../../packages/shared/ipc/pos-api';
 
@@ -22,13 +25,37 @@ export class CashManagementComponent implements OnInit {
   movementType: 'cash_in' | 'cash_out' | 'safe_drop' | 'bank_drop' = 'cash_in';
   movementAmount = 0;
   movementReason = '';
+  movementTargetFundId: number | null = null;
+  funds: FundAccount[] = [];
   varianceReason = '';
   reportHistory: CashShiftReportPrint[] = [];
+  movementHistory: CashMovementHistoryRow[] = [];
+  historyFromDate = '';
+  historyToDate = '';
+  historyDirection: '' | 'in' | 'out' = '';
+  historyTerm = '';
+  historyIncludeVoided = true;
+  editingMovementId: number | null = null;
+  editDirection: 'in' | 'out' = 'in';
+  editAmount = 0;
+  editReason = '';
   error = '';
   info = '';
   loading = false;
 
   constructor(private session: SessionService, private printing: PrintingService) {}
+
+  get canCorrectMovements(): boolean { return this.session.hasPermission('cash.movement.correct'); }
+  get canTransferFunds(): boolean { return this.session.hasPermission('funds.transfer'); }
+  get isFundDrop(): boolean { return this.movementType === 'safe_drop' || this.movementType === 'bank_drop'; }
+  get drawerFund(): FundAccount | null {
+    if (!this.shift) return null;
+    return this.funds.find((fund) => fund.fundKind === 'pos_drawer' && fund.cashDrawerId === this.shift?.drawerId) || null;
+  }
+  get dropTargets(): FundAccount[] {
+    const kind = this.movementType === 'bank_drop' ? 'bank' : 'cash_safe';
+    return this.funds.filter((fund) => fund.isActive && fund.fundKind === kind);
+  }
 
   ngOnInit(): Promise<void> { return this.load(); }
 
@@ -44,7 +71,10 @@ export class CashManagementComponent implements OnInit {
   get movementLabel(): string {
     return ({ cash_in: 'Other cash coming in', cash_out: 'Other cash going out', safe_drop: 'Cash going to safe', bank_drop: 'Cash going to bank' } as const)[this.movementType];
   }
-  selectMovement(type: 'cash_in' | 'cash_out' | 'safe_drop' | 'bank_drop'): void { this.movementType = type; }
+  selectMovement(type: 'cash_in' | 'cash_out' | 'safe_drop' | 'bank_drop'): void {
+    this.movementType = type;
+    this.movementTargetFundId = this.dropTargets[0]?.id || null;
+  }
   /**
    * A shift carries its business date straight from a MySQL DATE column, and
    * Electron IPC preserves it as a Date. Stringifying one prints "Wed Sep 02"
@@ -70,8 +100,10 @@ export class CashManagementComponent implements OnInit {
     const result = await window.posApi.cash.activeShift(ctx.sessionId, this.actor());
     if (!result.success) { this.error = result.error || 'Could not load the active cash shift.'; return; }
     this.shift = result.data;
+    await this.loadFunds();
     if (this.shift) {
       await this.loadHistory();
+      await this.loadMovementHistory();
       return;
     }
 
@@ -82,6 +114,34 @@ export class CashManagementComponent implements OnInit {
       this.info = 'A pending closing count was restored. Complete the reconciliation to finish this shift.';
     }
     await this.loadHistory();
+    await this.loadMovementHistory();
+  }
+
+  private async loadFunds(): Promise<void> {
+    if (!window.posApi || !this.canTransferFunds) { this.funds = []; return; }
+    const locCode = this.session.getWorkstationSession()?.locationCode || '';
+    if (!locCode) return;
+    const result = await window.posApi.funds.list(locCode, false, this.actor());
+    if (!result.success) { this.funds = []; return; }
+    this.funds = result.data || [];
+    if (this.isFundDrop) this.movementTargetFundId = this.dropTargets[0]?.id || null;
+  }
+
+  async loadMovementHistory(): Promise<void> {
+    if (!window.posApi) return;
+    const locCode = this.session.getWorkstationSession()?.locationCode || '';
+    if (!locCode) return;
+    const result = await window.posApi.cash.movementHistory({
+      locCode,
+      fromDate: this.historyFromDate || undefined,
+      toDate: this.historyToDate || undefined,
+      direction: this.historyDirection,
+      term: this.historyTerm.trim() || undefined,
+      includeVoided: this.historyIncludeVoided,
+      limit: 300
+    }, this.actor());
+    if (!result.success) { this.error = result.error || 'Could not load cash movement history.'; return; }
+    this.movementHistory = result.data || [];
   }
 
   async loadHistory(): Promise<void> {
@@ -114,6 +174,34 @@ export class CashManagementComponent implements OnInit {
       this.error = 'Enter an amount and reason before recording this cash movement.'; return;
     }
     this.error = '';
+    if (this.isFundDrop) {
+      const workstation = this.session.getWorkstationSession();
+      const fromFund = this.drawerFund;
+      const toFund = this.dropTargets.find((fund) => fund.id === this.movementTargetFundId);
+      if (!this.canTransferFunds) {
+        this.error = 'You need permission to transfer drawer cash into a safe or bank account.'; return;
+      }
+      if (!workstation || !fromFund || !toFund) {
+        this.error = `Choose the ${this.movementType === 'bank_drop' ? 'bank account' : 'cash safe'} receiving this money.`; return;
+      }
+      const transfer = await window.posApi.funds.transfer({
+        fromFundAccountId: fromFund.id,
+        toFundAccountId: toFund.id,
+        amount: this.movementAmount,
+        reason: this.movementReason,
+        userId: this.context().userId,
+        origin: { locCode: workstation.locationCode, macCode: workstation.machineCode, txnDate: workstation.billingDate }
+      }, this.actor());
+      if (!transfer.success) { this.error = transfer.error || 'Could not transfer this drawer cash.'; return; }
+      const refreshed = await window.posApi.cash.activeShift(this.context().sessionId, this.actor());
+      if (refreshed.success) this.shift = refreshed.data;
+      this.movementAmount = 0; this.movementReason = '';
+      this.info = `${this.movementLabel} recorded into ${toFund.name}.`;
+      await this.loadFunds();
+      await this.loadHistory();
+      await this.loadMovementHistory();
+      return;
+    }
     const result = await window.posApi.cash.addMovement({
       shiftId: this.shift.id, type: this.movementType, amount: this.movementAmount,
       reason: this.movementReason, userId: this.context().userId
@@ -122,6 +210,48 @@ export class CashManagementComponent implements OnInit {
     this.shift = result.data; this.movementAmount = 0; this.movementReason = '';
     this.info = `${this.movementLabel} recorded successfully.`;
     await this.loadHistory();
+    await this.loadMovementHistory();
+  }
+
+  beginMovementEdit(movement: CashMovement): void {
+    if (!movement.editable || !this.canCorrectMovements) return;
+    this.editingMovementId = movement.id;
+    this.editDirection = movement.direction;
+    this.editAmount = movement.amount;
+    this.editReason = movement.reason || '';
+  }
+
+  cancelMovementEdit(): void {
+    this.editingMovementId = null;
+    this.editAmount = 0;
+    this.editReason = '';
+  }
+
+  async saveMovementEdit(): Promise<void> {
+    if (!window.posApi || !this.editingMovementId) return;
+    const result = await window.posApi.cash.correctMovement({
+      movementId: this.editingMovementId,
+      direction: this.editDirection,
+      amount: this.editAmount,
+      reason: this.editReason,
+      userId: this.context().userId
+    }, this.actor());
+    if (!result.success) { this.error = result.error || 'Could not correct the cash movement.'; return; }
+    this.shift = result.data;
+    this.cancelMovementEdit();
+    this.info = 'Cash movement corrected. The original values are retained in its audit history.';
+    await this.loadMovementHistory();
+  }
+
+  async removeMovement(movement: CashMovement): Promise<void> {
+    if (!window.posApi || !movement.editable || !this.canCorrectMovements) return;
+    const reason = window.prompt('Why are you removing this cash movement? This reason is kept in the audit history.', movement.reason || 'Entered by mistake');
+    if (!reason?.trim()) return;
+    const result = await window.posApi.cash.removeMovement({ movementId: movement.id, reason, userId: this.context().userId }, this.actor());
+    if (!result.success) { this.error = result.error || 'Could not remove the cash movement.'; return; }
+    this.shift = result.data;
+    this.info = 'Cash movement removed from the drawer total and retained as a voided audit record.';
+    await this.loadMovementHistory();
   }
 
   async blindClose(): Promise<void> {

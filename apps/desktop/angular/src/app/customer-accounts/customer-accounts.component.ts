@@ -1,7 +1,7 @@
 import { Component, HostListener, OnInit } from '@angular/core';
 import { SessionService } from '../services/session.service';
 import { PrintingService } from '../services/printing.service';
-import type { CustomerAdvanceSummary, PaymentMode } from '../../../../../../packages/shared/ipc/pos-api';
+import type { CustomerAdvanceSummary, FundAccount, PaymentMode } from '../../../../../../packages/shared/ipc/pos-api';
 
 type Customer = {
   id: number; account_number?: string; name: string; shop_name?: string | null; locality?: string | null;
@@ -16,8 +16,9 @@ export class CustomerAccountsComponent implements OnInit {
   rows: Customer[] = []; account: any = null; editor: any = null; error = ''; info = ''; saving = false;
   fromDate = ''; toDate = '';
   advanceSummary: CustomerAdvanceSummary | null = null;
-  advanceEditor: { mode: 'receive' | 'refund'; amount: number; method: string; providerRef: string; reason: string } | null = null;
+  advanceEditor: { mode: 'receive' | 'refund'; amount: number; method: string; fundAccountId: number | null; providerRef: string; reason: string } | null = null;
   advancePaymentModes: PaymentMode[] = [];
+  advanceFunds: FundAccount[] = [];
   private receiptSettings: any = null;
 
   constructor(public session: SessionService, private printing: PrintingService) {}
@@ -116,8 +117,16 @@ export class CustomerAccountsComponent implements OnInit {
     const result = await window.posApi.billing.paymentModes(this.actor());
     this.advancePaymentModes = result.success ? (result.data || []).filter((item) =>
       item.type === 'tender' && item.id !== 'advance' && item.id !== 'cheque') : [];
-    this.advanceEditor = { mode, amount: 0, method: this.advancePaymentModes[0]?.id || 'cash', providerRef: '', reason: '' };
+    const origin = this.origin();
+    const funds = origin ? await window.posApi.funds.list(origin.locCode, false, this.actor()) : null;
+    this.advanceFunds = funds?.success
+      ? (funds.data || []).filter((fund) => fund.fundKind === 'bank' || fund.fundKind === 'cash_safe')
+      : [];
+    const fundAccountId = this.advanceFunds.find((fund) => fund.fundKind === 'bank')?.id || this.advanceFunds[0]?.id || null;
+    this.advanceEditor = { mode, amount: 0, method: this.advancePaymentModes[0]?.id || 'cash', fundAccountId, providerRef: '', reason: '' };
   }
+
+  get advanceNeedsFund(): boolean { return Boolean(this.advanceEditor && this.advanceEditor.method !== 'cash'); }
 
   async saveAdvance(): Promise<void> {
     if (!window.posApi || !this.advanceEditor || !this.account?.customer?.id || this.saving) return;
@@ -127,9 +136,10 @@ export class CustomerAccountsComponent implements OnInit {
     const mode = this.advanceEditor.mode;
     const base = { customerAccountId: this.account.customer.id, sessionId: ws.sessionId, userId: user.id,
       amount: Number(this.advanceEditor.amount), method: this.advanceEditor.method,
+      fundAccountId: this.advanceNeedsFund ? this.advanceEditor.fundAccountId : null,
       providerRef: this.advanceEditor.providerRef || null, reason: this.advanceEditor.reason };
     const result = mode === 'receive'
-      ? await window.posApi.customerAdvances.receive({ ...base, payments: [{ method: base.method, amount: base.amount, providerRef: base.providerRef }] }, this.actor())
+      ? await window.posApi.customerAdvances.receive({ ...base, payments: [{ method: base.method, amount: base.amount, fundAccountId: base.fundAccountId, providerRef: base.providerRef }] }, this.actor())
       : await window.posApi.customerAdvances.refund(base, this.actor());
     this.saving = false;
     if (!result.success) { this.error = result.error || 'Could not record the customer advance transaction.'; return; }

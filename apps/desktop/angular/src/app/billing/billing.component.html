@@ -698,6 +698,15 @@
             (keydown)="onAmountKeydown($event)"
             placeholder="0.00"
           />
+          <label *ngIf="needsSettlementFund" class="pm-fund-destination">
+            <span>Money received into</span>
+            <select [(ngModel)]="selectedSettlementFundId">
+              <option [ngValue]="null" disabled>{{ settlementFunds.length ? 'Choose an account' : 'General bank balance' }}</option>
+              <option *ngFor="let fund of settlementFunds" [ngValue]="fund.id">{{ fund.name }} · {{ fund.accountReference || fund.fundCode }}</option>
+            </select>
+            <small *ngIf="settlementFunds.length">This keeps card and bank receipts in the correct account ledger.</small>
+            <small *ngIf="!settlementFunds.length">Add a bank fund in Money to track the exact account.</small>
+          </label>
           <div *ngIf="isAdvanceModeSelected" class="pm-advance-note">
             <strong>{{ advanceAvailable - queuedAdvanceAmount | number:'1.2-2' }} available</strong>
             <span>Uses this customer's stored advance. No new cash is added to the drawer.</span>

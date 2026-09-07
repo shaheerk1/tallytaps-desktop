@@ -2,9 +2,8 @@
  * Stakeholders and the equity ledger.
  *
  * The ledger is append-only and signed from the stakeholder's point of view:
- * a positive amount raises what the business owes them, a negative amount
- * lowers it. Their claim is simply the sum of their entries, so there is no
- * separate balance to keep in step.
+ * entries are signed but kept in separate capital, repayable, profit, and
+ * drawing buckets.  Permanent ownership is never presented as an ordinary debt.
  *
  * Money always moves through the fund ledgers owned by the expense repository,
  * so a contribution or a drawing reconciles with the till, the safe, or the
@@ -45,8 +44,15 @@ function createStakeholderRepository({ database, documentSequenceRepository, bus
       profitShare: money(row.profit_share),
       drawn: money(row.drawn),
       settled: money(row.settled),
-      // What the business owes this person right now.
-      claim: money(row.claim),
+      capitalBalance: money(row.capital_balance),
+      repayableBalance: money(row.repayable_balance),
+      profitBalance: money(row.profit_balance),
+      drawingsBalance: money(row.drawings_balance),
+      availableToDraw: money(row.available_to_draw),
+      totalInterest: money(row.total_interest),
+      // Compatibility alias for older screens. New UI labels this total
+      // interest, not an amount immediately repayable as debt.
+      claim: money(row.total_interest),
       businessSharePercent: row.business_share_percent == null ? null : Number(row.business_share_percent)
     };
   }
@@ -63,8 +69,15 @@ function createStakeholderRepository({ database, documentSequenceRepository, bus
               COALESCE(l.profit_share, 0) AS profit_share,
               COALESCE(l.drawn, 0) AS drawn,
               COALESCE(l.settled, 0) AS settled,
-              COALESCE(l.claim, 0) AS claim,
-              sh.share_percent AS business_share_percent
+               COALESCE(l.capital_balance, 0) AS capital_balance,
+               COALESCE(l.repayable_balance, 0) AS repayable_balance,
+               COALESCE(l.profit_balance, 0) AS profit_balance,
+               COALESCE(l.drawings_balance, 0) AS drawings_balance,
+               COALESCE(l.capital_balance + l.profit_balance + l.drawings_balance, 0) AS available_to_draw,
+               COALESCE(l.capital_balance + l.repayable_balance + l.profit_balance + l.drawings_balance, 0) AS total_interest,
+               (SELECT sh.share_percent FROM stakeholder_shares sh
+                WHERE sh.stakeholder_id = s.id AND sh.scope = 'business' AND sh.is_active = 1
+                ORDER BY sh.effective_from DESC, sh.id DESC LIMIT 1) AS business_share_percent
        FROM stakeholders s
        LEFT JOIN fund_accounts f ON f.id = s.fund_account_id
        LEFT JOIN (
@@ -74,10 +87,12 @@ function createStakeholderRepository({ database, documentSequenceRepository, bus
                 SUM(CASE WHEN entry_type = 'profit_share_allocation' THEN amount ELSE 0 END) AS profit_share,
                 SUM(CASE WHEN entry_type = 'drawing' THEN -amount ELSE 0 END) AS drawn,
                 SUM(CASE WHEN entry_type = 'settlement' THEN -amount ELSE 0 END) AS settled,
-                SUM(amount) AS claim
-         FROM stakeholder_ledger_entries GROUP BY stakeholder_id
-       ) l ON l.stakeholder_id = s.id
-       LEFT JOIN stakeholder_shares sh ON sh.stakeholder_id = s.id AND sh.scope = 'business' AND sh.is_active = 1
+                 SUM(CASE WHEN balance_bucket = 'capital' THEN amount ELSE 0 END) AS capital_balance,
+                 SUM(CASE WHEN balance_bucket = 'repayable' THEN amount ELSE 0 END) AS repayable_balance,
+                 SUM(CASE WHEN balance_bucket = 'profit' THEN amount ELSE 0 END) AS profit_balance,
+                 SUM(CASE WHEN balance_bucket = 'drawing' THEN amount ELSE 0 END) AS drawings_balance
+          FROM stakeholder_ledger_entries GROUP BY stakeholder_id
+        ) l ON l.stakeholder_id = s.id
        WHERE ${where}
        ORDER BY s.sort_order, s.display_name, s.id`, params
     );
@@ -187,18 +202,33 @@ function createStakeholderRepository({ database, documentSequenceRepository, bus
         const effectiveFrom = dateOnly(input.effectiveFrom);
         if (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveFrom)) throw new Error('Give the share a start date.');
 
-        // The shares in one scope may not add to more than the whole.
+        const [stakeholders] = await connection.execute('SELECT loc_code FROM stakeholders WHERE id = ? FOR UPDATE', [Number(input.stakeholderId)]);
+        if (!stakeholders[0]) throw new Error('This stakeholder no longer exists.');
+        if (lotId) {
+          const [lots] = await connection.execute('SELECT loc_code FROM inventory_lots WHERE id = ? FOR UPDATE', [lotId]);
+          if (!lots[0]) throw new Error('This stock lot no longer exists.');
+          if (lots[0].loc_code !== stakeholders[0].loc_code) throw new Error('The stakeholder and lot must belong to the same location.');
+        }
+
+        // Shares effective on the same date may not add to more than the whole.
         const [others] = await connection.execute(
           `SELECT COALESCE(SUM(share_percent), 0) AS total FROM stakeholder_shares
            WHERE scope = ? AND is_active = 1 AND stakeholder_id <> ?
+             AND effective_from <= ? AND (effective_to IS NULL OR effective_to >= ?)
              AND (inventory_lot_id <=> ?)`,
-          [scope, Number(input.stakeholderId), lotId]
+          [scope, Number(input.stakeholderId), effectiveFrom, effectiveFrom, lotId]
         );
         const otherTotal = Number(others[0]?.total || 0);
         if (otherTotal + percent > 100.0001) {
           throw new Error(`Shares here already add up to ${otherTotal}%. This one would take the total past 100%.`);
         }
 
+        await connection.execute(
+          `UPDATE stakeholder_shares SET effective_to = DATE_SUB(?, INTERVAL 1 DAY)
+           WHERE stakeholder_id = ? AND scope = ? AND (inventory_lot_id <=> ?)
+             AND is_active = 1 AND effective_from < ? AND effective_to IS NULL`,
+          [effectiveFrom, Number(input.stakeholderId), scope, lotId, effectiveFrom]
+        );
         await connection.execute(
           `INSERT INTO stakeholder_shares
              (stakeholder_id, scope, inventory_lot_id, share_percent, effective_from, notes, created_by)
@@ -224,18 +254,18 @@ function createStakeholderRepository({ database, documentSequenceRepository, bus
     return { ...loaded, borneCostTreatment: row.borne_cost_treatment };
   }
 
-  async function insertEntry(connection, { stakeholder, day, origin, entryType, amount, fund, ledger, reason, userId, documentType, documentNo, inventoryLotId, override }) {
+  async function insertEntry(connection, { stakeholder, day, origin, entryType, balanceBucket, amount, fund, ledger, reason, userId, documentType, documentNo, inventoryLotId, override }) {
     const entryNo = await documentSequenceRepository.allocateWithConnection(connection, { documentType: 'stakeholder_ledger', ...origin });
     const entryNumber = `SLE-${origin.locCode}-${origin.macCode}-${origin.txnDate.replace(/-/g, '')}-${String(entryNo).padStart(6, '0')}`;
     const [result] = await connection.execute(
       `INSERT INTO stakeholder_ledger_entries
          (stakeholder_id, business_day_id, loc_code, mac_code, txn_date,
-          document_type, document_no, entry_no, entry_number, entry_type, amount,
+           document_type, document_no, entry_no, entry_number, entry_type, balance_bucket, amount,
           fund_account_id, inventory_lot_id, cash_movement_id, fund_movement_id, reason,
           override_approved_by, override_reason, created_by, metadata)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON))`,
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON))`,
       [stakeholder.id, day.id, origin.locCode, origin.macCode, origin.txnDate,
-        documentType, documentNo, entryNumber, entryType, money(amount),
+        documentType, documentNo, entryNumber, entryType, balanceBucket, money(amount),
         fund ? fund.id : null, inventoryLotId || null,
         ledger ? ledger.cashMovementId : null, ledger ? ledger.fundMovementId : null,
         reason, override?.approvedBy || null, override?.reason || null, userId,
@@ -249,7 +279,7 @@ function createStakeholderRepository({ database, documentSequenceRepository, bus
    * and the claim move, so contribution, drawing, and settlement all share one
    * carefully-checked path.
    */
-  async function recordMovement(input, { entryType, direction, movementType, postingRule, requireAvailable }) {
+  async function recordMovement(input, { entryType, balanceBucket, direction, movementType, postingRule, availableField = null }) {
     const origin = { locCode: text(input.locCode), macCode: text(input.macCode), txnDate: dateOnly(input.txnDate) };
     return database.withConnection(async (connection) => {
       await connection.beginTransaction();
@@ -269,8 +299,8 @@ function createStakeholderRepository({ database, documentSequenceRepository, bus
         }
 
         let override = null;
-        if (requireAvailable) {
-          const available = money(stakeholder.claim);
+        if (availableField) {
+          const available = money(stakeholder[availableField]);
           if (amount > available + 0.005) {
             if (!input.overrideApprovedBy || !text(input.overrideReason)) {
               throw new Error(`${stakeholder.displayName} has ${available.toFixed(2)} available. Taking more than that needs a manager to approve it with a reason.`);
@@ -292,7 +322,7 @@ function createStakeholderRepository({ database, documentSequenceRepository, bus
 
         const signedAmount = direction === 'in' ? amount : -amount;
         const entry = await insertEntry(connection, {
-          stakeholder, day, origin, entryType, amount: signedAmount, fund, ledger, reason,
+          stakeholder, day, origin, entryType, balanceBucket, amount: signedAmount, fund, ledger, reason,
           userId: input.userId, documentType: entryType, documentNo, override
         });
 
@@ -312,7 +342,11 @@ function createStakeholderRepository({ database, documentSequenceRepository, bus
           amount,
           stakeholderName: stakeholder.displayName,
           fundName: fund.name,
-          claim: updated.claim,
+          claim: updated.totalInterest,
+          capitalBalance: updated.capitalBalance,
+          repayableBalance: updated.repayableBalance,
+          profitBalance: updated.profitBalance,
+          availableToDraw: updated.availableToDraw,
           overrideUsed: !!override
         };
       } catch (error) { await connection.rollback(); throw error; }
@@ -321,17 +355,17 @@ function createStakeholderRepository({ database, documentSequenceRepository, bus
 
   const recordContribution = (input) => recordMovement(input, {
     entryType: 'capital_contribution', direction: 'in', movementType: 'fund_transfer_in',
-    postingRule: rules.contributionPosting, requireAvailable: false
+    balanceBucket: 'capital', postingRule: rules.contributionPosting
   });
 
   const recordDrawing = (input) => recordMovement(input, {
     entryType: 'drawing', direction: 'out', movementType: 'fund_transfer_out',
-    postingRule: rules.drawingPosting, requireAvailable: true
+    balanceBucket: 'drawing', postingRule: rules.drawingPosting, availableField: 'availableToDraw'
   });
 
   const recordSettlement = (input) => recordMovement(input, {
     entryType: 'settlement', direction: 'out', movementType: 'fund_transfer_out',
-    postingRule: rules.settlementPosting, requireAvailable: true
+    balanceBucket: 'repayable', postingRule: rules.settlementPosting, availableField: 'repayableBalance'
   });
 
   /**
@@ -351,11 +385,21 @@ function createStakeholderRepository({ database, documentSequenceRepository, bus
           locationCode: origin.locCode, businessDate: origin.txnDate
         });
         const stakeholder = await lockStakeholder(connection, input.stakeholderId, origin.locCode);
+        const [[profitPool]] = await connection.execute(
+          `SELECT COALESCE(SUM(l.credit - l.debit), 0) AS available
+           FROM journal_lines l JOIN journal_entries e ON e.id = l.journal_entry_id
+           JOIN ledger_accounts a ON a.id = l.ledger_account_id
+           WHERE e.loc_code = ? AND (a.account_type IN ('income','expense') OR a.account_code = '3300')`, [origin.locCode]
+        );
+        const availableProfit = money(profitPool?.available || 0);
+        if (amount > availableProfit + 0.005) {
+          throw new Error(`Only ${availableProfit.toFixed(2)} of earned, undistributed profit is available to allocate.`);
+        }
         const documentNo = await documentSequenceRepository.allocateWithConnection(connection, { documentType: 'profit_share_allocation', ...origin });
         const inventoryLotId = Number(input.inventoryLotId) || null;
 
         const entry = await insertEntry(connection, {
-          stakeholder, day, origin, entryType: 'profit_share_allocation', amount,
+          stakeholder, day, origin, entryType: 'profit_share_allocation', balanceBucket: 'profit', amount,
           fund: null, ledger: null, reason, userId: input.userId,
           documentType: 'profit_share_allocation', documentNo, inventoryLotId
         });
@@ -369,7 +413,8 @@ function createStakeholderRepository({ database, documentSequenceRepository, bus
         });
         await connection.commit();
         const [updated] = await loadStakeholders(connection, { locCode: origin.locCode, includeInactive: true, stakeholderId: stakeholder.id });
-        return { entryNumber: entry.entryNumber, amount, stakeholderName: stakeholder.displayName, claim: updated.claim };
+        return { entryNumber: entry.entryNumber, amount, stakeholderName: stakeholder.displayName,
+          claim: updated.totalInterest, profitBalance: updated.profitBalance, availableToDraw: updated.availableToDraw };
       } catch (error) { await connection.rollback(); throw error; }
     });
   }
@@ -401,6 +446,7 @@ function createStakeholderRepository({ database, documentSequenceRepository, bus
           entryNumber: row.entry_number,
           date: dateOnly(row.txn_date),
           entryType: row.entry_type,
+          balanceBucket: row.balance_bucket,
           amount: money(row.amount),
           fundName: row.fund_name || null,
           lotCode: row.lot_code || null,

@@ -31,6 +31,7 @@
             <strong>{{ advanceEditor.mode === 'receive' ? 'Receive customer advance' : 'Return unused advance' }}</strong>
             <label>Amount<input type="number" min="0.01" step="0.01" [(ngModel)]="advanceEditor.amount"></label>
             <label>Method<select [(ngModel)]="advanceEditor.method"><option *ngFor="let mode of advancePaymentModes" [value]="mode.id">{{ mode.name }}</option></select></label>
+            <label *ngIf="advanceNeedsFund">{{ advanceEditor.mode === 'receive' ? 'Received into' : 'Paid from' }}<select [(ngModel)]="advanceEditor.fundAccountId"><option [ngValue]="null">General bank balance</option><option *ngFor="let fund of advanceFunds" [ngValue]="fund.id">{{ fund.name }}</option></select></label>
             <label>Reference<input [(ngModel)]="advanceEditor.providerRef" placeholder="Optional card/reference number"></label>
             <label class="wide">Reason<input [(ngModel)]="advanceEditor.reason" placeholder="Required reason"></label>
             <div class="advance-form-actions"><button class="secondary" (click)="advanceEditor = null">Cancel</button><button class="primary" (click)="saveAdvance()" [disabled]="saving">{{ saving ? 'Saving…' : (advanceEditor.mode === 'receive' ? 'Receive advance' : 'Refund advance') }}</button></div>

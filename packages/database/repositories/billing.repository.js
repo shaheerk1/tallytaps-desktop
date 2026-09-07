@@ -366,11 +366,11 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
           const [paymentResult] = await connection.execute(
             `INSERT INTO payments
                (business_day_id, invoice_id, loc_code, mac_code, txn_date, document_type, document_no,
-                receipt_no, payment_no, method, amount, provider_ref, cheque_number, cheque_date, cheque_bank,
+                receipt_no, payment_no, method, fund_account_id, amount, provider_ref, cheque_number, cheque_date, cheque_bank,
                 cheque_branch, cheque_drawer_name, cheque_account_reference, cheque_notes, status)
-             VALUES (?, ?, ?, ?, ?, 'collection', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed')`,
+             VALUES (?, ?, ?, ?, ?, 'collection', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed')`,
             [businessDay.id, invoiceId, locationCode, machineCode, businessDate, collectionNo,
-              invoice.receipt_no, paymentNo, payment.method, toMoney(payment.amount), payment.providerRef || null,
+              invoice.receipt_no, paymentNo, payment.method, Number(payment.fundAccountId) || null, toMoney(payment.amount), payment.providerRef || null,
               ...chequePaymentValues(payment)]
           );
           await insertChequeWithConnection(connection, {
@@ -732,11 +732,11 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
           const [paymentResult] = await connection.execute(
             `INSERT INTO payments
                (business_day_id, invoice_id, loc_code, mac_code, txn_date, document_type, document_no,
-                receipt_no, payment_no, method, amount, provider_ref, cheque_number, cheque_date, cheque_bank,
+                receipt_no, payment_no, method, fund_account_id, amount, provider_ref, cheque_number, cheque_date, cheque_bank,
                 cheque_branch, cheque_drawer_name, cheque_account_reference, cheque_notes, status)
-             VALUES (?, ?, ?, ?, ?, 'sale', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed')`,
+             VALUES (?, ?, ?, ?, ?, 'sale', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed')`,
             [businessDay.id, invoiceId, locCode, macCode, txnDate, receiptNo, receiptNo,
-              paymentNo, p.method || 'cash', p.amount, p.providerRef || null, ...chequePaymentValues(p)]
+              paymentNo, p.method || 'cash', Number(p.fundAccountId) || null, p.amount, p.providerRef || null, ...chequePaymentValues(p)]
           );
           await insertChequeWithConnection(connection, {
             paymentId: paymentResult.insertId, invoiceId, locCode, macCode, txnDate,

@@ -105,11 +105,27 @@ select {
 }
 .movement-list div {
   display: grid;
-  grid-template-columns: 150px 1fr 120px;
+  grid-template-columns: 130px minmax(180px, 1fr) 120px auto;
   gap: 12px;
   padding: 10px 0;
   border-top: 1px solid var(--ui-border);
 }
+.movement-row > span { display:grid; gap:2px; align-content:center; }
+.movement-row small { color:var(--ui-ink-muted); font-size:10px; }
+.movement-actions { display:flex !important; flex-direction:row; gap:6px; align-items:center; }
+.movement-actions button { min-height:30px; padding:5px 10px; border:1px solid var(--ui-border-strong); border-radius:var(--ui-radius-sm); background:var(--ui-surface); cursor:pointer; }
+.movement-actions .primary { color:#fff; background:var(--ui-primary); border-color:var(--ui-primary); }
+.movement-actions .danger-link { color:var(--ui-danger); border-color:#edc3c3; }
+.source-lock { grid-column:4; align-self:center; }
+.history-filters { display:grid; grid-template-columns:repeat(4,minmax(130px,1fr)) auto auto; gap:9px; align-items:end; margin:12px 0; }
+.history-filters label { display:grid; gap:4px; color:var(--ui-ink-muted); font-size:11px; font-weight:700; }
+.history-filters .void-toggle { display:flex; align-items:center; min-height:36px; white-space:nowrap; }
+.history-filters .void-toggle input { width:auto; min-height:auto; }
+.cash-history-list { display:grid; gap:0; }
+.cash-history-list article { display:grid; grid-template-columns:130px 110px minmax(180px,1.4fr) minmax(130px,1fr) minmax(120px,1fr); gap:12px; padding:10px 0; border-top:1px solid var(--ui-border); }
+.cash-history-list article > div { display:grid; gap:3px; }
+.cash-history-list article span { color:var(--ui-ink-muted); font-size:11px; }
+.cash-history-list article.voided { opacity:.65; background:var(--ui-danger-soft); text-decoration-color:var(--ui-danger); }
 .history-list {
   display: grid;
   gap: 12px;
@@ -156,6 +172,10 @@ select {
   .movement-list div {
     grid-template-columns: 1fr;
   }
+  .history-filters,
+  .cash-history-list article {
+    grid-template-columns: 1fr;
+  }
 }
 .movement-direction { display:grid; grid-template-columns:1fr 1fr; gap:8px; }.movement-direction button { display:grid; gap:3px; padding:12px; border:2px solid var(--ui-border); border-radius:var(--ui-radius-sm); background:var(--ui-surface); color:var(--ui-ink-muted); text-align:left; cursor:pointer; }.movement-direction button b { font-size:12px; }.movement-direction button span { font-size:10px; }.movement-direction .direction-in.selected { border-color:var(--ui-success); background:#eefaf3; color:var(--ui-success); box-shadow:0 0 0 2px rgba(30,130,76,.09); }.movement-direction .direction-out.selected { border-color:var(--ui-danger); background:#fff2f2; color:var(--ui-danger); box-shadow:0 0 0 2px rgba(180,45,45,.09); }.out-reason-options { display:flex; gap:6px; }.out-reason-options button { flex:1; min-height:32px; border:1px solid var(--ui-border-strong); border-radius:var(--ui-radius-sm); background:var(--ui-surface); color:var(--ui-ink-muted); cursor:pointer; }.out-reason-options button.selected { border-color:var(--ui-danger); background:var(--ui-danger-soft); color:var(--ui-danger); font-weight:750; }.movement-impact { display:grid; grid-template-columns:1fr auto; gap:2px 10px; padding:10px 12px; border:1px solid; border-radius:var(--ui-radius-sm); }.movement-impact span { font-size:9px; font-weight:850; letter-spacing:.05em; }.movement-impact strong { grid-row:1/3; grid-column:2; align-self:center; font-size:21px; }.movement-impact small { color:var(--ui-ink-muted); }.movement-impact.money-in { border-color:#badbc8; background:#f1faf5; color:var(--ui-success); }.movement-impact.money-out { border-color:#edc3c3; background:#fff5f5; color:var(--ui-danger); }.movement-save.outgoing { background:var(--ui-danger); }
 
@@ -172,3 +192,6 @@ select {
 .open-card > .primary, .close-card > .primary { margin-top:12px; }.two-col .primary { margin-top:2px; }
 .movement-list div, .history-item { padding:9px 0; }.history-list { gap:0; }
 @media (max-width:760px) { .cash-page { padding:18px; } }
+.drop-target { display:grid; gap:6px; font-size:12px; font-weight:800; color:var(--ui-ink-muted); }
+.drop-target select { width:100%; }
+.drop-target small { font-weight:600; color:var(--ui-ink-muted); }

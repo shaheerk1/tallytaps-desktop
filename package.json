@@ -21,6 +21,7 @@
     "verify:expense-funds": "node tools/e2e-verify/expense-fund-invariants.js",
     "verify:lot-costing": "node tools/e2e-verify/lot-costing-invariants.js",
     "verify:equity-journal": "node tools/e2e-verify/equity-and-journal-invariants.js",
+    "verify:cloud-archive": "node tools/e2e-verify/cloud-archive-streams.js",
     "test": "ng test pos-shell"
   },
   "build": {

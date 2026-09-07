@@ -11,6 +11,7 @@ function registerIpcHandlers(services) {
   const requireCashView = services.ipcAuthorizationService.requirePermission('cash.shift.view');
   const requireCashOpen = services.ipcAuthorizationService.requirePermission('cash.shift.open');
   const requireCashMovement = services.ipcAuthorizationService.requirePermission('cash.movement.create');
+  const requireCashCorrection = services.ipcAuthorizationService.requirePermission('cash.movement.correct');
   const requireCashCount = services.ipcAuthorizationService.requirePermission('cash.count.create');
   const requireCashBlindClose = services.ipcAuthorizationService.requirePermission('cash.shift.blindClose');
   const requireCashClose = services.ipcAuthorizationService.requirePermission('cash.shift.close');
@@ -43,14 +44,22 @@ function registerIpcHandlers(services) {
   const requireExpensesView = services.ipcAuthorizationService.requirePermission('expenses.view');
   const requireExpensesCreate = services.ipcAuthorizationService.requirePermission('expenses.create');
   const requireExpensesAllocate = services.ipcAuthorizationService.requirePermission('expenses.allocate');
+  const requireRecurringExpenses = services.ipcAuthorizationService.requirePermission('expenses.recurring.manage');
   const requireLotCostingView = services.ipcAuthorizationService.requirePermission('lot-costing.view');
   const requireStakeholdersView = services.ipcAuthorizationService.requirePermission('stakeholders.view');
   const requireStakeholdersManage = services.ipcAuthorizationService.requirePermission('stakeholders.manage');
   const requireStakeholdersContribute = services.ipcAuthorizationService.requirePermission('stakeholders.contribute');
   const requireStakeholdersDrawing = services.ipcAuthorizationService.requirePermission('stakeholders.drawing');
+  const requireStakeholdersOverrideDrawing = services.ipcAuthorizationService.requirePermission('stakeholders.override-drawing');
   const requireStakeholdersProfitShare = services.ipcAuthorizationService.requirePermission('stakeholders.profit-share');
   const requireJournalView = services.ipcAuthorizationService.requirePermission('accounting.journal.view');
+  const requireAccountingReconcile = services.ipcAuthorizationService.requirePermission('accounting.reconcile');
   const requirePeriodClose = services.ipcAuthorizationService.requirePermission('accounting.period.close');
+  const actorId = (payload) => Number(payload?.context?.actor?.id || payload?.actor?.id || 0) || null;
+  const requireDrawingAuthority = async (payload) => {
+    await requireStakeholdersDrawing(payload);
+    if (payload?.entry?.overrideApprovedBy) await requireStakeholdersOverrideDrawing(payload);
+  };
   const requireFieldInboxView = services.ipcAuthorizationService.requirePermission('field-inbox.view');
   const requireFieldInboxResolve = services.ipcAuthorizationService.requirePermission('field-inbox.resolve');
 
@@ -504,7 +513,10 @@ function registerIpcHandlers(services) {
   wrapIpcHandler('expenses.categories.list', async (payload) => services.expenseService.listCategories(payload || {}), { authorize: requireExpensesView });
   wrapIpcHandler('expenses.categories.save', async (payload) => services.expenseService.saveCategory(payload?.category || {}), { authorize: requireFundsManage });
   wrapIpcHandler('expenses.list', async (payload) => services.expenseService.listExpenses(payload?.filters || {}), { authorize: requireExpensesView });
-  wrapIpcHandler('expenses.create', async (payload) => services.expenseService.recordExpense(payload?.expense || {}), { authorize: requireExpensesCreate });
+  wrapIpcHandler('expenses.create', async (payload) => services.expenseService.recordExpense({ ...(payload?.expense || {}), userId: actorId(payload) }), { authorize: requireExpensesCreate });
+  wrapIpcHandler('expenses.recurring.list', async (payload) => services.expenseService.listRecurringExpenses(payload || {}), { authorize: requireExpensesView });
+  wrapIpcHandler('expenses.recurring.save', async (payload) => services.expenseService.saveRecurringExpense({ ...(payload?.template || {}), userId: actorId(payload) }), { authorize: requireRecurringExpenses });
+  wrapIpcHandler('expenses.recurring.record', async (payload) => services.expenseService.recordRecurringExpense({ ...(payload || {}), userId: actorId(payload) }), { authorize: requireRecurringExpenses });
 
   // ── Lot costing ─────────────────────────────────────────────
   // Attaching a cost to the goods it belongs to is receiving work, so it
@@ -523,15 +535,16 @@ function registerIpcHandlers(services) {
   wrapIpcHandler('stakeholders.shares.list', async (payload) => services.stakeholderService.listShares(payload || {}), { authorize: requireStakeholdersView });
   wrapIpcHandler('stakeholders.reconcile', async (payload) => services.stakeholderService.reconcile(payload || {}), { authorize: requireStakeholdersView });
   wrapIpcHandler('stakeholders.save', async (payload) => services.stakeholderService.save(payload?.stakeholder || {}), { authorize: requireStakeholdersManage });
-  wrapIpcHandler('stakeholders.shares.save', async (payload) => services.stakeholderService.saveShare(payload?.share || {}), { authorize: requireStakeholdersManage });
-  wrapIpcHandler('stakeholders.contribute', async (payload) => services.stakeholderService.contribute(payload?.entry || {}), { authorize: requireStakeholdersContribute });
-  wrapIpcHandler('stakeholders.draw', async (payload) => services.stakeholderService.draw(payload?.entry || {}), { authorize: requireStakeholdersDrawing });
-  wrapIpcHandler('stakeholders.settle', async (payload) => services.stakeholderService.settle(payload?.entry || {}), { authorize: requireStakeholdersDrawing });
-  wrapIpcHandler('stakeholders.profitShare', async (payload) => services.stakeholderService.allocateProfitShare(payload?.entry || {}), { authorize: requireStakeholdersProfitShare });
+  wrapIpcHandler('stakeholders.shares.save', async (payload) => services.stakeholderService.saveShare({ ...(payload?.share || {}), userId: actorId(payload) }), { authorize: requireStakeholdersManage });
+  wrapIpcHandler('stakeholders.contribute', async (payload) => services.stakeholderService.contribute({ ...(payload?.entry || {}), userId: actorId(payload) }), { authorize: requireStakeholdersContribute });
+  wrapIpcHandler('stakeholders.draw', async (payload) => services.stakeholderService.draw({ ...(payload?.entry || {}), userId: actorId(payload), overrideApprovedBy: payload?.entry?.overrideApprovedBy ? actorId(payload) : null }), { authorize: requireDrawingAuthority });
+  wrapIpcHandler('stakeholders.settle', async (payload) => services.stakeholderService.settle({ ...(payload?.entry || {}), userId: actorId(payload) }), { authorize: requireStakeholdersDrawing });
+  wrapIpcHandler('stakeholders.profitShare', async (payload) => services.stakeholderService.allocateProfitShare({ ...(payload?.entry || {}), userId: actorId(payload) }), { authorize: requireStakeholdersProfitShare });
 
   // ── Accountant mode ─────────────────────────────────────────
   // Read-only over derived postings; there is no manual journal entry.
   wrapIpcHandler('accounting.accounts.list', async () => services.accountingService.listAccounts(), { authorize: requireJournalView });
+  wrapIpcHandler('accounting.reconcile', async (payload) => services.accountingService.reconcile({ ...(payload?.options || {}), userId: actorId(payload) }), { authorize: requireAccountingReconcile });
   wrapIpcHandler('accounting.journal.list', async (payload) => services.accountingService.listJournal(payload?.filters || {}), { authorize: requireJournalView });
   wrapIpcHandler('accounting.trialBalance', async (payload) => services.accountingService.trialBalance(payload?.filters || {}), { authorize: requireJournalView });
   wrapIpcHandler('accounting.profitAndLoss', async (payload) => services.accountingService.profitAndLoss(payload?.filters || {}), { authorize: requireJournalView });
@@ -932,8 +945,23 @@ function registerIpcHandlers(services) {
   );
   wrapIpcHandler(
     'cash.addMovement',
-    async (payload) => services.cashManagementService.recordMovement(payload?.movement || {}),
+    async (payload) => services.cashManagementService.recordMovement({ ...(payload?.movement || {}), userId: actorId(payload) }),
     { authorize: requireCashMovement }
+  );
+  wrapIpcHandler(
+    'cash.correctMovement',
+    async (payload) => services.cashManagementService.correctMovement({ ...(payload?.movement || {}), userId: actorId(payload) }),
+    { authorize: requireCashCorrection }
+  );
+  wrapIpcHandler(
+    'cash.removeMovement',
+    async (payload) => services.cashManagementService.removeMovement({ ...(payload?.movement || {}), userId: actorId(payload) }),
+    { authorize: requireCashCorrection }
+  );
+  wrapIpcHandler(
+    'cash.movementHistory',
+    async (payload) => services.cashManagementService.listMovementHistory(payload?.filters || {}),
+    { authorize: requireCashView }
   );
   wrapIpcHandler(
     'cash.blindClose',

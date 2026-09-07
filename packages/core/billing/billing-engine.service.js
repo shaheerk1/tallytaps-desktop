@@ -106,6 +106,7 @@ function createBillingEngineService({
       return {
         method,
         amount: toMoney(p.amount || 0),
+        fundAccountId: Number(p.fundAccountId) || null,
         chequeDetails,
         providerRef: method === 'cheque'
           ? chequeDetails?.number || p.providerRef || null
@@ -623,6 +624,7 @@ function createBillingEngineService({
       return {
         method,
         amount: toMoney(payment.amount),
+        fundAccountId: Number(payment.fundAccountId) || null,
         chequeDetails,
         providerRef: method === 'cheque' ? chequeDetails?.number || payment.providerRef || null : payment.providerRef || null
       };

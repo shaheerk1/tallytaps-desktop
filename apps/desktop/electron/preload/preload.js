@@ -129,7 +129,10 @@ contextBridge.exposeInMainWorld('posApi', {
     categories: (includeInactive, actor) => ipcRenderer.invoke('expenses.categories.list', { includeInactive, actor }),
     saveCategory: (category, actor) => ipcRenderer.invoke('expenses.categories.save', { category, actor }),
     list: (filters, actor) => ipcRenderer.invoke('expenses.list', { filters, actor }),
-    create: (expense, actor) => ipcRenderer.invoke('expenses.create', { expense, actor })
+    create: (expense, actor) => ipcRenderer.invoke('expenses.create', { expense, actor }),
+    listRecurring: (locCode, includeInactive, actor) => ipcRenderer.invoke('expenses.recurring.list', { locCode, includeInactive, actor }),
+    saveRecurring: (template, actor) => ipcRenderer.invoke('expenses.recurring.save', { template, actor }),
+    recordRecurring: (payload, actor) => ipcRenderer.invoke('expenses.recurring.record', { ...payload, actor })
   },
   lotCosting: {
     lots: (filters, actor) => ipcRenderer.invoke('lotCosting.lots.list', { filters, actor }),
@@ -152,6 +155,7 @@ contextBridge.exposeInMainWorld('posApi', {
     reconcile: (locCode, actor) => ipcRenderer.invoke('stakeholders.reconcile', { locCode, actor })
   },
   accounting: {
+    reconcile: (options, actor) => ipcRenderer.invoke('accounting.reconcile', { options, actor }),
     accounts: (actor) => ipcRenderer.invoke('accounting.accounts.list', { actor }),
     journal: (filters, actor) => ipcRenderer.invoke('accounting.journal.list', { filters, actor }),
     trialBalance: (filters, actor) => ipcRenderer.invoke('accounting.trialBalance', { filters, actor }),
@@ -219,6 +223,9 @@ contextBridge.exposeInMainWorld('posApi', {
     archiveReportPrint: (payload, actor) => ipcRenderer.invoke('cash.archiveReportPrint', { ...payload, actor }),
     openShift: (shift, actor) => ipcRenderer.invoke('cash.openShift', { shift, actor }),
     addMovement: (movement, actor) => ipcRenderer.invoke('cash.addMovement', { movement, actor }),
+    correctMovement: (movement, actor) => ipcRenderer.invoke('cash.correctMovement', { movement, actor }),
+    removeMovement: (movement, actor) => ipcRenderer.invoke('cash.removeMovement', { movement, actor }),
+    movementHistory: (filters, actor) => ipcRenderer.invoke('cash.movementHistory', { filters, actor }),
     blindClose: (count, actor) => ipcRenderer.invoke('cash.blindClose', { count, actor }),
     closeShift: (close, actor) => ipcRenderer.invoke('cash.closeShift', { close, actor })
   },

@@ -186,13 +186,156 @@ function createCashManagementRepository({ database, documentSequenceRepository, 
     });
   }
 
+  const editableMovementTypes = new Set(['cash_in', 'cash_out', 'safe_drop', 'bank_drop', 'correction']);
+
+  function movementSnapshot(row) {
+    return {
+      movementType: row.movement_type,
+      direction: row.direction,
+      amount: money(row.amount),
+      reason: row.reason,
+      status: row.status
+    };
+  }
+
+  async function lockEditableMovement(connection, movementId) {
+    const [rows] = await connection.execute(
+      `SELECT m.*, s.status AS shift_status, s.business_date, s.loc_code
+       FROM cash_movements m
+       JOIN cash_shifts s ON s.id = m.cash_shift_id
+       WHERE m.id = ? FOR UPDATE`,
+      [Number(movementId)]
+    );
+    const row = rows[0];
+    if (!row) throw new Error('This cash movement no longer exists.');
+    if (row.shift_status !== 'open') throw new Error('Cash can only be corrected before its shift is closed.');
+    if (row.status !== 'active') throw new Error('This cash movement has already been removed.');
+    if (row.reference_type || !editableMovementTypes.has(row.movement_type)) {
+      throw new Error('A sale, refund, advance, or other source-linked cash movement must be corrected from its original transaction.');
+    }
+    await businessDayRepository.assertOpenWithConnection(connection, {
+      locationCode: row.loc_code,
+      businessDate: row.business_date
+    });
+    return row;
+  }
+
+  async function appendMovementEvent(connection, { row, action, reason, afterState, userId }) {
+    const [[sequence]] = await connection.execute(
+      'SELECT COALESCE(MAX(event_no), 0) AS event_no FROM cash_movement_events WHERE cash_movement_id = ?',
+      [Number(row.id)]
+    );
+    await connection.execute(
+      `INSERT INTO cash_movement_events
+         (cash_movement_id, event_no, action, reason, before_state, after_state, created_by)
+       VALUES (?, ?, ?, ?, CAST(? AS JSON), CAST(? AS JSON), ?)`,
+      [Number(row.id), Number(sequence.event_no || 0) + 1, action, reason,
+        JSON.stringify(movementSnapshot(row)), afterState ? JSON.stringify(afterState) : null, Number(userId)]
+    );
+  }
+
+  async function updateMovement({ movementId, direction, amount, reason, userId }) {
+    return database.withConnection(async (connection) => {
+      await connection.beginTransaction();
+      try {
+        const row = await lockEditableMovement(connection, movementId);
+        const nextDirection = direction === 'out' ? 'out' : 'in';
+        const nextAmount = money(amount);
+        const nextReason = String(reason || '').trim();
+        if (nextAmount <= 0) throw new Error('Cash movement amount must be greater than zero.');
+        if (!nextReason) throw new Error('A reason is required for a cash correction.');
+        const nextType = row.movement_type === 'correction'
+          ? 'correction'
+          : (nextDirection === 'in' ? 'cash_in' : (row.movement_type === 'safe_drop' || row.movement_type === 'bank_drop' ? row.movement_type : 'cash_out'));
+        const afterState = { movementType: nextType, direction: nextDirection, amount: nextAmount, reason: nextReason, status: 'active' };
+        await appendMovementEvent(connection, {
+          row,
+          action: 'edited',
+          reason: `Corrected before shift close: ${nextReason}`,
+          afterState,
+          userId
+        });
+        await connection.execute(
+          `UPDATE cash_movements
+           SET movement_type = ?, direction = ?, amount = ?, reason = ?,
+               metadata = JSON_SET(COALESCE(metadata, JSON_OBJECT()), '$.lastCorrectionBy', ?, '$.lastCorrectionAt', NOW())
+           WHERE id = ?`,
+          [nextType, nextDirection, nextAmount, nextReason, Number(userId), Number(row.id)]
+        );
+        await connection.commit();
+        return getShift(row.cash_shift_id);
+      } catch (error) { await connection.rollback(); throw error; }
+    });
+  }
+
+  async function voidMovement({ movementId, reason, userId }) {
+    return database.withConnection(async (connection) => {
+      await connection.beginTransaction();
+      try {
+        const row = await lockEditableMovement(connection, movementId);
+        const voidReason = String(reason || '').trim();
+        if (!voidReason) throw new Error('A reason is required to remove a cash movement.');
+        await appendMovementEvent(connection, { row, action: 'voided', reason: voidReason, afterState: null, userId });
+        await connection.execute(
+          `UPDATE cash_movements
+           SET status = 'void', voided_at = NOW(), voided_by = ?, void_reason = ?
+           WHERE id = ?`,
+          [Number(userId), voidReason, Number(row.id)]
+        );
+        await connection.commit();
+        return getShift(row.cash_shift_id);
+      } catch (error) { await connection.rollback(); throw error; }
+    });
+  }
+
+  async function listMovementHistory({ locCode, fromDate, toDate, direction, movementType, term, includeVoided = true, limit = 250 }) {
+    return database.withConnection(async (connection) => {
+      const clauses = ['s.loc_code = ?'];
+      const params = [String(locCode || '').trim()];
+      if (fromDate) { clauses.push('s.business_date >= ?'); params.push(String(fromDate).slice(0, 10)); }
+      if (toDate) { clauses.push('s.business_date <= ?'); params.push(String(toDate).slice(0, 10)); }
+      if (direction === 'in' || direction === 'out') { clauses.push('m.direction = ?'); params.push(direction); }
+      if (movementType) { clauses.push('m.movement_type = ?'); params.push(String(movementType)); }
+      if (!includeVoided) clauses.push("m.status = 'active'");
+      if (String(term || '').trim()) {
+        clauses.push('(m.reason LIKE ? OR m.reference_type LIKE ? OR m.reference_id LIKE ? OR u.display_name LIKE ?)');
+        const pattern = `%${String(term).trim()}%`;
+        params.push(pattern, pattern, pattern, pattern);
+      }
+      const safeLimit = Math.min(1000, Math.max(1, Number(limit || 250)));
+      const [rows] = await connection.query(
+        `SELECT m.id, m.movement_type, m.direction, m.amount, m.status, m.reference_type, m.reference_id,
+                m.reason, m.voided_at, m.void_reason, m.created_at, m.updated_at,
+                s.id AS cash_shift_id, s.business_date, s.shift_no, s.mac_code,
+                u.display_name AS created_by_name, vu.display_name AS voided_by_name
+         FROM cash_movements m
+         JOIN cash_shifts s ON s.id = m.cash_shift_id
+         JOIN users u ON u.id = m.created_by
+         LEFT JOIN users vu ON vu.id = m.voided_by
+         WHERE ${clauses.join(' AND ')}
+         ORDER BY s.business_date DESC, m.id DESC LIMIT ${safeLimit}`,
+        params
+      );
+      return rows.map((row) => ({
+        id: Number(row.id), movementType: row.movement_type, direction: row.direction,
+        amount: money(row.amount), status: row.status, referenceType: row.reference_type,
+        referenceId: row.reference_id, reason: row.reason, voidReason: row.void_reason,
+        voidedAt: row.voided_at, createdAt: row.created_at, updatedAt: row.updated_at,
+        cashShiftId: Number(row.cash_shift_id), businessDate: row.business_date,
+        shiftNo: Number(row.shift_no), machineCode: row.mac_code,
+        createdByName: row.created_by_name, voidedByName: row.voided_by_name,
+        editable: row.status === 'active' && !row.reference_type && editableMovementTypes.has(row.movement_type)
+      }));
+    });
+  }
+
   async function getShift(shiftId) {
     return database.withConnection(async (connection) => {
       const shift = await getShiftRow(connection, shiftId);
       if (!shift) return null;
       const [movements] = await connection.execute(
         `SELECT id, movement_type, direction, amount, reference_type, reference_id, reason, created_at
-         FROM cash_movements WHERE cash_shift_id = ? ORDER BY id ASC`, [shiftId]
+         FROM cash_movements WHERE cash_shift_id = ? AND status = 'active' ORDER BY id ASC`, [shiftId]
       );
       const [counts] = await connection.execute(
         `SELECT c.id, c.count_type, c.total, c.counted_at, u.display_name AS counted_by_name
@@ -215,7 +358,13 @@ function createCashManagementRepository({ database, documentSequenceRepository, 
         expectedTotal, declaredTotal: shift.declared_total == null ? null : money(shift.declared_total),
         varianceTotal: shift.variance_total == null ? null : money(shift.variance_total),
         varianceReason: shift.variance_reason, openedAt: shift.opened_at, blindClosedAt: shift.blind_closed_at,
-        closedAt: shift.closed_at, movements: movements.map((row) => ({ ...row, amount: money(row.amount) })), counts
+        closedAt: shift.closed_at,
+        movements: movements.map((row) => ({
+          ...row,
+          amount: money(row.amount),
+          editable: shift.status === 'open' && !row.reference_type && editableMovementTypes.has(row.movement_type)
+        })),
+        counts
       };
     });
   }
@@ -259,7 +408,7 @@ function createCashManagementRepository({ database, documentSequenceRepository, 
       try {
         const shift = await getShiftRow(connection, shiftId, true);
         if (!shift || shift.status !== 'blind_closed') throw new Error('A shift must be blind-closed before final reconciliation.');
-        const [movementRows] = await connection.execute(`SELECT direction, amount FROM cash_movements WHERE cash_shift_id = ?`, [shiftId]);
+        const [movementRows] = await connection.execute(`SELECT direction, amount FROM cash_movements WHERE cash_shift_id = ? AND status = 'active'`, [shiftId]);
         const expected = money(movementRows.reduce((sum, row) => sum + (row.direction === 'in' ? money(row.amount) : -money(row.amount)), 0));
         const declared = money(shift.declared_total);
         const variance = money(declared - expected);
@@ -413,6 +562,9 @@ function createCashManagementRepository({ database, documentSequenceRepository, 
     createShift,
     getShift,
     addMovement,
+    updateMovement,
+    voidMovement,
+    listMovementHistory,
     submitClosingCount,
     closeShift,
     listReportHistory,

@@ -14,6 +14,7 @@
  *   6. an expense without a category, amount, fund, or reason is refused;
  *   7. the origin key stops a replayed expense from being written twice;
  *   8. every expense and transfer derives a balanced journal entry.
+ *   9. recurring costs post only when confirmed and advance exactly once.
  */
 const { createDatabase } = require('../../packages/database/connection/mysql-connection');
 const { createDocumentSequenceRepository } = require('../../packages/database/repositories/document-sequence.repository');
@@ -230,14 +231,29 @@ async function main() {
         const safeLedger = await service.getFundLedger({ fundAccountId: safeFund.insertId, locCode });
         assert(safeLedger.movements.length === 2, `The safe ledger should show 2 movements, got ${safeLedger.movements.length}.`);
 
+        // ── 9. Recurring costs are confirmed, not auto-posted ─
+        const recurring = await service.saveRecurringExpense({
+          ...base, locCode, name: 'Monthly test rent', expenseCategoryId: overheadCategory.id,
+          fundAccountId: safeFund.insertId, amount: 100, reason: 'Test monthly rent',
+          cadence: 'monthly', intervalCount: 1, nextDueDate: txnDate, isActive: true
+        });
+        const beforeRecurring = await service.listExpenses({ locCode, fromDate: txnDate, toDate: txnDate });
+        assert(beforeRecurring.rows.length === 2, 'Saving a recurring reminder must not post money automatically.');
+        await service.recordRecurringExpense({ ...base, templateId: recurring.id });
+        const afterRecurring = await service.listExpenses({ locCode, fromDate: txnDate, toDate: txnDate });
+        assert(afterRecurring.rows.length === 3, 'Confirming one due recurring cost should create exactly one expense.');
+        const [nextRecurring] = await service.listRecurringExpenses({ locCode });
+        assert(nextRecurring.nextDueDate === '2099-04-01', `Monthly schedule should advance to 2099-04-01, got ${nextRecurring.nextDueDate}.`);
+        await expectRejection(service.recordRecurringExpense({ ...base, templateId: recurring.id }), 'A future recurring cost');
+
         // ── 8. Every money movement posted a balanced entry ─
         const trial = await journalRepository.getTrialBalance({ locCode });
         assert(trial.inBalance, `The journal is out of balance by ${trial.difference}.`);
         const [[postings]] = await connection.execute(
           'SELECT COUNT(*) AS n FROM journal_entries WHERE loc_code = ?', [locCode]
         );
-        // 2 expenses + 1 transfer = 3 derived entries.
-        assert(Number(postings.n) === 3, `Expected 3 derived journal entries, got ${postings.n}.`);
+        // 2 ordinary expenses + 1 transfer + 1 confirmed recurring expense.
+        assert(Number(postings.n) === 4, `Expected 4 derived journal entries, got ${postings.n}.`);
 
         console.log('Expense and fund invariants passed:');
         console.log('  1. a till expense writes both an expense entry and a cash movement, and the shift reconciles');
@@ -248,6 +264,7 @@ async function main() {
         console.log('  6. an expense missing a category, fund, amount, reason, or session is refused');
         console.log('  7. a replayed expense is stopped by its origin key');
         console.log('  8. every expense and transfer derived a balanced journal entry');
+        console.log('  9. recurring costs remain reminders until confirmed and then advance exactly once');
         console.log('All writes will be rolled back.');
       } finally {
         await connection.rollback();

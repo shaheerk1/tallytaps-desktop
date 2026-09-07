@@ -203,14 +203,17 @@ function createJournalRepository({ database, documentSequenceRepository }) {
     return {
       income, expenses, incomeTotal, expenseTotal,
       netResult: money(incomeTotal - expenseTotal),
-      // Sales are not posted to the journal yet, so this statement covers costs
-      // only. Saying so is better than implying a complete profit figure.
+      // A zero-income result is surfaced as a warning because it normally means
+      // older operational activity has not been reconciled into the journal yet.
       coversCostsOnly: incomeTotal === 0
     };
   }
 
   async function getBalanceSheet(filters = {}) {
-    const trial = await getTrialBalance(filters);
+    // A balance sheet is cumulative as at a date. `fromDate` belongs to the P&L
+    // period and must not discard opening assets, debts, or owner balances.
+    const cumulativeFilters = { locCode: filters.locCode, toDate: filters.toDate };
+    const trial = await getTrialBalance(cumulativeFilters);
     const assets = trial.accounts.filter((row) => row.accountType === 'asset');
     const liabilities = trial.accounts.filter((row) => row.accountType === 'liability');
     const equity = trial.accounts.filter((row) => row.accountType === 'equity');
@@ -222,7 +225,7 @@ function createJournalRepository({ database, documentSequenceRepository }) {
     const assetTotal = towardDebit(assets);
     const liabilityTotal = towardCredit(liabilities);
     const equityTotal = towardCredit(equity);
-    const profitAndLoss = await getProfitAndLoss(filters);
+    const profitAndLoss = await getProfitAndLoss(cumulativeFilters);
     return {
       assets, liabilities, equity, assetTotal, liabilityTotal, equityTotal,
       retainedResult: profitAndLoss.netResult,
@@ -275,6 +278,17 @@ function createJournalRepository({ database, documentSequenceRepository }) {
              closed_by = VALUES(closed_by), closed_at = NOW(), notes = VALUES(notes)`,
           [text(locCode), start, end, userId, text(notes) || null]
         );
+        const [[period]] = await connection.execute(
+          'SELECT id FROM accounting_periods WHERE loc_code = ? AND period_start = ? FOR UPDATE', [text(locCode), start]
+        );
+        const [[eventNo]] = await connection.execute(
+          'SELECT COALESCE(MAX(event_no), 0) AS n FROM accounting_period_events WHERE accounting_period_id = ?', [period.id]
+        );
+        await connection.execute(
+          `INSERT INTO accounting_period_events (accounting_period_id, event_no, event_type, reason, created_by)
+           VALUES (?, ?, 'closed', ?, ?)`,
+          [period.id, Number(eventNo.n || 0) + 1, text(notes) || 'Period closed', userId]
+        );
         await connection.commit();
         const [rows] = await connection.execute(
           'SELECT * FROM accounting_periods WHERE loc_code = ? AND period_start = ?', [text(locCode), start]
@@ -295,10 +309,18 @@ function createJournalRepository({ database, documentSequenceRepository }) {
         const [rows] = await connection.execute('SELECT * FROM accounting_periods WHERE id = ? FOR UPDATE', [Number(periodId)]);
         if (!rows[0]) throw new Error('This accounting period no longer exists.');
         if (rows[0].status !== 'closed') throw new Error('This period is already open.');
+        const [[eventNo]] = await connection.execute(
+          'SELECT COALESCE(MAX(event_no), 0) AS n FROM accounting_period_events WHERE accounting_period_id = ?', [Number(periodId)]
+        );
         await connection.execute(
           `UPDATE accounting_periods SET status = 'open', reopen_count = reopen_count + 1,
-             reopen_reason = ?, closed_by = ?, closed_at = NULL WHERE id = ?`,
-          [text(reason), userId, Number(periodId)]
+             reopen_reason = ? WHERE id = ?`,
+          [text(reason), Number(periodId)]
+        );
+        await connection.execute(
+          `INSERT INTO accounting_period_events (accounting_period_id, event_no, event_type, reason, created_by)
+           VALUES (?, ?, 'reopened', ?, ?)`,
+          [Number(periodId), Number(eventNo.n || 0) + 1, text(reason), userId]
         );
         await connection.commit();
         return { id: Number(periodId), status: 'open', reopenCount: Number(rows[0].reopen_count) + 1 };

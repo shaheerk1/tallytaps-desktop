@@ -4,7 +4,7 @@ import { PrintingService } from '../services/printing.service';
 
 @Component({ selector: 'pos-supply-receiving', templateUrl: './supply-receiving.component.html', styleUrls: ['./supply-receiving.component.css'] })
 export class SupplyReceivingComponent implements OnInit {
-  suppliers: any[] = []; products: any[] = []; receipts: any[] = []; agreements: any[] = []; settlements: any[] = []; chargeTypes: any[] = []; lots: any[] = []; inventorySummary: any[] = []; allocationExceptions: any[] = []; recentLotAllocations: any[] = []; bankAccounts: any[] = []; account: { entries: any[]; balance: number } = null as any; info = ''; error = ''; saving = false;
+  suppliers: any[] = []; products: any[] = []; receipts: any[] = []; agreements: any[] = []; settlements: any[] = []; chargeTypes: any[] = []; lots: any[] = []; inventorySummary: any[] = []; allocationExceptions: any[] = []; recentLotAllocations: any[] = []; bankAccounts: any[] = []; settlementFunds: any[] = []; account: { entries: any[]; balance: number } = null as any; info = ''; error = ''; saving = false;
   activePanel: 'receive' | 'pattiyal' | 'settle' | 'inventory' | 'setup' = 'receive';
   panelInfo = ''; panelError = '';
   supplier = { supplierCode: '', name: '', phone: '', mobile: '', address: '' };
@@ -12,7 +12,7 @@ export class SupplyReceivingComponent implements OnInit {
   adjustment: any = { productId: null, handlingQuantity: null, baseQuantity: null, businessDate: new Date().toISOString().slice(0, 10), reason: '' };
   agreement: any = { supplierId: null, ownershipModel: 'consignment', settlementBasis: 'net_sale', commissionRate: 2, paymentTermsDays: null };
   settlement: any = { supplierId: null, fromDate: new Date().toISOString().slice(0, 10), toDate: new Date().toISOString().slice(0, 10) };
-  payment: any = { settlementId: null, method: 'cash', amount: null, reference: '', chequeDetails: { bankAccountId: null, chequeNumber: '', chequeDate: '' } };
+  payment: any = { settlementId: null, method: 'cash', fundAccountId: null, amount: null, reference: '', chequeDetails: { bankAccountId: null, chequeNumber: '', chequeDate: '' } };
   charge: any = { supplierId: null, chargeTypeId: null, amount: null, businessDate: new Date().toISOString().slice(0, 10), reason: '' };
   stockCount: any = { businessDate: new Date().toISOString().slice(0, 10), reason: '', lines: [] };
   exceptionAllocation: any = { exceptionId: null, productId: null, saleDate: '', inventoryLotId: null, handlingQuantity: null, baseQuantity: null, reason: '' };
@@ -50,7 +50,9 @@ export class SupplyReceivingComponent implements OnInit {
     this.inventorySummary = inventorySummary.data || [];
     this.allocationExceptions = allocationExceptions.data || [];
     this.recentLotAllocations = recentLotAllocations.data || [];
-    this.bankAccounts = bankAccounts.data || [];
+    this.bankAccounts = (bankAccounts.data || []).filter((bank: any) => bank.loc_code === this.origin().locCode && bank.is_active);
+    const funds = await window.posApi?.funds.list(this.origin().locCode, false, this.actor());
+    this.settlementFunds = funds?.success ? (funds.data || []).filter((fund: any) => fund.fundKind === 'bank' || fund.fundKind === 'cash_safe') : [];
     this.stockCount.lines = this.lots.map((lot: any) => ({ inventoryLotId: lot.id, countedQuantity: lot.remaining_handling_quantity ?? lot.remaining_quantity, countedKilos: lot.remaining_base_quantity ?? lot.remaining_kilos }));
     const failed = [suppliers, receipts, agreements, settlements, chargeTypes, lots, inventorySummary, allocationExceptions, recentLotAllocations, bankAccounts].find((result: any) => !result.success);
     if (failed) this.reportError(failed.error || 'Some receiving data could not be loaded. Check the role permissions for this workflow.');
@@ -129,7 +131,7 @@ export class SupplyReceivingComponent implements OnInit {
   async loadAccount(): Promise<void> { if (!this.settlement.supplierId) { this.account = null as any; return; } const result = await this.api().getSupplierAccount(this.settlement.supplierId, this.actor()); if (!result.success) { this.error = result.error || 'Could not load supplier account.'; return; } this.account = result.data; }
   async createSettlement(): Promise<void> { const result = await this.api().createSupplierSettlement({ ...this.settlement, ...this.origin(), userId: this.actor()?.id }, this.actor()); if (!result.success) { this.error = result.error || 'Could not create settlement.'; return; } this.info = `Settlement ${result.data.settlementNumber} drafted: ${Number(result.data.totalDue).toFixed(2)}.`; await this.load(); await this.loadAccount(); }
   async approveSettlement(id: number): Promise<void> { const result = await this.api().approveSupplierSettlement(id, this.actor()?.id, this.actor()); if (!result.success) { this.error = result.error || 'Could not approve settlement.'; return; } this.info = 'Settlement approved.'; await this.load(); }
-  beginSettlementPayment(item: any): void { this.payment = { settlementId: item.id, method: 'cash', amount: Math.max(0, Number(item.total_due || 0) - Number(item.paid_total || 0)), reference: '', chequeDetails: { bankAccountId: this.bankAccounts[0]?.id || null, chequeNumber: '', chequeDate: this.session.getBillingDate() || '' } }; }
+  beginSettlementPayment(item: any): void { this.payment = { settlementId: item.id, method: 'cash', fundAccountId: this.settlementFunds.find((fund: any) => fund.fundKind === 'bank')?.id || this.settlementFunds[0]?.id || null, amount: Math.max(0, Number(item.total_due || 0) - Number(item.paid_total || 0)), reference: '', chequeDetails: { bankAccountId: this.bankAccounts[0]?.id || null, chequeNumber: '', chequeDate: this.session.getBillingDate() || '' } }; }
   async paySettlement(): Promise<void> { const origin = this.origin(); const result = await this.api().recordSupplierPayment({ ...this.payment, ...origin, businessDate: origin.txnDate, sessionId: this.session.getWorkstationSession()?.sessionId, userId: this.actor()?.id }, this.actor()); if (!result.success) { this.error = result.error || 'Could not record supplier payment.'; return; } this.info = `Payment recorded. Remaining ${Number(result.data.remaining).toFixed(2)}.`; this.payment.amount = null; await this.load(); }
   private settlementDocument(detail: any): any {
     const settlement = detail.settlement;

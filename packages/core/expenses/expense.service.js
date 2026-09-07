@@ -69,7 +69,8 @@ function createExpenseService({ expenseRepository }) {
       amount: money(input.amount),
       payee: text(input.payee),
       reference: text(input.reference),
-      reason: text(input.reason)
+      reason: text(input.reason),
+      requestId: text(input.requestId)
     });
   }
 
@@ -77,6 +78,41 @@ function createExpenseService({ expenseRepository }) {
     const locCode = text(input.locCode);
     if (!locCode) throw new Error('A location is required to list expenses.');
     return expenseRepository.listExpenses({ ...input, locCode });
+  }
+
+  async function listRecurringExpenses(input = {}) {
+    const locCode = text(input.locCode);
+    if (!locCode) throw new Error('A location is required to list recurring expenses.');
+    return expenseRepository.listRecurringExpenses({ locCode, includeInactive: Boolean(input.includeInactive) });
+  }
+
+  async function saveRecurringExpense(input = {}) {
+    const userId = requireUser(input);
+    if (!text(input.locCode)) throw new Error('A recurring expense belongs to a location.');
+    return expenseRepository.saveRecurringExpense({ ...input, userId });
+  }
+
+  async function recordRecurringExpense(input = {}) {
+    const origin = requireOrigin(input);
+    const userId = requireUser(input);
+    const templates = await expenseRepository.listRecurringExpenses({ locCode: origin.locCode, includeInactive: true });
+    const template = templates.find((row) => row.id === Number(input.templateId));
+    if (!template || !template.isActive) throw new Error('This recurring expense is not active.');
+    if (template.nextDueDate > origin.txnDate) throw new Error(`This expense is next due on ${template.nextDueDate}.`);
+    const expense = await recordExpense({
+      origin, userId,
+      expenseCategoryId: template.expenseCategoryId,
+      fundAccountId: template.fundAccountId,
+      amount: template.amount,
+      payee: template.payee,
+      reference: template.reference || `Due ${template.nextDueDate}`,
+      reason: template.reason,
+      requestId: `recurring:${template.id}:${template.nextDueDate}`
+    });
+    const schedule = await expenseRepository.completeRecurringExpense({
+      templateId: template.id, dueDate: template.nextDueDate, expenseEntryId: expense.id, userId
+    });
+    return { expense, schedule };
   }
 
   async function transferFunds(input = {}) {
@@ -102,6 +138,9 @@ function createExpenseService({ expenseRepository }) {
     saveCategory,
     recordExpense,
     listExpenses,
+    listRecurringExpenses,
+    saveRecurringExpense,
+    recordRecurringExpense,
     transferFunds
   };
 }

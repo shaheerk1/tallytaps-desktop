@@ -6,7 +6,7 @@ export class ChequeRegisterComponent implements OnInit {
   register: 'incoming' | 'issued' = 'incoming';
   error = ''; info = ''; updating = false;
   incomingTerm = ''; incomingStatus = 'open'; incomingFromDate = ''; incomingToDate = '';
-  incoming: any[] = []; incomingDetail: any = null; incomingReason = ''; depositedTo = '';
+  incoming: any[] = []; incomingDetail: any = null; incomingReason = ''; depositedTo = ''; incomingDepositFundId: number | null = null;
   incomingEditor: any = null;
   drawerTerm = ''; drawerMatches: any[] = [];
   issuedTerm = ''; issuedStatus = 'open'; issuedFromDate = ''; issuedToDate = '';
@@ -16,6 +16,10 @@ export class ChequeRegisterComponent implements OnInit {
   constructor(public session: SessionService) {}
   private actor() { return this.session.getActor() || undefined; }
   get canManage(): boolean { return this.session.hasPermission('cheques.manage'); }
+  get activeBankAccounts(): any[] {
+    const locCode = this.session.getWorkstationSession()?.locationCode;
+    return this.bankAccounts.filter((account) => account.is_active && account.fund_account_id && account.loc_code === locCode);
+  }
   private origin() { const ws = this.session.getWorkstationSession(); return ws ? { locCode: ws.locationCode, macCode: ws.machineCode, txnDate: ws.billingDate } : null; }
 
   async ngOnInit(): Promise<void> { await Promise.all([this.loadIncoming(), this.loadIssued(), this.loadBankAccounts()]); }
@@ -66,6 +70,7 @@ export class ChequeRegisterComponent implements OnInit {
     const result = await window.posApi.catalog.getCheque(id, this.actor());
     if (!result.success) { this.error = result.error || 'Could not load this cheque.'; return; }
     this.incomingDetail = result.data; this.incomingReason = ''; this.depositedTo = ''; this.drawerTerm = ''; this.drawerMatches = [];
+    this.incomingDepositFundId = Number(this.incomingDetail?.cheque?.deposited_fund_account_id || this.activeBankAccounts[0]?.fund_account_id || 0) || null;
   }
 
   private dateInputValue(value: unknown): string {
@@ -128,8 +133,11 @@ export class ChequeRegisterComponent implements OnInit {
     if (!window.posApi || !this.incomingDetail || this.updating) return;
     const origin = this.origin(); const user = this.session.getUser(); if (!origin || !user) return;
     if (['dishonoured', 'returned'].includes(status) && !this.incomingReason.trim()) { this.error = 'A reason is required for a dishonoured or returned cheque.'; return; }
+    if (['deposited', 'cleared'].includes(status) && !this.incomingDepositFundId && !this.incomingDetail.cheque.deposited_fund_account_id) {
+      this.error = 'Choose the business bank account receiving this cheque.'; return;
+    }
     this.updating = true; this.error = '';
-    const result = await window.posApi.catalog.updateChequeStatus({ chequeId: this.incomingDetail.cheque.id, status, reason: this.incomingReason, depositedTo: this.depositedTo, userId: user.id, origin }, this.actor());
+    const result = await window.posApi.catalog.updateChequeStatus({ chequeId: this.incomingDetail.cheque.id, status, reason: this.incomingReason, depositedTo: this.depositedTo, depositedFundAccountId: this.incomingDepositFundId, userId: user.id, origin }, this.actor());
     this.updating = false;
     if (!result.success) { this.error = result.error || 'Could not update the cheque.'; return; }
     this.incomingDetail = result.data; this.info = `Incoming cheque marked ${this.statusLabel(status)}.`; await this.loadIncoming();
@@ -154,6 +162,7 @@ export class ChequeRegisterComponent implements OnInit {
     const result = await window.posApi.catalog.listBusinessBankAccounts(true, this.actor());
     if (!result.success) { this.error = result.error || 'Could not load business bank accounts.'; return; }
     this.bankAccounts = result.data || [];
+    if (!this.incomingDepositFundId) this.incomingDepositFundId = Number(this.activeBankAccounts[0]?.fund_account_id || 0) || null;
   }
 
   async loadIssued(): Promise<void> {

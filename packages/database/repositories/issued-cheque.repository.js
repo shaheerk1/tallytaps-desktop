@@ -69,6 +69,8 @@ function createIssuedChequeRepository({ database, documentSequenceRepository, bu
       try {
         const id = Number(payload.id || 0);
         if (id) {
+          const [[existing]] = await connection.execute('SELECT fund_account_id, loc_code FROM business_bank_accounts WHERE id = ? FOR UPDATE', [id]);
+          if (!existing) throw new Error('Business bank account was not found.');
           const [result] = await connection.execute(
             `UPDATE business_bank_accounts
              SET bank_name = ?, branch_name = ?, account_name = ?, account_number = ?, is_active = ?, notes = ?
@@ -77,17 +79,31 @@ function createIssuedChequeRepository({ database, documentSequenceRepository, bu
               payload.isActive === false ? 0 : 1, text(payload.notes, 500), id]
           );
           if (!result.affectedRows) throw new Error('Business bank account was not found.');
+          await connection.execute(
+            `UPDATE fund_accounts SET name = ?, account_reference = ?, is_active = ?, notes = ?
+             WHERE id = ?`,
+            [`${bankName} · ${accountName}`, accountNumber, payload.isActive === false ? 0 : 1,
+              text(payload.notes, 500), existing.fund_account_id]
+          );
           await connection.commit();
           return (await listBankAccounts(true)).find((row) => Number(row.id) === id) || null;
         }
         const origin = requireOrigin(payload.origin);
         const accountNo = await allocateBankAccountNumber(connection, origin);
+        const accountCode = masterCode(origin, accountNo);
+        const [fund] = await connection.execute(
+          `INSERT INTO fund_accounts
+             (fund_code, name, fund_kind, loc_code, account_reference, opening_balance, is_active, sort_order, notes)
+           VALUES (?, ?, 'bank', ?, ?, 0, ?, 40, ?)`,
+          [`BANK-${accountCode}`, `${bankName} · ${accountName}`, origin.locCode, accountNumber,
+            payload.isActive === false ? 0 : 1, text(payload.notes, 500)]
+        );
         const [result] = await connection.execute(
           `INSERT INTO business_bank_accounts
-             (loc_code, mac_code, account_no, account_code, bank_name, branch_name, account_name,
+             (loc_code, mac_code, account_no, fund_account_id, account_code, bank_name, branch_name, account_name,
               account_number, is_active, notes, created_by)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [origin.locCode, origin.macCode, accountNo, masterCode(origin, accountNo), bankName,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [origin.locCode, origin.macCode, accountNo, fund.insertId, accountCode, bankName,
             text(payload.branchName, 160), accountName, accountNumber, payload.isActive === false ? 0 : 1,
             text(payload.notes, 500), payload.userId || null]
         );
@@ -114,9 +130,9 @@ function createIssuedChequeRepository({ database, documentSequenceRepository, bu
     );
   }
 
-  async function validateBankAccountWithConnection(connection, bankAccountId) {
+  async function validateBankAccountWithConnection(connection, bankAccountId, locCode) {
     const [rows] = await connection.execute(
-      `SELECT * FROM business_bank_accounts WHERE id = ? AND is_active = 1 FOR UPDATE`, [bankAccountId]
+      `SELECT * FROM business_bank_accounts WHERE id = ? AND loc_code = ? AND is_active = 1 FOR UPDATE`, [bankAccountId, locCode]
     );
     if (!rows.length) throw new Error('Select an active business bank account.');
     return rows[0];
@@ -131,7 +147,7 @@ function createIssuedChequeRepository({ database, documentSequenceRepository, bu
     if (!chequeNumber || !/^\d{4}-\d{2}-\d{2}$/.test(chequeDate || '') || !payeeName) {
       throw new Error('Cheque number, cheque date, and payee are required.');
     }
-    await validateBankAccountWithConnection(connection, Number(payload.bankAccountId));
+    await validateBankAccountWithConnection(connection, Number(payload.bankAccountId), origin.locCode);
     const businessDay = context.businessDay || await businessDayRepository.assertOpenWithConnection(connection, {
       locationCode: origin.locCode, businessDate: origin.txnDate
     });

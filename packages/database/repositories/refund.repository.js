@@ -723,9 +723,10 @@ function createRefundRepository({ database, documentSequenceRepository, business
           refundPaymentNo += 1;
           const [refundPaymentResult] = await connection.execute(
             `INSERT INTO refund_payments
-               (refund_id, loc_code, mac_code, txn_date, refund_no, payment_no, method, amount, provider_ref, status)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed')`,
-            [refundId, draft.loc_code, draft.mac_code, draft.txn_date, draft.refund_no, refundPaymentNo, payment.method, payment.amount, payment.providerRef || null]
+               (refund_id, loc_code, mac_code, txn_date, refund_no, payment_no, method, fund_account_id, amount, provider_ref, status)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed')`,
+            [refundId, draft.loc_code, draft.mac_code, draft.txn_date, draft.refund_no, refundPaymentNo, payment.method,
+              Number(payment.fundAccountId) || null, payment.amount, payment.providerRef || null]
           );
           if (payment.method === 'advance') {
             if (!customerAdvanceRepository || !draft.source_customer_account_id) throw new Error('This refund cannot restore customer advance without the original customer account.');

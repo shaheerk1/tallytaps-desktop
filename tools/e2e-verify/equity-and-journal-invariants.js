@@ -25,6 +25,7 @@ const { createExpenseService } = require('../../packages/core/expenses/expense.s
 const { createLotCostingService } = require('../../packages/core/lot-costing/lot-costing.service');
 const { createStakeholderService } = require('../../packages/core/stakeholders/stakeholder.service');
 const { createAccountingService } = require('../../packages/core/accounting/accounting.service');
+const postingRules = require('../../packages/core/accounting/posting-rules');
 
 const money = (value) => Math.round(Number(value || 0) * 100) / 100;
 
@@ -183,6 +184,18 @@ async function main() {
         assert(overrideEntry.overrideApprover && overrideEntry.overrideReason,
           'An override must record who approved it and why.');
 
+        // Profit can only be shared after it was earned.  Seed one derived sale
+        // posting so this check proves an allocation cannot invent equity.
+        await journalRepository.postWithConnection(connection, {
+          businessDayId: day.insertId, ...origin,
+          documentType: 'sale', documentNo: 999001,
+          sourceType: 'verify_earned_profit', sourceId: locCode,
+          posting: postingRules.invoiceSalePosting({ invoice: {
+            invoiceNumber: 'VERIFY-PROFIT', grandTotal: 5000, bagChargeTotal: 0, wageChargeTotal: 0
+          } }),
+          userId: user.id
+        });
+
         // Profit share brings the claim back up; no cash moves.
         const share = await stakeholders.allocateProfitShare({
           ...base, stakeholderId: partner.id, amount: 5000,
@@ -217,6 +230,13 @@ async function main() {
         const trial = await accounting.trialBalance({ locCode });
         assert(trial.inBalance, `The trial balance is out by ${trial.difference}.`);
         assert(trial.totalDebit > 0, 'The trial balance should not be empty.');
+        const cashCorrection = postingRules.assertBalanced(postingRules.manualCashMovementPosting({
+          movement: { reason: 'Correct test movement' },
+          before: { direction: 'out', amount: 100 },
+          after: { direction: 'in', amount: 40 }
+        }));
+        assert(cashCorrection.totalDebit === 140 && cashCorrection.totalCredit === 140,
+          'A manual cash correction must reverse the old movement before posting its replacement.');
 
         // ── 6. The balance sheet balances ───────────────────
         const sheet = await accounting.balanceSheet({ locCode });

@@ -24,6 +24,7 @@ const { createExpenseRepository } = require('../../../../packages/database/repos
 const { createJournalRepository } = require('../../../../packages/database/repositories/journal.repository');
 const { createLotCostingRepository } = require('../../../../packages/database/repositories/lot-costing.repository');
 const { createStakeholderRepository } = require('../../../../packages/database/repositories/stakeholder.repository');
+const { createOperationalAccountingRepository } = require('../../../../packages/database/repositories/operational-accounting.repository');
 const { seedAdminUser } = require('../../../../packages/database/seeders/seed-admin-user');
 const { seedDefaultSettings } = require('../../../../packages/database/seeders/seed-default-settings');
 const { createAuthService } = require('../../../../packages/core/auth/auth.service');
@@ -112,6 +113,7 @@ async function createServiceContainer() {
   const expenseRepository = createExpenseRepository({ database, documentSequenceRepository, businessDayRepository, journalRepository });
   const lotCostingRepository = createLotCostingRepository({ database, documentSequenceRepository, businessDayRepository, journalRepository });
   const stakeholderRepository = createStakeholderRepository({ database, documentSequenceRepository, businessDayRepository, journalRepository, expenseRepository });
+  const operationalAccountingRepository = createOperationalAccountingRepository({ database, journalRepository });
 
   const eventBus = createEventBus();
   const ipcAuthorizationService = createIpcAuthorizationService();
@@ -162,7 +164,7 @@ async function createServiceContainer() {
   const expenseService = createExpenseService({ expenseRepository });
   const lotCostingService = createLotCostingService({ lotCostingRepository });
   const stakeholderService = createStakeholderService({ stakeholderRepository });
-  const accountingService = createAccountingService({ journalRepository });
+  const accountingService = createAccountingService({ journalRepository, operationalAccountingRepository, lotCostingRepository });
 
   return {
     database,
@@ -178,6 +180,7 @@ async function createServiceContainer() {
     journalRepository,
     lotCostingRepository,
     stakeholderRepository,
+    operationalAccountingRepository,
     billingRepository,
     liveBillRepository,
     refundRepository,

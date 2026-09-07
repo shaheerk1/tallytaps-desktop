@@ -163,7 +163,8 @@ async function main() {
           throw new Error('Cheque register origin or liable customer link was not recorded correctly.');
         }
         const depositedCheque = await parties.updateChequeStatus({
-          chequeId: cheque.id, status: 'deposited', depositedTo: 'Smoke deposit batch', userId,
+          chequeId: cheque.id, status: 'deposited', depositedTo: 'Smoke deposit batch',
+          depositedFundAccountId: bankAccount.fund_account_id, userId,
           origin: { locCode, macCode, txnDate }
         });
         const clearedCheque = await parties.updateChequeStatus({

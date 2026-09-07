@@ -42,6 +42,22 @@ function createCashManagementService({ cashManagementRepository }) {
     });
   }
 
+  async function correctMovement({ movementId, direction, amount, reason, userId }) {
+    if (!movementId || !userId) throw new Error('A cash movement and signed-in user are required.');
+    if (direction !== 'in' && direction !== 'out') throw new Error('Choose whether the corrected cash came in or went out.');
+    if (money(amount) <= 0) throw new Error('Cash movement amount must be greater than zero.');
+    if (!String(reason || '').trim()) throw new Error('A reason is required for a cash correction.');
+    return cashManagementRepository.updateMovement({
+      movementId, direction, amount: money(amount), reason: String(reason).trim(), userId
+    });
+  }
+
+  async function removeMovement({ movementId, reason, userId }) {
+    if (!movementId || !userId) throw new Error('A cash movement and signed-in user are required.');
+    if (!String(reason || '').trim()) throw new Error('A reason is required to remove a cash movement.');
+    return cashManagementRepository.voidMovement({ movementId, reason: String(reason).trim(), userId });
+  }
+
   async function blindClose({ shiftId, userId, closingLines }) {
     if (!shiftId || !userId) throw new Error('A shift and cashier are required to submit a closing count.');
     return cashManagementRepository.submitClosingCount({ shiftId, userId, lines: normalizeLines(closingLines) });
@@ -119,6 +135,9 @@ function createCashManagementService({ cashManagementRepository }) {
     getShift: (shiftId) => cashManagementRepository.getShift(shiftId),
     openShift,
     recordMovement,
+    correctMovement,
+    removeMovement,
+    listMovementHistory: (filters) => cashManagementRepository.listMovementHistory(filters || {}),
     blindClose,
     closeShift,
     prepareSale,

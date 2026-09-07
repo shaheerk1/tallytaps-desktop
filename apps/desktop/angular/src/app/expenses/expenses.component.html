@@ -107,6 +107,22 @@
       <button class="secondary" (click)="selectTab('lots')">Attach them</button>
     </div>
 
+    <section class="recurring-card" *ngIf="recurringExpenses.length || canManageRecurring">
+      <div class="section-head">
+        <div><h2>Recurring costs</h2><p>Rent, salaries, subscriptions, and other repeated costs appear here when due. Nothing is posted until a person confirms it.</p></div>
+        <button class="secondary" *ngIf="canManageRecurring" (click)="newRecurringExpense()">Add recurring cost</button>
+      </div>
+      <div class="nudge" *ngIf="dueRecurringExpenses.length"><div><strong>{{ dueRecurringExpenses.length }} recurring {{ dueRecurringExpenses.length === 1 ? 'cost is' : 'costs are' }} due</strong><span>Confirm each only after the payment has actually happened.</span></div></div>
+      <div class="recurring-list">
+        <article *ngFor="let item of recurringExpenses" [class.inactive]="!item.isActive" [class.due]="item.isActive && item.nextDueDate <= currentBusinessDate">
+          <div><strong>{{ item.name }}</strong><span>{{ item.categoryName }} · {{ item.fundName }}</span></div>
+          <div><small>Next due</small><strong>{{ formatDate(item.nextDueDate) }}</strong></div>
+          <div><small>Amount</small><strong>{{ formatMoney(item.amount) }}</strong></div>
+          <div class="row-actions"><button class="link" *ngIf="canManageRecurring" (click)="editRecurringExpense(item)">Edit</button><button class="primary" *ngIf="canManageRecurring && item.isActive && item.nextDueDate <= currentBusinessDate" (click)="recordRecurringExpense(item)" [disabled]="saving">Record paid</button></div>
+        </article>
+      </div>
+    </section>
+
     <div class="register-layout">
       <section class="register">
         <div class="register-head">
@@ -177,7 +193,8 @@
 
     <div class="summary-strip" *ngIf="profitability">
       <div><span>Sold</span><strong>{{ formatMoney(profitability.totals.saleValue) }}</strong></div>
-      <div><span>Real cost of goods</span><strong>{{ formatMoney(profitability.totals.landedCostTotal) }}</strong></div>
+      <div><span>Cost used by sold goods</span><strong>{{ formatMoney(profitability.totals.recognizedCost) }}</strong></div>
+      <div><span>Cost still in stock</span><strong>{{ formatMoney(profitability.totals.remainingCost) }}</strong></div>
       <div><span>Owed to suppliers</span><strong>{{ formatMoney(profitability.totals.supplierDue) }}</strong></div>
       <div><span>Made on goods</span><strong [class.negative]="profitability.totals.margin < 0">{{ formatMoney(profitability.totals.margin) }}</strong></div>
     </div>
@@ -254,15 +271,16 @@
         </header>
         <button class="fund-body" (click)="openPartnerStatement(partner)">
           <strong>{{ partner.displayName }}</strong>
-          <b [class.negative]="partner.claim < 0">{{ formatMoney(partner.claim) }}</b>
+          <b [class.negative]="partner.totalInterest < 0">{{ formatMoney(partner.totalInterest) }}</b>
+          <small>Total interest in the business</small>
           <small *ngIf="partner.businessSharePercent != null">{{ partner.businessSharePercent }}% of the business</small>
           <small *ngIf="partner.businessSharePercent == null">No share recorded</small>
         </button>
         <div class="partner-figures">
-          <span><i>Put in</i><b>{{ formatMoney(partner.contributed) }}</b></span>
-          <span><i>Paid for us</i><b>{{ formatMoney(partner.borne) }}</b></span>
-          <span><i>Profit share</i><b>{{ formatMoney(partner.profitShare) }}</b></span>
-          <span><i>Taken out</i><b>{{ formatMoney(partner.drawn + partner.settled) }}</b></span>
+          <span><i>Ownership</i><b>{{ formatMoney(partner.capitalBalance) }}</b></span>
+          <span><i>Business must repay</i><b>{{ formatMoney(partner.repayableBalance) }}</b></span>
+          <span><i>Profit available</i><b>{{ formatMoney(partner.profitBalance) }}</b></span>
+          <span><i>Available to take</i><b>{{ formatMoney(partner.availableToDraw) }}</b></span>
         </div>
         <footer class="partner-actions">
           <button class="link" *ngIf="canContribute" (click)="openPartnerMove(partner, 'contribute')">Put in</button>
@@ -281,26 +299,40 @@
   <ng-container *ngIf="activeTab === 'accounts'">
     <div class="section-head">
       <h2>Accountant view</h2>
-      <p>This view is for your accountant. Everything here is built automatically from the entries you already made — there is nothing extra to type.</p>
+      <p>Sales, customer payments, advances, supplier obligations, cheques, expenses, and sold stock costs build these books automatically. Refresh after importing or changing older activity.</p>
+      <button class="primary" *ngIf="canRefreshBooks" (click)="refreshBooks()" [disabled]="loading">{{ loading ? 'Refreshing…' : 'Refresh books' }}</button>
       <button class="secondary" *ngIf="canClosePeriod" (click)="openClosePeriod()">Close a period</button>
     </div>
 
     <div class="summary-strip" *ngIf="trialBalance">
       <div><span>Total debits</span><strong>{{ formatMoney(trialBalance.totalDebit) }}</strong></div>
       <div><span>Total credits</span><strong>{{ formatMoney(trialBalance.totalCredit) }}</strong></div>
-      <div><span>Costs this period</span><strong>{{ formatMoney(profitAndLoss?.expenseTotal) }}</strong></div>
+      <div><span>Income this period</span><strong>{{ formatMoney(profitAndLoss?.incomeTotal) }}</strong></div>
+      <div><span>Expenses this period</span><strong>{{ formatMoney(profitAndLoss?.expenseTotal) }}</strong></div>
+      <div><span>Net result</span><strong>{{ formatMoney(profitAndLoss?.netResult) }}</strong></div>
       <div [class.balanced]="trialBalance.inBalance" [class.unbalanced]="!trialBalance.inBalance">
         <span>Books balance</span>
         <strong>{{ trialBalance.inBalance ? 'Yes' : 'Out by ' + formatMoney(trialBalance.difference) }}</strong>
       </div>
     </div>
 
-    <p class="guidance" *ngIf="profitAndLoss?.coversCostsOnly">
-      Sales are still tracked in the billing records rather than here, so this view shows what the business spent, not a full profit figure.
-    </p>
+    <p class="guidance" *ngIf="profitAndLoss?.coversCostsOnly">No sales have been brought into this date range yet. Use Refresh books before relying on the result.</p>
 
     <div class="accounts-layout">
       <section class="statement">
+        <h3>Profit &amp; loss</h3>
+        <div class="statement-row head"><span>Income</span><b class="right">Amount</b><b></b></div>
+        <div class="statement-row" *ngFor="let row of profitAndLoss?.income">
+          <span><strong>{{ row.accountCode }} {{ row.name }}</strong></span><b class="right">{{ formatMoney(row.balance) }}</b><b></b>
+        </div>
+        <div class="statement-row head"><span>Expenses</span><b class="right">Amount</b><b></b></div>
+        <div class="statement-row" *ngFor="let row of profitAndLoss?.expenses">
+          <span><strong>{{ row.accountCode }} {{ row.name }}</strong></span><b class="right">{{ formatMoney(row.balance) }}</b><b></b>
+        </div>
+        <div class="statement-row total" *ngIf="profitAndLoss">
+          <span><strong>Net result</strong></span><b class="right">{{ formatMoney(profitAndLoss.netResult) }}</b><b></b>
+        </div>
+
         <h3>Trial balance</h3>
         <div class="statement-row head"><span>Account</span><b class="right">Debit</b><b class="right">Credit</b></div>
         <div class="statement-row" *ngFor="let row of trialBalance?.accounts">
@@ -480,6 +512,8 @@
     <div class="metrics">
       <div><span>Purchase price</span><strong>{{ formatMoney(lotDetail.lot.purchaseCostTotal) }}</strong></div>
       <div><span>Costs added</span><strong>{{ formatMoney(lotDetail.lot.allocatedCostTotal) }}</strong></div>
+      <div><span>Cost used by sales</span><strong>{{ formatMoney(lotDetail.lot.recognizedCost) }}</strong></div>
+      <div><span>Cost still in stock</span><strong>{{ formatMoney(lotDetail.lot.remainingCost) }}</strong></div>
       <div><span>Received</span><strong>{{ formatQty(lotDetail.lot.receivedHandlingQuantity, lotDetail.lot.handlingUom) }}</strong></div>
       <div><span>Still in stock</span><strong>{{ formatQty(lotDetail.lot.remainingHandlingQuantity, lotDetail.lot.handlingUom) }}</strong></div>
     </div>
@@ -544,7 +578,7 @@
       <div>
         <p class="eyebrow">{{ partnerMove.stakeholder.displayName.toUpperCase() }}</p>
         <h2>{{ partnerMoveTitle }}</h2>
-        <p>Currently owed: {{ formatMoney(partnerMove.stakeholder.claim) }}</p>
+        <p>Ownership {{ formatMoney(partnerMove.stakeholder.capitalBalance) }} · repayable {{ formatMoney(partnerMove.stakeholder.repayableBalance) }} · profit {{ formatMoney(partnerMove.stakeholder.profitBalance) }}</p>
       </div>
     </div>
     <p class="guidance">{{ partnerMoveHint }}</p>
@@ -563,7 +597,7 @@
       </label>
       <ng-container *ngIf="partnerMoveOverLimit">
         <p class="guidance warn wide">
-          This is more than {{ partnerMove.stakeholder.displayName }} has available. Taking it now means the business owes the difference back, and the approval is recorded against your name.
+          This is more than the correct balance for this action. An authorised excess-drawing approval and a clear reason are required.
         </p>
         <label class="wide">
           <span>Why is this being allowed?</span>
@@ -574,7 +608,7 @@
     <div class="drawer-actions">
       <button class="secondary" (click)="closeAll()">Cancel</button>
       <button class="primary" (click)="savePartnerMove()"
-        [disabled]="saving || !partnerMove.amount || !partnerMove.reason || (partnerMove.mode !== 'profit_share' && !partnerMove.fundAccountId) || (partnerMoveOverLimit && !partnerMove.overrideReason)">
+        [disabled]="saving || !partnerMove.amount || !partnerMove.reason || (partnerMove.mode !== 'profit_share' && !partnerMove.fundAccountId) || (partnerMoveOverLimit && (!canOverrideDrawing || !partnerMove.overrideReason))">
         {{ saving ? 'Recording…' : 'Record' }}
       </button>
     </div>
@@ -593,9 +627,12 @@
           ? 'Money they spend for the business becomes part of their investment.'
           : 'Money they spend for the business is a debt the business repays.' }}</p>
       </div>
-      <b class="ledger-balance" [class.negative]="partnerStatement.stakeholder.claim < 0">
-        {{ formatMoney(partnerStatement.stakeholder.claim) }}
-      </b>
+      <div class="partner-statement-balances">
+        <span>Ownership <b>{{ formatMoney(partnerStatement.stakeholder.capitalBalance) }}</b></span>
+        <span>Business must repay <b>{{ formatMoney(partnerStatement.stakeholder.repayableBalance) }}</b></span>
+        <span>Profit available <b>{{ formatMoney(partnerStatement.stakeholder.profitBalance) }}</b></span>
+        <span>Available to take <b [class.negative]="partnerStatement.stakeholder.availableToDraw < 0">{{ formatMoney(partnerStatement.stakeholder.availableToDraw) }}</b></span>
+      </div>
     </div>
     <div class="ledger-list">
       <div class="ledger-row" *ngFor="let entry of partnerStatement.entries">
@@ -740,6 +777,29 @@
       <button class="secondary" (click)="closeAll()">Cancel</button>
       <button class="primary" (click)="saveFund()" [disabled]="saving || !fundDraft.name">{{ saving ? 'Saving…' : 'Save fund' }}</button>
     </div>
+  </section>
+</div>
+
+<!-- ── Recurring expense template ───────────────────────── -->
+<div class="workspace-overlay" *ngIf="recurringDraft" (click)="closeAll()">
+  <section class="workspace-drawer" (click)="$event.stopPropagation()">
+    <button class="drawer-close" (click)="closeAll()" title="Close">×</button>
+    <div class="panel-head"><div><p class="eyebrow">RECURRING COST</p><h2>{{ recurringDraft.id ? 'Edit schedule' : 'Add schedule' }}</h2><p>This is a reminder. Each due payment becomes a normal expense only when confirmed.</p></div></div>
+    <div class="form-grid">
+      <label><span>Name</span><input [(ngModel)]="recurringDraft.name" placeholder="Monthly rent, weekly wages" /></label>
+      <label><span>Category</span><select [(ngModel)]="recurringDraft.expenseCategoryId"><option [ngValue]="null">Choose category</option><option *ngFor="let category of categories" [ngValue]="category.id">{{ category.name }}</option></select></label>
+      <label><span>Paid from</span><select [(ngModel)]="recurringDraft.fundAccountId"><option [ngValue]="null">Choose fund</option><option *ngFor="let fund of funds" [ngValue]="fund.id">{{ fund.name }}</option></select></label>
+      <label><span>Amount</span><input type="number" min="0.01" step="0.01" [(ngModel)]="recurringDraft.amount" /></label>
+      <label><span>Repeat</span><select [(ngModel)]="recurringDraft.cadence"><option value="weekly">Every week</option><option value="monthly">Every month</option><option value="yearly">Every year</option><option value="custom_days">Custom days</option></select></label>
+      <label><span>Every</span><input type="number" min="1" step="1" [(ngModel)]="recurringDraft.intervalCount" /><small>{{ recurringDraft.cadence === 'custom_days' ? 'days' : recurringDraft.cadence }}</small></label>
+      <label><span>Next due</span><input type="date" [(ngModel)]="recurringDraft.nextDueDate" /></label>
+      <label><span>Stop after (optional)</span><input type="date" [(ngModel)]="recurringDraft.endDate" /></label>
+      <label><span>Payee (optional)</span><input [(ngModel)]="recurringDraft.payee" /></label>
+      <label><span>Reference (optional)</span><input [(ngModel)]="recurringDraft.reference" /></label>
+      <label class="wide"><span>Reason shown in the ledger</span><input [(ngModel)]="recurringDraft.reason" /></label>
+      <label class="check inline"><input type="checkbox" [(ngModel)]="recurringDraft.isActive" /><span>Active reminder</span></label>
+    </div>
+    <div class="drawer-actions"><button class="secondary" (click)="closeAll()">Cancel</button><button class="primary" (click)="saveRecurringExpense()" [disabled]="saving">{{ saving ? 'Saving…' : 'Save schedule' }}</button></div>
   </section>
 </div>
 

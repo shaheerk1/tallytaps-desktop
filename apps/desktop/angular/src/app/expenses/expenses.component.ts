@@ -3,7 +3,7 @@ import { SessionService } from '../services/session.service';
 import type {
   AccountingPeriod, AllocationBasis, CostedLot, ExpenseCategory, ExpenseEntry, ExpenseRegister,
   FundAccount, FundMovement, JournalEntry, LotCostAllocation, LotProfitability, Stakeholder,
-  StakeholderEntry, TrialBalance
+  RecurringExpense, StakeholderEntry, TrialBalance
 } from '../../../../../../packages/shared/ipc/pos-api';
 
 type Tab = 'expenses' | 'lots' | 'partners' | 'accounts';
@@ -15,6 +15,7 @@ type ExpenseDraft = {
   payee: string;
   reference: string;
   reason: string;
+  requestId: string;
 };
 
 type TransferDraft = { fromFundAccountId: number | null; toFundAccountId: number | null; amount: number | null; reason: string };
@@ -22,6 +23,13 @@ type TransferDraft = { fromFundAccountId: number | null; toFundAccountId: number
 type FundDraft = {
   id?: number; name: string; fundKind: 'cash_safe' | 'bank' | 'stakeholder';
   holderName: string; accountReference: string; openingBalance: number | null; notes: string; isActive: boolean;
+};
+
+type RecurringDraft = {
+  id?: number; name: string; expenseCategoryId: number | null; fundAccountId: number | null;
+  amount: number | null; payee: string; reference: string; reason: string;
+  cadence: 'weekly' | 'monthly' | 'yearly' | 'custom_days'; intervalCount: number;
+  nextDueDate: string; endDate: string; isActive: boolean;
 };
 
 type AttachDraft = {
@@ -75,6 +83,8 @@ export class ExpensesComponent implements OnInit {
   transferDraft: TransferDraft | null = null;
   fundDraft: FundDraft | null = null;
   ledger: { fund: FundAccount; movements: FundMovement[] } | null = null;
+  recurringExpenses: RecurringExpense[] = [];
+  recurringDraft: RecurringDraft | null = null;
 
   // Lot costing
   profitability: LotProfitability | null = null;
@@ -124,9 +134,16 @@ export class ExpensesComponent implements OnInit {
   get canManagePartners(): boolean { return this.session.hasPermission('stakeholders.manage'); }
   get canContribute(): boolean { return this.session.hasPermission('stakeholders.contribute'); }
   get canDraw(): boolean { return this.session.hasPermission('stakeholders.drawing'); }
+  get canOverrideDrawing(): boolean { return this.session.hasPermission('stakeholders.override-drawing'); }
   get canProfitShare(): boolean { return this.session.hasPermission('stakeholders.profit-share'); }
   get canSeeAccounts(): boolean { return this.session.hasPermission('accounting.journal.view'); }
   get canClosePeriod(): boolean { return this.session.hasPermission('accounting.period.close'); }
+  get canRefreshBooks(): boolean { return this.session.hasPermission('accounting.reconcile'); }
+  get canManageRecurring(): boolean { return this.session.hasPermission('expenses.recurring.manage'); }
+  get currentBusinessDate(): string { return this.origin()?.txnDate || ''; }
+  get dueRecurringExpenses(): RecurringExpense[] {
+    return this.recurringExpenses.filter((item) => item.isActive && item.nextDueDate <= this.currentBusinessDate);
+  }
 
   async ngOnInit(): Promise<void> {
     const ws = this.session.getWorkstationSession();
@@ -138,6 +155,7 @@ export class ExpensesComponent implements OnInit {
 
   closeAll(): void {
     this.expenseDraft = null; this.transferDraft = null; this.fundDraft = null; this.ledger = null;
+    this.recurringDraft = null;
     this.attachDraft = null; this.moveCostDraft = null; this.lotDetail = null;
     this.partnerDraft = null; this.partnerMove = null; this.partnerStatement = null; this.closeDraft = null;
   }
@@ -162,11 +180,65 @@ export class ExpensesComponent implements OnInit {
     ]);
     if (funds.success) this.funds = funds.data || []; else this.error = funds.error || 'Could not load fund accounts.';
     if (categories.success) this.categories = categories.data || []; else this.error = categories.error || 'Could not load expense categories.';
+    await this.loadRecurringExpenses();
     await this.search();
     if (this.activeTab === 'lots') await this.loadLotCosting();
     if (this.activeTab === 'partners') await this.loadPartners();
     if (this.activeTab === 'accounts') await this.loadAccounts();
     this.loading = false;
+  }
+
+  async loadRecurringExpenses(): Promise<void> {
+    if (!window.posApi) return;
+    const origin = this.origin();
+    if (!origin) return;
+    const result = await window.posApi.expenses.listRecurring(origin.locCode, this.canManageRecurring, this.actor());
+    if (result.success) this.recurringExpenses = result.data || [];
+    else this.error = result.error || 'Could not load recurring expenses.';
+  }
+
+  newRecurringExpense(): void {
+    const date = this.origin()?.txnDate || new Date().toISOString().slice(0, 10);
+    this.recurringDraft = {
+      name: '', expenseCategoryId: this.categories[0]?.id || null, fundAccountId: this.funds[0]?.id || null,
+      amount: null, payee: '', reference: '', reason: '', cadence: 'monthly', intervalCount: 1,
+      nextDueDate: date, endDate: '', isActive: true
+    };
+  }
+
+  editRecurringExpense(item: RecurringExpense): void {
+    this.recurringDraft = {
+      id: item.id, name: item.name, expenseCategoryId: item.expenseCategoryId, fundAccountId: item.fundAccountId,
+      amount: item.amount, payee: item.payee, reference: item.reference, reason: item.reason,
+      cadence: item.cadence, intervalCount: item.intervalCount, nextDueDate: item.nextDueDate,
+      endDate: item.endDate || '', isActive: item.isActive
+    };
+  }
+
+  async saveRecurringExpense(): Promise<void> {
+    if (!window.posApi || !this.recurringDraft) return;
+    const origin = this.origin(); const user = this.session.getUser();
+    if (!origin || !user) return;
+    this.saving = true; this.error = '';
+    const result = await window.posApi.expenses.saveRecurring({
+      ...this.recurringDraft, locCode: origin.locCode, endDate: this.recurringDraft.endDate || null, userId: user.id
+    }, this.actor());
+    this.saving = false;
+    if (!result.success) { this.error = result.error || 'Could not save the recurring expense.'; return; }
+    this.recurringDraft = null; this.info = 'Recurring expense reminder saved.';
+    await this.loadRecurringExpenses();
+  }
+
+  async recordRecurringExpense(item: RecurringExpense): Promise<void> {
+    if (!window.posApi) return;
+    const origin = this.origin(); const user = this.session.getUser();
+    if (!origin || !user) return;
+    this.saving = true; this.error = '';
+    const result = await window.posApi.expenses.recordRecurring({ templateId: item.id, origin, userId: user.id }, this.actor());
+    this.saving = false;
+    if (!result.success) { this.error = result.error || 'Could not record this due expense.'; return; }
+    this.info = `${item.name} recorded as ${result.data.expense.expenseNumber}.`;
+    await this.reload();
   }
 
   async search(): Promise<void> {
@@ -256,7 +328,7 @@ export class ExpensesComponent implements OnInit {
     this.expenseDraft = {
       expenseCategoryId: this.categories[0]?.id ?? null,
       fundAccountId: this.spendableFunds[0]?.id ?? null,
-      amount: null, payee: '', reference: '', reason: ''
+      amount: null, payee: '', reference: '', reason: '', requestId: crypto.randomUUID()
     };
   }
 
@@ -305,7 +377,7 @@ export class ExpensesComponent implements OnInit {
       fundAccountId: Number(this.expenseDraft.fundAccountId),
       amount: Number(this.expenseDraft.amount),
       payee: this.expenseDraft.payee, reference: this.expenseDraft.reference,
-      reason: this.expenseDraft.reason, userId: user.id, origin
+      reason: this.expenseDraft.reason, requestId: this.expenseDraft.requestId, userId: user.id, origin
     }, this.actor());
     this.saving = false;
     if (!result.success) { this.error = result.error || 'Could not record this expense.'; return; }
@@ -542,8 +614,8 @@ export class ExpensesComponent implements OnInit {
   get partnerMoveHint(): string {
     switch (this.partnerMove?.mode) {
       case 'contribute': return 'Recording money you put in is how the system knows what is yours. Without it, your own money looks like business profit.';
-      case 'draw': return `Available to take: ${this.formatMoney(this.partnerMove?.stakeholder.claim)}. This is what they put in, plus their allocated profit, minus what they have already taken.`;
-      case 'settle': return 'Use this when the business pays a partner back for something they bought with their own money.';
+      case 'draw': return `Available ownership and profit: ${this.formatMoney(this.partnerMove?.stakeholder.availableToDraw)}. Repayable expenses are kept separate.`;
+      case 'settle': return `Repayable to this person: ${this.formatMoney(this.partnerMove?.stakeholder.repayableBalance)}. This does not reduce their ownership.`;
       case 'profit_share': return 'No cash moves here. This only records that part of the profit now belongs to this person, so they may take it later.';
       default: return '';
     }
@@ -551,13 +623,20 @@ export class ExpensesComponent implements OnInit {
 
   get partnerMoveOverLimit(): boolean {
     if (!this.partnerMove || this.partnerMove.mode === 'contribute' || this.partnerMove.mode === 'profit_share') return false;
-    return Number(this.partnerMove.amount || 0) > Number(this.partnerMove.stakeholder.claim || 0) + 0.005;
+    const available = this.partnerMove.mode === 'settle'
+      ? Number(this.partnerMove.stakeholder.repayableBalance || 0)
+      : Number(this.partnerMove.stakeholder.availableToDraw || 0);
+    return Number(this.partnerMove.amount || 0) > available + 0.005;
   }
 
   async savePartnerMove(): Promise<void> {
     if (!window.posApi || !this.partnerMove || this.saving) return;
     const origin = this.origin(); const user = this.session.getUser();
     if (!origin || !user) { this.error = 'An active workstation session is required.'; return; }
+    if (this.partnerMoveOverLimit && !this.canOverrideDrawing) {
+      this.error = 'This exceeds the available balance. A user with excess-drawing approval must record it.';
+      return;
+    }
     this.saving = true; this.error = '';
     const move = this.partnerMove;
     const payload: any = {
@@ -583,7 +662,10 @@ export class ExpensesComponent implements OnInit {
     const origin = this.origin();
     if (!origin) return;
     this.closeAll();
-    const result = await window.posApi.stakeholders.statement({ stakeholderId: stakeholder.id, locCode: origin.locCode }, this.actor());
+    const result = await window.posApi.stakeholders.statement({
+      stakeholderId: stakeholder.id, locCode: origin.locCode,
+      fromDate: this.fromDate || undefined, toDate: this.toDate || undefined
+    }, this.actor());
     if (!result.success) { this.error = result.error || 'Could not load the partner statement.'; return; }
     this.partnerStatement = result.data;
   }
@@ -600,6 +682,21 @@ export class ExpensesComponent implements OnInit {
   }
 
   // ── Accountant mode ───────────────────────────────────────
+
+  async refreshBooks(): Promise<void> {
+    if (!window.posApi || !this.canRefreshBooks || this.loading) return;
+    const origin = this.origin();
+    if (!origin) return;
+    this.loading = true; this.error = ''; this.info = '';
+    const result = await window.posApi.accounting.reconcile(origin, this.actor());
+    this.loading = false;
+    if (!result.success) { this.error = result.error || 'Could not refresh the accounting books.'; return; }
+    this.info = result.data.posted
+      ? `${result.data.posted} new accounting posting${result.data.posted === 1 ? '' : 's'} added from POS activity. Running it again will not duplicate them.`
+      : 'Books are already up to date. No duplicate entries were added.';
+    await this.loadAccounts();
+    await Promise.all([this.loadPartners(), this.loadLotCosting()]);
+  }
 
   async loadAccounts(): Promise<void> {
     if (!window.posApi || !this.canSeeAccounts) return;
@@ -634,7 +731,8 @@ export class ExpensesComponent implements OnInit {
     this.saving = true; this.error = '';
     const result = await window.posApi.accounting.closePeriod({
       locCode: origin.locCode, periodStart: this.closeDraft.periodStart,
-      periodEnd: this.closeDraft.periodEnd, userId: user.id, notes: this.closeDraft.notes
+      periodEnd: this.closeDraft.periodEnd, macCode: origin.macCode, txnDate: origin.txnDate,
+      userId: user.id, notes: this.closeDraft.notes
     }, this.actor());
     this.saving = false;
     if (!result.success) { this.error = result.error || 'Could not close the period.'; return; }

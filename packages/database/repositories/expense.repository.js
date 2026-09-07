@@ -85,7 +85,7 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
                 COALESCE(SUM(CASE WHEN m.direction = 'in' THEN m.amount ELSE -m.amount END), 0) AS balance,
                 MAX(m.created_at) AS last_movement_at
          FROM cash_shifts s
-         LEFT JOIN cash_movements m ON m.cash_shift_id = s.id
+         LEFT JOIN cash_movements m ON m.cash_shift_id = s.id AND m.status = 'active'
          WHERE s.drawer_id IN (?) AND s.status = 'open'
          GROUP BY s.drawer_id`, [drawerIds]
       );
@@ -171,9 +171,14 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
         ];
         let fundId = Number(input.id || 0);
         if (fundId) {
-          const [existing] = await connection.execute('SELECT fund_kind, cash_drawer_id FROM fund_accounts WHERE id = ? FOR UPDATE', [fundId]);
+          const [existing] = await connection.execute('SELECT fund_kind, cash_drawer_id, loc_code, opening_balance FROM fund_accounts WHERE id = ? FOR UPDATE', [fundId]);
           if (!existing[0]) throw new Error('This fund account no longer exists.');
           if (existing[0].cash_drawer_id != null) throw new Error('A drawer fund mirrors its workstation and cannot be edited here.');
+          const [activity] = await connection.execute('SELECT id FROM fund_movements WHERE fund_account_id = ? LIMIT 1', [fundId]);
+          if (activity[0] && (existing[0].fund_kind !== kind || existing[0].loc_code !== locCode
+            || money(existing[0].opening_balance) !== money(input.openingBalance))) {
+            throw new Error('After a fund has movements, its type, location, and opening balance are locked. Record a transfer or adjustment instead.');
+          }
           await connection.execute(
             `UPDATE fund_accounts SET name = ?, fund_kind = ?, loc_code = ?, currency_code = ?, opening_balance = ?,
                holder_name = ?, account_reference = ?, notes = ?, is_active = ?, sort_order = ? WHERE id = ?`,
@@ -353,11 +358,12 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
     await connection.execute(
       `INSERT INTO stakeholder_ledger_entries
          (stakeholder_id, business_day_id, loc_code, mac_code, txn_date,
-          document_type, document_no, entry_no, entry_number, entry_type, amount,
+           document_type, document_no, entry_no, entry_number, entry_type, balance_bucket, amount,
           fund_account_id, expense_entry_id, fund_movement_id, reason, created_by, metadata)
-       VALUES (?, ?, ?, ?, ?, 'expense', ?, 1, ?, 'expense_borne', ?, ?, ?, ?, ?, ?, CAST(? AS JSON))`,
+        VALUES (?, ?, ?, ?, ?, 'expense', ?, 1, ?, 'expense_borne', ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON))`,
       [stakeholder.id, day.id, origin.locCode, origin.macCode, origin.txnDate,
-        expense.expenseNo, entryNumber, money(expense.amount), fund.id, expense.id,
+        expense.expenseNo, entryNumber, stakeholder.borneCostTreatment === 'liability' ? 'repayable' : 'capital',
+        money(expense.amount), fund.id, expense.id,
         ledger.fundMovementId, `Paid for the business: ${expense.reason}`, userId,
         JSON.stringify({ expenseNumber: expense.expenseNumber, treatment: stakeholder.borneCostTreatment })]
     );
@@ -383,7 +389,7 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
       grnNumber: row.grn_number || null,
       categoryId: Number(row.expense_category_id),
       categoryName: row.category_name,
-      categoryTreatment: row.default_treatment,
+      categoryTreatment: row.treatment_snapshot,
       fundAccountId: Number(row.fund_account_id),
       fundName: row.fund_name,
       fundKind: row.fund_kind,
@@ -422,6 +428,30 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
         }
         if (stakeholder && !stakeholder.isActive) throw new Error(`${stakeholder.displayName} is not active.`);
 
+        const requestId = text(input.requestId) || null;
+        if (requestId) {
+          const [replays] = await connection.execute(
+            `SELECT e.id, e.expense_number, e.amount, e.fund_account_id, e.treatment_snapshot,
+                    c.name AS category_name, f.name AS fund_name, s.display_name AS stakeholder_name
+             FROM expense_entries e
+             JOIN expense_categories c ON c.id = e.expense_category_id
+             JOIN fund_accounts f ON f.id = e.fund_account_id
+             LEFT JOIN stakeholders s ON s.fund_account_id = f.id
+             WHERE e.loc_code = ? AND e.mac_code = ? AND e.request_id = ? LIMIT 1`,
+            [origin.locCode, origin.macCode, requestId]
+          );
+          if (replays[0]) {
+            await connection.rollback();
+            const replay = replays[0];
+            const [replayFund] = await loadFunds(connection, { locCode: origin.locCode, includeInactive: true, fundId: replay.fund_account_id });
+            return {
+              id: Number(replay.id), expenseNumber: replay.expense_number, amount: money(replay.amount),
+              categoryName: replay.category_name, categoryTreatment: replay.treatment_snapshot,
+              fundName: replay.fund_name, fundBalance: replayFund?.balance || 0,
+              stakeholderName: replay.stakeholder_name || null, stakeholderEntryNumber: null, replayed: true
+            };
+          }
+        }
         const expenseNo = await documentSequenceRepository.allocateWithConnection(connection, { documentType: 'expense', ...origin });
         const expenseNumber = `EXP-${origin.locCode}-${origin.macCode}-${origin.txnDate.replace(/-/g, '')}-${String(expenseNo).padStart(6, '0')}`;
 
@@ -435,12 +465,12 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
 
         const [result] = await connection.execute(
           `INSERT INTO expense_entries
-             (business_day_id, expense_category_id, fund_account_id, cash_shift_id,
-              loc_code, mac_code, txn_date, expense_no, expense_number, amount,
+              (business_day_id, expense_category_id, treatment_snapshot, fund_account_id, cash_shift_id,
+               loc_code, mac_code, txn_date, expense_no, expense_number, request_id, amount,
               payee, reference, reason, cash_movement_id, fund_movement_id, created_by, metadata)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON))`,
-          [day.id, category.id, fund.id, ledger.cashShiftId,
-            origin.locCode, origin.macCode, origin.txnDate, expenseNo, expenseNumber, amount,
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON))`,
+          [day.id, category.id, category.default_treatment, fund.id, ledger.cashShiftId,
+            origin.locCode, origin.macCode, origin.txnDate, expenseNo, expenseNumber, requestId, amount,
             text(input.payee) || null, text(input.reference) || null, reason,
             ledger.cashMovementId, ledger.fundMovementId, input.userId,
             JSON.stringify({ categoryCode: category.category_code, treatment: category.default_treatment, fundCode: fund.fundCode })]
@@ -461,7 +491,7 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
           posting: rules.expensePosting({
             expense: { amount, reason },
             fund,
-            category: { id: Number(category.id), name: category.name, defaultTreatment: category.default_treatment },
+            category: { id: Number(category.id), name: category.name, categoryCode: category.category_code, defaultTreatment: category.default_treatment },
             stakeholder
           }),
           userId: input.userId,
@@ -502,7 +532,7 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
       const where = clauses.join(' AND ');
       const limit = Math.min(500, Math.max(1, Number(filters.limit || 200)));
       const [rows] = await connection.query(
-        `SELECT e.*, c.name AS category_name, c.default_treatment, f.name AS fund_name, f.fund_kind,
+         `SELECT e.*, c.name AS category_name, e.treatment_snapshot, f.name AS fund_name, f.fund_kind,
                 u.display_name AS user_name, g.grn_number, sh.display_name AS stakeholder_name
          FROM expense_entries e
          JOIN expense_categories c ON c.id = e.expense_category_id
@@ -515,10 +545,10 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
          LIMIT ${limit}`, params
       );
       const [byCategory] = await connection.query(
-        `SELECT c.id, c.name, c.default_treatment, COUNT(*) AS entry_count, COALESCE(SUM(e.amount), 0) AS total
+         `SELECT c.id, c.name, e.treatment_snapshot, COUNT(*) AS entry_count, COALESCE(SUM(e.amount), 0) AS total
          FROM expense_entries e JOIN expense_categories c ON c.id = e.expense_category_id
          WHERE ${where} AND e.status = 'recorded'
-         GROUP BY c.id, c.name, c.default_treatment ORDER BY total DESC`, params
+         GROUP BY c.id, c.name, e.treatment_snapshot ORDER BY total DESC`, params
       );
       const [byFund] = await connection.query(
         `SELECT f.id, f.name, f.fund_kind, COUNT(*) AS entry_count, COALESCE(SUM(e.amount), 0) AS total
@@ -535,7 +565,7 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
         attachedTotal: money(rowsOut.reduce((sum, row) => sum + row.allocatedTotal, 0)),
         unattachedTotal: money(rowsOut.reduce((sum, row) => sum + row.unallocatedTotal, 0)),
         byCategory: byCategory.map((row) => ({
-          id: Number(row.id), name: row.name, treatment: row.default_treatment,
+          id: Number(row.id), name: row.name, treatment: row.treatment_snapshot,
           entryCount: Number(row.entry_count), total: money(row.total)
         })),
         byFund: byFund.map((row) => ({
@@ -543,6 +573,134 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
           entryCount: Number(row.entry_count), total: money(row.total)
         }))
       };
+    });
+  }
+
+  // ── Recurring expense reminders ───────────────────────────
+
+  function mapRecurring(row) {
+    return {
+      id: Number(row.id), locationCode: row.loc_code, name: row.name,
+      expenseCategoryId: Number(row.expense_category_id), categoryName: row.category_name,
+      fundAccountId: Number(row.fund_account_id), fundName: row.fund_name,
+      amount: money(row.amount), payee: row.payee || '', reference: row.reference || '', reason: row.reason,
+      cadence: row.cadence, intervalCount: Number(row.interval_count),
+      nextDueDate: dateOnly(row.next_due_date), endDate: row.end_date ? dateOnly(row.end_date) : null,
+      isActive: !!row.is_active, lastExpenseNumber: row.last_expense_number || null,
+      lastRecordedAt: row.last_recorded_at || null
+    };
+  }
+
+  async function listRecurringExpenses({ locCode, includeInactive = false }) {
+    return database.withConnection(async (connection) => {
+      const [rows] = await connection.execute(
+        `SELECT t.*, c.name AS category_name, f.name AS fund_name,
+                last_run.expense_number AS last_expense_number, last_run.recorded_at AS last_recorded_at
+         FROM recurring_expense_templates t
+         JOIN expense_categories c ON c.id = t.expense_category_id
+         JOIN fund_accounts f ON f.id = t.fund_account_id
+         LEFT JOIN (
+           SELECT r.recurring_expense_template_id, e.expense_number, r.recorded_at,
+                  ROW_NUMBER() OVER (PARTITION BY r.recurring_expense_template_id ORDER BY r.due_date DESC, r.id DESC) AS row_no
+           FROM recurring_expense_runs r JOIN expense_entries e ON e.id = r.expense_entry_id
+         ) last_run ON last_run.recurring_expense_template_id = t.id AND last_run.row_no = 1
+         WHERE t.loc_code = ? AND (? = 1 OR t.is_active = 1)
+         ORDER BY t.is_active DESC, t.next_due_date, t.name, t.id`,
+        [text(locCode), includeInactive ? 1 : 0]
+      );
+      return rows.map(mapRecurring);
+    });
+  }
+
+  async function saveRecurringExpense(input) {
+    return database.withConnection(async (connection) => {
+      await connection.beginTransaction();
+      try {
+        const locCode = text(input.locCode);
+        const name = text(input.name);
+        const reason = text(input.reason);
+        const amount = money(input.amount);
+        const cadence = text(input.cadence);
+        const intervalCount = Math.max(1, Number(input.intervalCount || 1));
+        const nextDueDate = dateOnly(input.nextDueDate);
+        const endDate = input.endDate ? dateOnly(input.endDate) : null;
+        if (!locCode || !name || !reason || amount <= 0 || !/^\d{4}-\d{2}-\d{2}$/.test(nextDueDate)) {
+          throw new Error('Name, amount, reason, and next due date are required.');
+        }
+        if (!['weekly', 'monthly', 'yearly', 'custom_days'].includes(cadence)) throw new Error('Choose a valid repeat schedule.');
+        if (endDate && endDate < nextDueDate) throw new Error('The ending date cannot be before the next due date.');
+        const [categories] = await connection.execute('SELECT id FROM expense_categories WHERE id = ? AND is_active = 1', [Number(input.expenseCategoryId)]);
+        if (!categories.length) throw new Error('Choose an active expense category.');
+        const [funds] = await connection.execute('SELECT id FROM fund_accounts WHERE id = ? AND loc_code = ? AND is_active = 1', [Number(input.fundAccountId), locCode]);
+        if (!funds.length) throw new Error('Choose an active fund for this location.');
+        const values = [locCode, name, Number(input.expenseCategoryId), Number(input.fundAccountId), amount,
+          text(input.payee) || null, text(input.reference) || null, reason, cadence, intervalCount,
+          nextDueDate, endDate, input.isActive === false ? 0 : 1, Number(input.userId)];
+        const id = Number(input.id || 0);
+        let savedId = id;
+        if (id) {
+          const [result] = await connection.execute(
+            `UPDATE recurring_expense_templates SET loc_code = ?, name = ?, expense_category_id = ?, fund_account_id = ?,
+               amount = ?, payee = ?, reference = ?, reason = ?, cadence = ?, interval_count = ?, next_due_date = ?,
+               end_date = ?, is_active = ?, updated_by = ? WHERE id = ?`, [...values, id]
+          );
+          if (!result.affectedRows) throw new Error('This recurring expense no longer exists.');
+        } else {
+          const [result] = await connection.execute(
+            `INSERT INTO recurring_expense_templates
+               (loc_code, name, expense_category_id, fund_account_id, amount, payee, reference, reason,
+                cadence, interval_count, next_due_date, end_date, is_active, created_by, updated_by)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [...values, Number(input.userId)]
+          );
+          savedId = Number(result.insertId);
+        }
+        await connection.commit();
+        return (await listRecurringExpenses({ locCode, includeInactive: true })).find((row) => row.id === savedId) || null;
+      } catch (error) { await connection.rollback(); throw error; }
+    });
+  }
+
+  function nextRecurringDate(value, cadence, intervalCount) {
+    const [year, month, day] = dateOnly(value).split('-').map(Number);
+    const date = new Date(Date.UTC(year, month - 1, day));
+    if (cadence === 'monthly') {
+      const targetMonth = month - 1 + intervalCount;
+      const targetYear = year + Math.floor(targetMonth / 12);
+      const normalizedMonth = ((targetMonth % 12) + 12) % 12;
+      const lastDay = new Date(Date.UTC(targetYear, normalizedMonth + 1, 0)).getUTCDate();
+      date.setUTCFullYear(targetYear, normalizedMonth, Math.min(day, lastDay));
+    } else if (cadence === 'yearly') {
+      const targetYear = year + intervalCount;
+      const lastDay = new Date(Date.UTC(targetYear, month, 0)).getUTCDate();
+      date.setUTCFullYear(targetYear, month - 1, Math.min(day, lastDay));
+    } else date.setUTCDate(date.getUTCDate() + intervalCount * (cadence === 'weekly' ? 7 : 1));
+    return date.toISOString().slice(0, 10);
+  }
+
+  async function completeRecurringExpense({ templateId, dueDate, expenseEntryId, userId }) {
+    return database.withConnection(async (connection) => {
+      await connection.beginTransaction();
+      try {
+        const [rows] = await connection.execute('SELECT * FROM recurring_expense_templates WHERE id = ? FOR UPDATE', [Number(templateId)]);
+        const template = rows[0];
+        if (!template) throw new Error('This recurring expense no longer exists.');
+        const normalizedDue = dateOnly(dueDate);
+        await connection.execute(
+          `INSERT IGNORE INTO recurring_expense_runs
+             (recurring_expense_template_id, due_date, expense_entry_id, recorded_by)
+           VALUES (?, ?, ?, ?)`, [template.id, normalizedDue, Number(expenseEntryId), Number(userId)]
+        );
+        if (dateOnly(template.next_due_date) === normalizedDue) {
+          const nextDate = nextRecurringDate(normalizedDue, template.cadence, Number(template.interval_count));
+          const remainsActive = !template.end_date || nextDate <= dateOnly(template.end_date);
+          await connection.execute(
+            'UPDATE recurring_expense_templates SET next_due_date = ?, is_active = ?, updated_by = ? WHERE id = ?',
+            [nextDate, remainsActive ? 1 : 0, Number(userId), template.id]
+          );
+        }
+        await connection.commit();
+        return { templateId: Number(template.id), nextDueDate: nextRecurringDate(normalizedDue, template.cadence, Number(template.interval_count)) };
+      } catch (error) { await connection.rollback(); throw error; }
     });
   }
 
@@ -651,7 +809,7 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
            FROM cash_movements m
            JOIN cash_shifts s ON s.id = m.cash_shift_id
            JOIN users u ON u.id = m.created_by
-           WHERE s.drawer_id = ?${clause}
+           WHERE s.drawer_id = ? AND m.status = 'active'${clause}
            ORDER BY m.created_at DESC, m.id DESC LIMIT ${safeLimit}`, params
         );
       } else {
@@ -690,6 +848,9 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
     saveCategory,
     recordExpense,
     listExpenses,
+    listRecurringExpenses,
+    saveRecurringExpense,
+    completeRecurringExpense,
     transferFunds,
     // Connection-level helpers shared with the stakeholder repository.
     loadFundsWithConnection: loadFunds,
