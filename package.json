@@ -2,6 +2,10 @@
   "name": "pos-platform",
   "version": "0.2.0",
   "description": "Modular Angular + Electron POS platform foundation",
+  "author": {
+    "name": "shaheerk1",
+    "url": "https://yolo.web.lk"
+  },
   "main": "apps/desktop/electron/main/main.js",
   "private": true,
   "scripts": {
