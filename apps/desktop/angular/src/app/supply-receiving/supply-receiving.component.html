@@ -49,7 +49,59 @@
       <div class="empty-state" *ngIf="!inventorySummary.length">No products are configured for this location.</div>
     </section>
 
-    <section class="workflow-card"><div class="card-heading"><div><h2>Stock control</h2><p>Record Unit Count and Measured Qty together or perform a lot-by-lot dual count. Every variance is audited.</p></div></div><div class="split-cards"><section class="form-section"><h3>Manual stock adjustment</h3><div class="field-stack"><label>Product<select [(ngModel)]="adjustment.productId"><option [ngValue]="null">Choose product</option><option *ngFor="let product of products" [ngValue]="product.id">{{ product.sku }} - {{ product.name }}</option></select></label><label>Unit Count adjustment ({{ adjustmentProduct?.handling_uom || 'qty' }})<input type="number" step="0.001" [(ngModel)]="adjustment.handlingQuantity"></label><label *ngIf="adjustmentProduct?.dual_uom_enabled">Measured Qty adjustment ({{ adjustmentProduct?.base_uom || 'base' }})<input type="number" step="0.001" [(ngModel)]="adjustment.baseQuantity"></label><label>Business date<input type="date" [(ngModel)]="adjustment.businessDate"></label><label>Reason<input [(ngModel)]="adjustment.reason" placeholder="Damage, loss, count correction"></label></div><button type="button" class="button-secondary" (click)="saveAdjustment()">Record adjustment</button></section><section class="form-section"><h3>Lot stock count</h3><label>Count date<input type="date" [(ngModel)]="stockCount.businessDate"></label><label>Reason<input [(ngModel)]="stockCount.reason" placeholder="Daily count or measurement review"></label><div class="lot-list"><div *ngFor="let lot of lots; let i = index"><strong>{{ lot.product_name }}<small>{{ lot.lot_code }}</small></strong><span>{{ lot.supplier_name }} · {{ lot.remaining_handling_quantity }} {{ lot.handling_uom_snapshot }}<ng-container *ngIf="lot.remaining_base_quantity != null"> / {{ lot.remaining_base_quantity }} {{ lot.base_uom_snapshot }}</ng-container></span><input type="number" [placeholder]="'Counted ' + lot.handling_uom_snapshot" [(ngModel)]="stockCount.lines[i].countedQuantity"><input *ngIf="lot.remaining_base_quantity != null" type="number" [placeholder]="'Counted ' + lot.base_uom_snapshot" [(ngModel)]="stockCount.lines[i].countedKilos"></div></div><button type="button" class="button-primary" (click)="finalizeStockCount()">Finalize lot count</button></section></div></section>
+    <section class="workflow-card"><div class="card-heading"><div><h2>Stock control</h2><p>Record Unit Count and Measured Qty together or perform a lot-by-lot dual count. Every variance is audited.</p></div></div><div class="split-cards"><section class="form-section"><h3>Manual stock adjustment</h3><div class="field-stack"><label>Product<select [(ngModel)]="adjustment.productId"><option [ngValue]="null">Choose product</option><option *ngFor="let product of products" [ngValue]="product.id">{{ product.sku }} - {{ product.name }}</option></select></label><label>Unit Count adjustment ({{ adjustmentProduct?.handling_uom || 'qty' }})<input type="number" step="0.001" [(ngModel)]="adjustment.handlingQuantity"></label><label *ngIf="adjustmentProduct?.dual_uom_enabled">Measured Qty adjustment ({{ adjustmentProduct?.base_uom || 'base' }})<input type="number" step="0.001" [(ngModel)]="adjustment.baseQuantity"></label><label>Business date<input type="date" [(ngModel)]="adjustment.businessDate"></label><label>Reason<input [(ngModel)]="adjustment.reason" placeholder="Damage, loss, count correction"></label></div><button type="button" class="button-secondary" (click)="saveAdjustment()">Record adjustment</button></section><section class="form-section"><h3>Lot stock count</h3><label>Count date<input type="date" [(ngModel)]="stockCount.businessDate"></label><label>Reason<input [(ngModel)]="stockCount.reason" placeholder="Daily count or measurement review"></label><div class="lot-list"><div *ngFor="let lot of lots; let i = index"><strong>{{ lot.product_name }}<small>{{ lot.lot_code }}</small></strong><span>{{ lot.supplier_name }} · {{ lot.remaining_handling_quantity }} {{ lot.handling_uom_snapshot }}<ng-container *ngIf="lot.remaining_base_quantity != null"> / {{ lot.remaining_base_quantity }} {{ lot.base_uom_snapshot }}</ng-container></span><input type="number" [placeholder]="'Counted ' + lot.handling_uom_snapshot" [(ngModel)]="stockCount.lines[i].countedQuantity"><input *ngIf="lot.remaining_base_quantity != null" type="number" [placeholder]="'Counted ' + lot.base_uom_snapshot" [(ngModel)]="stockCount.lines[i].countedKilos"></div></div><button type="button" class="button-primary" (click)="finalizeStockCount()">Finalize lot count</button></section></div>
+
+      <section class="form-section send-out">
+        <h3>Send goods out</h3>
+        <p class="section-hint">Use this when a load leaves on another lorry instead of being billed here. It takes both measures together, so a lot can never show bags that disagree with its weight.</p>
+        <div class="field-stack">
+          <label>Going to<input [(ngModel)]="issue.destination" placeholder="Shop or place, e.g. Rohana" /></label>
+          <label>Business date<input type="date" [(ngModel)]="issue.businessDate" /></label>
+          <label>Vehicle number<input [(ngModel)]="issue.vehicleNumber" placeholder="Optional" /></label>
+        </div>
+
+        <div class="issue-lines">
+          <div class="issue-line" *ngFor="let line of issue.lines; let i = index">
+            <label>Lot
+              <select [(ngModel)]="line.inventoryLotId">
+                <option [ngValue]="null">Choose a lot</option>
+                <option *ngFor="let lot of issueLotsAvailable" [ngValue]="lot.id">{{ lot.lot_code }} · {{ lot.product_name }} ({{ lot.remaining_handling_quantity }} {{ lot.handling_uom_snapshot }}<ng-container *ngIf="lot.remaining_base_quantity != null"> / {{ lot.remaining_base_quantity }} {{ lot.base_uom_snapshot }}</ng-container> left)</option>
+              </select>
+            </label>
+            <label>{{ lotById(line.inventoryLotId)?.handling_uom_snapshot || 'Bags' }} leaving<input type="number" step="0.001" [(ngModel)]="line.handlingQuantity" /></label>
+            <label *ngIf="issueLineNeedsBase(line)">{{ lotById(line.inventoryLotId)?.base_uom_snapshot || 'Kilos' }} leaving<input type="number" step="0.001" [(ngModel)]="line.baseQuantity" /></label>
+            <button type="button" class="button-quiet" (click)="removeIssueLine(i)" *ngIf="issue.lines.length > 1">Remove</button>
+          </div>
+          <button type="button" class="button-quiet" (click)="addIssueLine()">Add another lot</button>
+        </div>
+
+        <h4>Weighbridge</h4>
+        <div class="field-stack">
+          <label>Ticket number<input [(ngModel)]="issue.weighbridgeTicket" placeholder="Optional" /></label>
+          <label>Net weight on the ticket<input type="number" step="0.001" [(ngModel)]="issue.weighbridgeNetQuantity" /></label>
+          <label>Weighing fee paid<input type="number" step="0.01" [(ngModel)]="issue.weighbridgeCharge" placeholder="0.00" /></label>
+          <label *ngIf="issue.weighbridgeCharge > 0">Paid from
+            <select [(ngModel)]="issue.weighbridgeFundAccountId">
+              <option [ngValue]="null">Choose fund</option>
+              <option *ngFor="let fund of settlementFunds" [ngValue]="fund.id">{{ fund.name }}</option>
+            </select>
+          </label>
+        </div>
+        <p class="section-hint" *ngIf="issue.weighbridgeCharge > 0">The fee is recorded as a goods-related cost and attached to the lot on this load, so it raises what those goods really cost.</p>
+        <button type="button" class="button-primary" (click)="recordIssue()" [disabled]="saving">{{ saving ? 'Recording…' : 'Record load out' }}</button>
+      </section>
+
+      <section class="form-section" *ngIf="issues.length">
+        <h3>Recent loads sent out</h3>
+        <div class="issue-history">
+          <article *ngFor="let row of issues">
+            <header><strong>#{{ row.issueNo }} · {{ row.destination }}</strong><span>{{ row.businessDate }}</span></header>
+            <p *ngFor="let line of row.lines">{{ line.lotCode }} · {{ line.productName }} — {{ line.handlingQuantity }} {{ line.handlingUom }}<ng-container *ngIf="line.baseQuantity != null"> / {{ line.baseQuantity }} {{ line.baseUom }}</ng-container></p>
+            <small *ngIf="row.weighbridgeTicket || row.weighbridgeCharge">Ticket {{ row.weighbridgeTicket || '—' }}<ng-container *ngIf="row.weighbridgeCharge"> · fee {{ row.weighbridgeCharge | number:'1.2-2' }}</ng-container><ng-container *ngIf="row.vehicleNumber"> · {{ row.vehicleNumber }}</ng-container></small>
+          </article>
+        </div>
+      </section>
+    </section>
 
     <section class="workflow-card allocation-workspace">
       <div class="card-heading"><div><h2>Lot allocation &amp; reconciliation</h2><p>Assign sales that could not find stock, or move an incorrect allocation between GRN lots. Overall item stock is never posted again.</p></div><span class="status-chip">{{ allocationExceptions.length }} unmatched</span></div>

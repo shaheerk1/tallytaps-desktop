@@ -713,6 +713,17 @@ export type BillItem = {
   metadata?: Record<string, unknown>;
 };
 
+/**
+ * How much of a finalized bill has since been returned. `full` means every line
+ * was refunded; `partial` means some of the sale still stands.
+ */
+export type InvoiceRefundState = {
+  lineCount: number;
+  refundedLineCount: number;
+  refundedTotal: number;
+  refundStatus: 'none' | 'partial' | 'full';
+};
+
 export type InvoiceArchive = {
   id: number;
   invoice_number: string;
@@ -1822,7 +1833,7 @@ export interface PosApi {
   };
   billing: {
     openBill: (session: BillContext, actor?: ActorContext) => Promise<IpcResult<OpenBillResult>>;
-    searchInvoices: (filters: { term?: string; customerCode?: string; locCode?: string; macCode?: string; txnDate?: string; limit?: number }, actor?: ActorContext) => Promise<IpcResult<Array<Pick<InvoiceArchive, 'id' | 'invoice_number' | 'loc_code' | 'mac_code' | 'receipt_no' | 'txn_date' | 'status' | 'subtotal' | 'grandTotal' | 'paidTotal' | 'balance' | 'customer_code'>>>>;
+    searchInvoices: (filters: { term?: string; customerCode?: string; locCode?: string; macCode?: string; txnDate?: string; limit?: number; includeRefunded?: boolean }, actor?: ActorContext) => Promise<IpcResult<Array<Pick<InvoiceArchive, 'id' | 'invoice_number' | 'loc_code' | 'mac_code' | 'receipt_no' | 'txn_date' | 'status' | 'subtotal' | 'grandTotal' | 'paidTotal' | 'balance' | 'customer_code'> & InvoiceRefundState>>>;
     getInvoice: (invoiceId: number, actor?: ActorContext) => Promise<IpcResult<InvoiceArchive | null>>;
     collectInvoiceBalance: (payload: {
       invoiceId: number;

@@ -23,6 +23,7 @@ const { createCustomerAdvanceRepository } = require('../../../../packages/databa
 const { createExpenseRepository } = require('../../../../packages/database/repositories/expense.repository');
 const { createJournalRepository } = require('../../../../packages/database/repositories/journal.repository');
 const { createLotCostingRepository } = require('../../../../packages/database/repositories/lot-costing.repository');
+const { createInventoryIssueRepository } = require('../../../../packages/database/repositories/inventory-issue.repository');
 const { createStakeholderRepository } = require('../../../../packages/database/repositories/stakeholder.repository');
 const { createOperationalAccountingRepository } = require('../../../../packages/database/repositories/operational-accounting.repository');
 const { seedAdminUser } = require('../../../../packages/database/seeders/seed-admin-user');
@@ -55,6 +56,7 @@ const { createSupplierSaleStatementService } = require('../../../../packages/cor
 const { createCustomerAdvanceService } = require('../../../../packages/core/customer-advances/customer-advance.service');
 const { createExpenseService } = require('../../../../packages/core/expenses/expense.service');
 const { createLotCostingService } = require('../../../../packages/core/lot-costing/lot-costing.service');
+const { createInventoryIssueService } = require('../../../../packages/core/inventory-issues/inventory-issue.service');
 const { createStakeholderService } = require('../../../../packages/core/stakeholders/stakeholder.service');
 const { createAccountingService } = require('../../../../packages/core/accounting/accounting.service');
 const { safeStorage } = require('electron');
@@ -112,6 +114,7 @@ async function createServiceContainer() {
   const journalRepository = createJournalRepository({ database, documentSequenceRepository });
   const expenseRepository = createExpenseRepository({ database, documentSequenceRepository, businessDayRepository, journalRepository });
   const lotCostingRepository = createLotCostingRepository({ database, documentSequenceRepository, businessDayRepository, journalRepository });
+  const inventoryIssueRepository = createInventoryIssueRepository({ database, documentSequenceRepository, businessDayRepository, inventoryLedgerRepository });
   const stakeholderRepository = createStakeholderRepository({ database, documentSequenceRepository, businessDayRepository, journalRepository, expenseRepository });
   const operationalAccountingRepository = createOperationalAccountingRepository({ database, journalRepository });
 
@@ -163,6 +166,7 @@ async function createServiceContainer() {
   const supplierSaleStatementService = createSupplierSaleStatementService({ repository: supplierSaleStatementRepository });
   const expenseService = createExpenseService({ expenseRepository });
   const lotCostingService = createLotCostingService({ lotCostingRepository });
+  const inventoryIssueService = createInventoryIssueService({ inventoryIssueRepository, expenseRepository, lotCostingRepository });
   const stakeholderService = createStakeholderService({ stakeholderRepository });
   const accountingService = createAccountingService({ journalRepository, operationalAccountingRepository, lotCostingRepository });
 
@@ -179,6 +183,7 @@ async function createServiceContainer() {
     expenseRepository,
     journalRepository,
     lotCostingRepository,
+    inventoryIssueRepository,
     stakeholderRepository,
     operationalAccountingRepository,
     billingRepository,
@@ -200,6 +205,7 @@ async function createServiceContainer() {
     customerAdvanceService,
     expenseService,
     lotCostingService,
+    inventoryIssueService,
     stakeholderService,
     accountingService,
     billingEngineService,

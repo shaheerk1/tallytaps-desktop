@@ -1,7 +1,7 @@
 :host { display:block; height:100%; }
 .invoice-history { max-width:1500px; margin:0 auto; padding:32px; color:var(--ui-ink); }
 .invoice-header { margin-bottom:18px; }.invoice-header h1 { margin:0 0 4px; color:var(--ui-ops-title); font-family:Georgia,'Times New Roman',serif; font-size:23px; line-height:1.1; }.invoice-header h1 span { color:var(--ui-ops-title-accent); font-size:12px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; vertical-align:middle; }.invoice-header p { margin:0; color:var(--ui-ink-muted); font-size:13px; }
-.filters { display:grid; grid-template-columns:repeat(5,minmax(120px,1fr)) auto; gap:.65rem; padding:.8rem; background:var(--ui-warm-surface); border:1px solid var(--ui-border); border-radius:var(--ui-radius); box-shadow:var(--ui-shadow); }
+.filters { display:grid; grid-template-columns:repeat(5,minmax(120px,1fr)) auto auto; gap:.65rem; padding:.8rem; background:var(--ui-warm-surface); border:1px solid var(--ui-border); border-radius:var(--ui-radius); box-shadow:var(--ui-shadow); }
 label { display:grid; gap:.25rem; font-size:.72rem; font-weight:700; text-transform:uppercase; color:var(--ui-navy); } input,.collection select { padding:.55rem; border:1px solid var(--ui-border); border-radius:var(--ui-radius-sm); }
 .btn { align-self:end; padding:.58rem .9rem; border:1px solid var(--ui-primary); border-radius:var(--ui-radius-sm); background:var(--ui-primary); color:#fff; cursor:pointer; }.secondary { background:var(--ui-surface); color:var(--ui-primary); }
 main { display:grid; grid-template-columns:minmax(280px,.75fr) minmax(0,1.5fr); gap:1rem; margin-top:1rem; height:calc(100vh - 225px); } aside,.invoice-detail,.detail-empty { background:var(--ui-warm-surface); border:1px solid var(--ui-border); border-radius:var(--ui-radius); overflow:auto; box-shadow:var(--ui-shadow); }
@@ -59,3 +59,16 @@ aside, .invoice-detail, .detail-empty { background:var(--ui-warm-surface); box-s
 .item-measure-summary-entry span { color:#25364d; font-family:"JetBrains Mono",Consolas,monospace; font-size:11px; font-weight:750; }
 .archive-items-panel + .totals { margin-top:0; border-top:0; border-radius:0 0 var(--ui-radius-sm) var(--ui-radius-sm); }
 @media(max-width:800px) { .archive-items-panel { margin:12px 10px 0; }.archive-items-panel + .totals { margin-right:10px; margin-left:10px; } }
+
+/* Returned bills stay visible but read as withdrawn, so they are never mistaken
+   for a sale that stood. */
+.filters .check-filter { display:flex; align-items:center; gap:.4rem; font-size:.82rem; color:var(--ui-ink-muted); white-space:nowrap; }
+.filters .check-filter input { min-height:auto; width:auto; }
+.invoice-row.refunded { opacity:.55; }
+.invoice-row.refunded strong, .invoice-row.refunded .row-customer { text-decoration:line-through; text-decoration-thickness:1px; }
+.invoice-row.refunded:hover, .invoice-row.refunded.active { opacity:.85; }
+.refund-tag { display:inline-block; margin-left:.45rem; padding:1px 6px; border-radius:3px; font-style:normal;
+  font-size:.62rem; letter-spacing:.07em; text-transform:uppercase; font-weight:700; vertical-align:middle;
+  text-decoration:none; background:var(--ui-danger-soft,#f7e3e0); color:var(--ui-danger,#a63a2a); }
+.refund-tag.partial { background:var(--ui-warning-soft,#f6eeda); color:var(--ui-warning,#8a6014); }
+.refund-tag.detail { font-size:.6rem; margin-left:.6rem; }

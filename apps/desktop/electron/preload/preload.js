@@ -108,6 +108,8 @@ contextBridge.exposeInMainWorld('posApi', {
     ,listInventoryLots: (productId, locCode, actor) => ipcRenderer.invoke('inventory.lots.list', { productId, locCode, actor })
     ,listInventorySummary: (locCode, actor) => ipcRenderer.invoke('inventory.summary.list', { locCode, actor })
     ,finalizeStockCount: (count, actor) => ipcRenderer.invoke('inventory.counts.finalize', { count, actor })
+    ,listInventoryIssues: (filters, actor) => ipcRenderer.invoke('inventory.issues.list', { filters, actor })
+    ,recordInventoryIssue: (issue, actor) => ipcRenderer.invoke('inventory.issues.record', { issue, actor })
     ,listAllocationExceptions: (locCode, actor) => ipcRenderer.invoke('inventory.allocations.exceptions', { locCode, actor })
     ,listRecentLotAllocations: (locCode, limit, actor) => ipcRenderer.invoke('inventory.allocations.list', { locCode, limit, actor })
     ,allocateException: (allocation, actor) => ipcRenderer.invoke('inventory.allocations.resolve', { allocation, actor })

@@ -456,7 +456,7 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
     });
   }
 
-  async function searchInvoices({ term = '', customerCode = '', locCode = '', macCode = '', txnDate = '', limit = 50 } = {}) {
+  async function searchInvoices({ term = '', customerCode = '', locCode = '', macCode = '', txnDate = '', limit = 50, includeRefunded = true } = {}) {
     return database.withConnection(async (connection) => {
       const text = String(term || '').trim();
       const clauses = [];
@@ -469,22 +469,49 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
         clauses.push('(invoice_number LIKE ? OR CAST(receipt_no AS CHAR) LIKE ?)');
         params.push(`%${text}%`, `%${text}%`);
       }
+      // A bill counts as fully returned when every one of its lines has been
+      // refunded; anything less is partial, so the operator can still see which
+      // part of the sale stood.
+      if (includeRefunded === false) {
+        clauses.push(`NOT EXISTS (SELECT 1 FROM refunds r WHERE r.source_invoice_id = invoices.id AND r.status = 'completed')`);
+      }
       const maxRows = Math.max(1, Math.min(Number(limit) || 50, 200));
       const [rows] = await connection.execute(
         `SELECT id, invoice_number, loc_code, mac_code, receipt_no, txn_date, status, customer_code,
                 (SELECT p.display_name FROM customer_accounts ca JOIN parties p ON p.id = ca.party_id
                  WHERE ca.id = invoices.customer_account_id LIMIT 1) AS customer_name,
-                subtotal, bag_charge_total, wage_charge_total, discount_total, grand_total, paid_total, balance, end_time
+                subtotal, bag_charge_total, wage_charge_total, discount_total, grand_total, paid_total, balance, end_time,
+                (SELECT COUNT(*) FROM invoice_items ii WHERE ii.invoice_id = invoices.id) AS line_count,
+                (SELECT COUNT(DISTINCT ri.source_invoice_item_id) FROM refund_items ri
+                   JOIN refunds r ON r.id = ri.refund_id
+                  WHERE r.status = 'completed'
+                    AND ri.source_invoice_item_id IN (SELECT ii.id FROM invoice_items ii WHERE ii.invoice_id = invoices.id)
+                ) AS refunded_line_count,
+                (SELECT COALESCE(SUM(r.grand_total), 0) FROM refunds r
+                  WHERE r.source_invoice_id = invoices.id AND r.status = 'completed') AS refunded_total
          FROM invoices
          ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
          ORDER BY txn_date DESC, receipt_no DESC LIMIT ${maxRows}`,
         params
       );
-      return rows.map((row) => ({
-        ...row,
-        subtotal: toMoney(row.subtotal), bagChargeTotal: toMoney(row.bag_charge_total), wageChargeTotal: toMoney(row.wage_charge_total), discountTotal: toMoney(row.discount_total), grandTotal: toMoney(row.grand_total),
-        paidTotal: toMoney(row.paid_total), balance: toMoney(row.balance)
-      }));
+      return rows.map((row) => {
+        const lineCount = Number(row.line_count || 0);
+        const refundedLines = Number(row.refunded_line_count || 0);
+        const refundedTotal = toMoney(row.refunded_total);
+        const grandTotal = toMoney(row.grand_total);
+        // Fully returned means every line came back *and* the money did too, so
+        // a part-quantity return on the last line still reads as partial.
+        const fullyReturned = lineCount > 0
+          && refundedLines >= lineCount
+          && refundedTotal >= grandTotal - 0.005;
+        const refundStatus = refundedLines === 0 ? 'none' : (fullyReturned ? 'full' : 'partial');
+        return {
+          ...row,
+          subtotal: toMoney(row.subtotal), bagChargeTotal: toMoney(row.bag_charge_total), wageChargeTotal: toMoney(row.wage_charge_total), discountTotal: toMoney(row.discount_total), grandTotal: toMoney(row.grand_total),
+          paidTotal: toMoney(row.paid_total), balance: toMoney(row.balance),
+          lineCount, refundedLineCount: refundedLines, refundedTotal, refundStatus
+        };
+      });
     });
   }
 

@@ -19,6 +19,8 @@ const STREAMS = [
   { entity: 'inventory_lot', table: 'inventory_lots' },
   { entity: 'inventory_measurement', table: 'inventory_measurements' },
   { entity: 'inventory_stock_count', table: 'inventory_stock_counts', where: "t.status='finalized'" },
+  { entity: 'inventory_issue', table: 'inventory_issues', where: "t.status='finalized'" },
+  { entity: 'inventory_issue_line', table: 'inventory_issue_lines', join: 'JOIN inventory_issues p ON p.id=t.issue_id', where: "p.status='finalized'" },
   { entity: 'inventory_stock_count_line', table: 'inventory_stock_count_lines', join: 'JOIN inventory_stock_counts p ON p.id=t.stock_count_id', where: "p.status='finalized'" },
   { entity: 'lot_sale_allocation', table: 'lot_sale_allocations' },
   { entity: 'inventory_allocation_exception', table: 'inventory_allocation_exceptions' },

@@ -1195,10 +1195,15 @@ export class BillingComponent implements OnInit, OnDestroy {
 
   selectProduct(product: Product): void {
     const productAllowsPriceOverride = this.isProductPriceAdjustable(product);
-    // Cashiers may type kilos and a spot price before choosing an item. Keep
-    // that rate only for flexible-price products; fixed-price products always
-    // restore their configured rate.
-    const keepEnteredRate = productAllowsPriceOverride && Number.isFinite(Number(this.rate));
+    // Cashiers may weigh, price and count a line before choosing the item.
+    // Those typed values survive only the first selection. Switching to a
+    // different item starts a clean line, so quantity, kilos and rate all
+    // behave the same way instead of quantity alone resetting to 1.
+    const switchingItem = this.selectedProductId !== null && this.selectedProductId !== product.id;
+    const keepTypedEntry = !switchingItem;
+    const keepEnteredRate = keepTypedEntry
+      && productAllowsPriceOverride
+      && Number.isFinite(Number(this.rate));
     if (!this.products.some((entry) => entry.id === product.id)) {
       this.products = [product, ...this.products];
     }
@@ -1206,9 +1211,9 @@ export class BillingComponent implements OnInit, OnDestroy {
     this.description = product.name;
     this.rate = keepEnteredRate ? this.rate : product.unit_price;
     this.rateEnteredBeforeProduct = false;
-    this.discount = 0;
-    this.qty = 1;
-    if (!truthyFlag(product.requires_kilos)) this.kilos = null;
+    this.discount = keepTypedEntry ? this.discount : 0;
+    this.qty = keepTypedEntry && Number(this.qty) > 0 ? this.qty : 1;
+    if (switchingItem || !truthyFlag(product.requires_kilos)) this.kilos = null;
     this.selectedProductId = product.id;
     this.loadLotCandidates(product.id);
     this.lineFieldValues = this.defaultLineValues(product);

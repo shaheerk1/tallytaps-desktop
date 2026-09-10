@@ -93,9 +93,21 @@ export class CashManagementComponent implements OnInit {
     if (this.movementType === 'cash_in') this.movementType = 'cash_out';
   }
 
+  /**
+   * Movement history opens on the current business day. Without this the page
+   * pulled every past movement on each load, which is slow and buries today's
+   * entries. Widening the range is one edit away in the filter row.
+   */
+  private applyDefaultHistoryRange(businessDate: string): void {
+    if (!businessDate) return;
+    if (!this.historyFromDate) this.historyFromDate = businessDate;
+    if (!this.historyToDate) this.historyToDate = businessDate;
+  }
+
   async load(): Promise<void> {
     if (!window.posApi) return;
     const ctx = this.context();
+    this.applyDefaultHistoryRange(ctx.businessDate);
     if (!ctx.sessionId) { this.error = 'Open a workstation session before managing cash.'; return; }
     const result = await window.posApi.cash.activeShift(ctx.sessionId, this.actor());
     if (!result.success) { this.error = result.error || 'Could not load the active cash shift.'; return; }

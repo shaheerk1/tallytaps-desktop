@@ -2,13 +2,15 @@ import { Component, OnInit } from '@angular/core';
 import { SessionService } from '../services/session.service';
 import { PrintingService } from '../services/printing.service';
 import { ItemMeasureSummary, itemMeasureSummaryText, summarizeItemMeasures } from '../services/item-measure-summary';
-import type { FundAccount, InvoiceArchive, PaymentMode, PrintDocument, PrintTextLine } from '../../../../../../packages/shared/ipc/pos-api';
+import type { FundAccount, InvoiceArchive, InvoiceRefundState, PaymentMode, PrintDocument, PrintTextLine } from '../../../../../../packages/shared/ipc/pos-api';
 
-type InvoiceRow = Pick<InvoiceArchive, 'id' | 'invoice_number' | 'loc_code' | 'mac_code' | 'receipt_no' | 'txn_date' | 'status' | 'subtotal' | 'grandTotal' | 'paidTotal' | 'balance' | 'customer_code'>;
+type InvoiceRow = Pick<InvoiceArchive, 'id' | 'invoice_number' | 'loc_code' | 'mac_code' | 'receipt_no' | 'txn_date' | 'status' | 'subtotal' | 'grandTotal' | 'paidTotal' | 'balance' | 'customer_code'> & Partial<InvoiceRefundState>;
 
 @Component({ selector: 'pos-invoice-history', templateUrl: './invoice-history.component.html', styleUrls: ['./invoice-history.component.css'] })
 export class InvoiceHistoryComponent implements OnInit {
   term = ''; customerCode = ''; locCode = ''; macCode = ''; txnDate = '';
+  /** Returned bills are hidden by default so the list shows sales that stood. */
+  showRefunded = false;
   rows: InvoiceRow[] = []; invoice: any = null;
   paymentModes: PaymentMode[] = []; collectionAmount = 0; collectionMethod = 'cash'; collecting = false;
   settlementFunds: FundAccount[] = []; collectionFundAccountId: number | null = null;
@@ -56,11 +58,29 @@ export class InvoiceHistoryComponent implements OnInit {
     if (!window.posApi) return;
     this.loading = true; this.error = ''; this.invoice = null;
     try {
-      const result = await window.posApi.billing.searchInvoices({ term: this.term, customerCode: this.customerCode, locCode: this.locCode, macCode: this.macCode, txnDate: this.txnDate }, this.actor());
+      const result = await window.posApi.billing.searchInvoices({ term: this.term, customerCode: this.customerCode, locCode: this.locCode, macCode: this.macCode, txnDate: this.txnDate, includeRefunded: this.showRefunded }, this.actor());
       if (!result.success) throw new Error(result.error || 'Could not search invoices.');
       this.rows = result.data || [];
     } catch (error) { this.error = error instanceof Error ? error.message : 'Could not search invoices.'; }
     finally { this.loading = false; }
+  }
+
+  isRefunded(row: InvoiceRow): boolean { return row.refundStatus === 'full' || row.refundStatus === 'partial'; }
+
+  refundLabel(row: InvoiceRow): string {
+    if (row.refundStatus === 'full') return 'Refunded';
+    if (row.refundStatus === 'partial') return 'Partly refunded';
+    return '';
+  }
+
+  /** The open bill's refund state, read from the row it was selected from. */
+  private get selectedRow(): InvoiceRow | undefined {
+    return this.rows.find((row) => row.id === this.invoice?.id);
+  }
+  get selectedRefundStatus(): string { return this.selectedRow?.refundStatus || 'none'; }
+  get selectedRefundLabel(): string {
+    const row = this.selectedRow;
+    return row ? this.refundLabel(row) : '';
   }
 
   async select(row: InvoiceRow): Promise<void> {

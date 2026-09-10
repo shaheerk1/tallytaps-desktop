@@ -15,7 +15,7 @@ export class ReportsComponent implements OnInit {
   fromDate = new Date().toISOString().slice(0, 10);
   toDate = this.fromDate;
   groupBy = 'item'; sortBy = 'date'; sortDir: 'desc' | 'asc' = 'desc';
-  supplierCode = ''; customerCode = ''; itemTerm = ''; finalizedOnly = true;
+  supplierCode = ''; customerCode = ''; itemTerm = ''; finalizedOnly = true; excludeRefunded = true;
   itemOptions: SalesItemOption[] = []; selectedItemCodes: string[] = []; allItemsSelected = true; itemPickerOpen = false; itemPickerSearch = '';
   sales: SalesResult = { rows: [], totals: { lineCount: 0, invoiceCount: 0, quantity: 0, kilos: 0, merchandiseTotal: 0, bagChargeTotal: 0, wageChargeTotal: 0, total: 0 }, groupBy: 'item', fromDate: null, toDate: null };
   suppliers: any[] = []; inventory: any[] = [];
@@ -30,7 +30,7 @@ export class ReportsComponent implements OnInit {
   constructor(private session: SessionService, private printing: PrintingService) {}
   private actor() { return this.session.getActor() || undefined; }
   get selectedColumns(): Column[] { return this.columns.filter((column) => column.selected); }
-  get salesFilters(): Record<string, unknown> { return { fromDate: this.fromDate || null, toDate: this.toDate || null, groupBy: this.groupBy, sortBy: this.sortBy, sortDir: this.sortDir, supplierCode: this.supplierCode, customerCode: this.customerCode, itemTerm: this.itemTerm, finalizedOnly: this.finalizedOnly, itemCodes: this.allItemsSelected ? undefined : this.selectedItemCodes, columns: this.selectedColumns.map((column) => column.key) }; }
+  get salesFilters(): Record<string, unknown> { return { fromDate: this.fromDate || null, toDate: this.toDate || null, groupBy: this.groupBy, sortBy: this.sortBy, sortDir: this.sortDir, supplierCode: this.supplierCode, customerCode: this.customerCode, itemTerm: this.itemTerm, finalizedOnly: this.finalizedOnly, excludeRefunded: this.excludeRefunded, itemCodes: this.allItemsSelected ? undefined : this.selectedItemCodes, columns: this.selectedColumns.map((column) => column.key) }; }
   get filteredItemOptions(): SalesItemOption[] { const term = this.itemPickerSearch.trim().toLowerCase(); return term ? this.itemOptions.filter((item) => `${item.itemCode} ${item.description}`.toLowerCase().includes(term)) : this.itemOptions; }
   get itemPickerLabel(): string { return this.allItemsSelected ? `All items (${this.itemOptions.length})` : `${this.selectedItemCodes.length} item${this.selectedItemCodes.length === 1 ? '' : 's'} selected`; }
   get totalSupplierDue(): number { return this.suppliers.reduce((sum, row) => sum + Number(row.balance || 0), 0); }
@@ -58,7 +58,7 @@ export class ReportsComponent implements OnInit {
 
   private async loadItemOptions(): Promise<void> {
     if (!window.posApi) return;
-    const result = await (window.posApi.reports as any).salesItems({ fromDate: this.fromDate || null, toDate: this.toDate || null, finalizedOnly: this.finalizedOnly }, this.actor());
+    const result = await (window.posApi.reports as any).salesItems({ fromDate: this.fromDate || null, toDate: this.toDate || null, finalizedOnly: this.finalizedOnly, excludeRefunded: this.excludeRefunded }, this.actor());
     if (!result.success) throw new Error(result.error || 'Could not load the sales item picker.');
     this.itemOptions = result.data || [];
     if (!this.allItemsSelected) {

@@ -1,3 +1,14 @@
+/**
+ * Drops any sale line that a completed refund has returned. It is line-level on
+ * purpose: a partly returned bill keeps the lines that were genuinely sold
+ * instead of the whole bill disappearing from the figures.
+ */
+const REFUNDED_LINE_EXCLUSION = `NOT EXISTS (
+  SELECT 1 FROM refund_items ri
+  JOIN refunds r ON r.id = ri.refund_id
+  WHERE ri.source_invoice_item_id = ii.id AND r.status = 'completed'
+)`;
+
 function createReportService({ database }) {
   if (!database) {
     throw new Error('Report service requires database.');
@@ -90,6 +101,9 @@ function createReportService({ database }) {
     const itemTerm = String(filters.itemTerm || '').trim();
     const itemCodes = Array.isArray(filters.itemCodes) ? [...new Set(filters.itemCodes.map((code) => String(code || '').trim()).filter(Boolean))] : null;
     const finalizedOnly = filters.finalizedOnly !== false;
+    // A returned line is not a sale. Excluding it by default keeps corrected
+    // and cancelled bills out of the sales figures; untick to see everything.
+    const excludeRefunded = filters.excludeRefunded !== false;
     const groupBy = ['line', 'item', 'date', 'supplier', 'customer', 'price'].includes(filters.groupBy) ? filters.groupBy : 'item';
     const sortBy = String(filters.sortBy || 'date');
     const sortDir = String(filters.sortDir || 'desc').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
@@ -108,6 +122,7 @@ function createReportService({ database }) {
       if (itemCodes.length === 0) where.push('1 = 0');
       else { where.push(`ii.item_code IN (${itemCodes.map(() => '?').join(', ')})`); params.push(...itemCodes); }
     }
+    if (excludeRefunded) where.push(REFUNDED_LINE_EXCLUSION);
 
     const grouping = {
       line: { order: '0', label: "CONCAT(COALESCE(NULLIF(ii.supplier_code, ''), ''), CASE WHEN ii.supplier_code <> '' THEN '~' ELSE '' END, ii.item_code)" },
@@ -161,7 +176,7 @@ function createReportService({ database }) {
     });
   }
 
-  async function salesItemOptions({ fromDate: rawFromDate = null, toDate: rawToDate = null, finalizedOnly = true } = {}) {
+  async function salesItemOptions({ fromDate: rawFromDate = null, toDate: rawToDate = null, finalizedOnly = true, excludeRefunded = true } = {}) {
     const fromDate = safeDate(rawFromDate);
     const toDate = safeDate(rawToDate);
     const saleDate = 'COALESCE(i.txn_date, ii.txn_date)';
@@ -169,6 +184,7 @@ function createReportService({ database }) {
     const params = [];
     if (fromDate) { where.push(`${saleDate} >= ?`); params.push(fromDate); }
     if (toDate) { where.push(`${saleDate} <= ?`); params.push(toDate); }
+    if (excludeRefunded !== false) where.push(REFUNDED_LINE_EXCLUSION);
     return database.withConnection(async (connection) => {
       const [rows] = await connection.execute(
         `SELECT ii.item_code, MAX(ii.description) AS description, COUNT(*) AS sales_count

@@ -15,6 +15,14 @@ export class SupplyReceivingComponent implements OnInit {
   payment: any = { settlementId: null, method: 'cash', fundAccountId: null, amount: null, reference: '', chequeDetails: { bankAccountId: null, chequeNumber: '', chequeDate: '' } };
   charge: any = { supplierId: null, chargeTypeId: null, amount: null, businessDate: new Date().toISOString().slice(0, 10), reason: '' };
   stockCount: any = { businessDate: new Date().toISOString().slice(0, 10), reason: '', lines: [] };
+  issues: any[] = [];
+  /** Goods leaving on someone else's lorry. Both measures are required. */
+  issue: any = {
+    businessDate: new Date().toISOString().slice(0, 10), destination: '', vehicleNumber: '',
+    weighbridgeTicket: '', weighbridgeNetQuantity: null, weighbridgeCharge: null,
+    weighbridgeFundAccountId: null, weighbridgePaidTo: '', reason: '',
+    lines: [{ inventoryLotId: null, handlingQuantity: null, baseQuantity: null, note: '' }]
+  };
   exceptionAllocation: any = { exceptionId: null, productId: null, saleDate: '', inventoryLotId: null, handlingQuantity: null, baseQuantity: null, reason: '' };
   saleReallocation: any = { allocationId: null, productId: null, saleDate: '', fromLotId: null, toInventoryLotId: null, handlingQuantity: null, baseQuantity: null, reason: '' };
   grnPage = 1; grnPageSize = 10; grnTotal = 0; grnFilters: any = { term: '', supplierId: null, status: '', fromDate: '', toDate: '' };
@@ -54,6 +62,8 @@ export class SupplyReceivingComponent implements OnInit {
     const funds = await window.posApi?.funds.list(this.origin().locCode, false, this.actor());
     this.settlementFunds = funds?.success ? (funds.data || []).filter((fund: any) => fund.fundKind === 'bank' || fund.fundKind === 'cash_safe') : [];
     this.stockCount.lines = this.lots.map((lot: any) => ({ inventoryLotId: lot.id, countedQuantity: lot.remaining_handling_quantity ?? lot.remaining_quantity, countedKilos: lot.remaining_base_quantity ?? lot.remaining_kilos }));
+    const issues = await api.listInventoryIssues({ locCode: this.origin().locCode, limit: 40 }, this.actor());
+    this.issues = issues?.success ? (issues.data || []) : [];
     const failed = [suppliers, receipts, agreements, settlements, chargeTypes, lots, inventorySummary, allocationExceptions, recentLotAllocations, bankAccounts].find((result: any) => !result.success);
     if (failed) this.reportError(failed.error || 'Some receiving data could not be loaded. Check the role permissions for this workflow.');
   }
@@ -161,5 +171,47 @@ export class SupplyReceivingComponent implements OnInit {
   async printSettlement(id: number): Promise<void> { const detail = await this.settlementDetail(id); if (!detail) return; const result = await this.printing.printDocument(this.settlementDocument(detail)); this.info = result.success ? 'Settlement sent to the receipt printer.' : result.error || 'Settlement print failed.'; }
   async saveSettlementPdf(id: number): Promise<void> { const detail = await this.settlementDetail(id); if (!detail) return; const number = detail.settlement.settlement_number; const result = await this.printing.savePdf(this.settlementDocument(detail), { prompt: true, fileName: `${number}.pdf` }); this.info = result.success ? (result.canceled ? 'PDF save canceled.' : `Settlement PDF saved to ${result.filePath}.`) : result.error || 'Settlement PDF save failed.'; }
   async addCharge(): Promise<void> { const result = await this.api().addSupplierCharge({ ...this.charge, ...this.origin(this.charge.businessDate), userId: this.actor()?.id }, this.actor()); if (!result.success) { this.error = result.error || 'Could not record charge.'; return; } this.info = 'Supplier charge recorded.'; this.charge.amount = null; this.charge.reason = ''; await this.loadAccount(); }
+  // ---- sending goods out -------------------------------------------------
+  lotById(lotId: number | null): any { return this.lots.find((lot: any) => Number(lot.id) === Number(lotId)) || null; }
+  issueLineNeedsBase(line: any): boolean {
+    const lot = this.lotById(line.inventoryLotId);
+    return !!lot && (lot.remaining_base_quantity != null || lot.base_uom_snapshot != null);
+  }
+  addIssueLine(): void { this.issue.lines.push({ inventoryLotId: null, handlingQuantity: null, baseQuantity: null, note: '' }); }
+  removeIssueLine(index: number): void { if (this.issue.lines.length > 1) this.issue.lines.splice(index, 1); }
+  get issueLotsAvailable(): any[] {
+    return this.lots.filter((lot: any) => Number(lot.remaining_handling_quantity || 0) > 0.0005 || Number(lot.remaining_base_quantity || 0) > 0.0005);
+  }
+
+  async recordIssue(): Promise<void> {
+    if (this.saving) return;
+    const lines = this.issue.lines.filter((line: any) => line.inventoryLotId && Number(line.handlingQuantity) > 0);
+    if (!this.issue.destination.trim()) { this.reportError('Name the shop these goods are going to.'); return; }
+    if (!lines.length) { this.reportError('Choose a lot and how many are leaving.'); return; }
+    const missingBase = lines.find((line: any) => this.issueLineNeedsBase(line) && !(Number(line.baseQuantity) > 0));
+    if (missingBase) {
+      const lot = this.lotById(missingBase.inventoryLotId);
+      this.reportError(`${lot?.lot_code || 'This lot'} is measured in ${lot?.base_uom_snapshot || 'a second unit'} too. Enter that quantity so the stock stays correct.`);
+      return;
+    }
+    this.saving = true;
+    try {
+      const result = await this.api().recordInventoryIssue({
+        ...this.issue, lines, ...this.origin(this.issue.businessDate)
+      }, this.actor());
+      if (!result.success) { this.reportError(result.error || 'Could not record this load.'); return; }
+      const data = result.data || {};
+      this.reportSuccess(data.weighbridgeError
+        ? data.weighbridgeError
+        : `Load ${data.issueNo} to ${data.destination} recorded${data.weighbridgeExpense ? ', and its weighing fee attached to the goods' : ''}.`);
+      this.issue = {
+        ...this.issue, destination: '', vehicleNumber: '', weighbridgeTicket: '',
+        weighbridgeNetQuantity: null, weighbridgeCharge: null, weighbridgePaidTo: '', reason: '',
+        lines: [{ inventoryLotId: null, handlingQuantity: null, baseQuantity: null, note: '' }]
+      };
+      await this.load();
+    } finally { this.saving = false; }
+  }
+
   async finalizeStockCount(): Promise<void> { const result = await this.api().finalizeStockCount({ ...this.stockCount, ...this.origin(this.stockCount.businessDate), userId: this.actor()?.id }, this.actor()); if (!result.success) { this.error = result.error || 'Could not finalize stock count.'; return; } this.info = 'Stock count finalized.'; await this.load(); }
 }

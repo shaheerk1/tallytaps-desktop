@@ -36,6 +36,7 @@ function registerIpcHandlers(services) {
   const requireReceivingView = services.ipcAuthorizationService.requirePermission('receiving.view');
   const requireReceivingManage = services.ipcAuthorizationService.requirePermission('receiving.manage');
   const requireInventoryAdjust = services.ipcAuthorizationService.requirePermission('inventory.adjust');
+  const requireInventoryIssue = services.ipcAuthorizationService.requirePermission('inventory.issue');
   const requireSettlementsView = services.ipcAuthorizationService.requirePermission('supplier-settlements.view');
   const requireSettlementsManage = services.ipcAuthorizationService.requirePermission('supplier-settlements.manage');
   const requireFundsView = services.ipcAuthorizationService.requirePermission('funds.view');
@@ -586,6 +587,8 @@ function registerIpcHandlers(services) {
   wrapIpcHandler('inventory.lots.list', async (payload) => services.catalogService.listInventoryLots(payload?.productId || null, payload?.locCode || null), { authorize: requireReceivingView });
   wrapIpcHandler('inventory.summary.list', async (payload) => services.catalogService.listInventorySummary(payload?.locCode), { authorize: requireReceivingView });
   wrapIpcHandler('inventory.counts.finalize', async (payload) => services.catalogService.finalizeStockCount(payload?.count || {}), { authorize: requireInventoryAdjust });
+  wrapIpcHandler('inventory.issues.list', async (payload) => services.inventoryIssueService.listIssues(payload?.filters || {}), { authorize: requireReceivingView });
+  wrapIpcHandler('inventory.issues.record', async (payload) => services.inventoryIssueService.recordIssue({ ...(payload?.issue || {}), userId: payload?.actor?.id || null }), { authorize: requireInventoryIssue });
   wrapIpcHandler('inventory.allocations.exceptions', async (payload) => services.catalogService.listAllocationExceptions(payload?.locCode), { authorize: requireReceivingView });
   wrapIpcHandler('inventory.allocations.list', async (payload) => services.catalogService.listRecentLotAllocations(payload?.locCode, payload?.limit), { authorize: requireReceivingView });
   wrapIpcHandler('inventory.allocations.resolve', async (payload) => services.catalogService.allocateException({ ...(payload?.allocation || {}), userId: payload?.actor?.id || null }), { authorize: requireInventoryAdjust });
