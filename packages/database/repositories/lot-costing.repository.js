@@ -481,6 +481,101 @@ function createLotCostingRepository({ database, documentSequenceRepository, busi
     });
   }
 
+  /**
+   * Takes a cost back off goods -- from one lot, or from every lot it was put
+   * on. Nothing is edited: each lot gets a negative "detachment" row, the
+   * journal gets the mirror of the attachment, and the lot's cost is recomputed
+   * from its ledger, which also reverses any part already recognised as sold.
+   * Runs inside the caller's transaction so an expense reversal and its
+   * detachment succeed or fail together.
+   */
+  async function detachExpenseWithConnection(connection, { expense, inventoryLotId = null, reason, day, origin, userId }) {
+    const params = [Number(expense.id)];
+    let lotFilter = '';
+    if (inventoryLotId) { lotFilter = ' AND inventory_lot_id = ?'; params.push(Number(inventoryLotId)); }
+    const [held] = await connection.execute(
+      `SELECT inventory_lot_id, SUM(amount) AS net FROM expense_allocations
+       WHERE expense_entry_id = ?${lotFilter} GROUP BY inventory_lot_id HAVING SUM(amount) > 0.005`, params
+    );
+    if (!held.length) return [];
+
+    const lotIds = held.map((row) => Number(row.inventory_lot_id)).sort((a, b) => a - b);
+    const [lotRows] = await connection.query(`${LOT_SELECT} WHERE l.id IN (?) ORDER BY l.id FOR UPDATE`, [lotIds]);
+    const detachNo = await documentSequenceRepository.allocateWithConnection(connection, { documentType: 'expense_detachment', ...origin });
+    const detachNumber = `EDT-${origin.locCode}-${origin.macCode}-${origin.txnDate.replace(/-/g, '')}-${String(detachNo).padStart(6, '0')}`;
+    const postingRules = require('../../core/accounting/posting-rules');
+    const category = { id: expense.category_id, name: expense.category_name, defaultTreatment: expense.default_treatment };
+
+    const detached = [];
+    let entryNo = 0;
+    for (const row of held) {
+      const lot = lotRows.find((candidate) => Number(candidate.id) === Number(row.inventory_lot_id));
+      if (!lot) continue;
+      entryNo += 1;
+      const amount = money(-money(row.net));
+      const [result] = await connection.execute(
+        `INSERT INTO expense_allocations
+           (expense_entry_id, inventory_lot_id, business_day_id, loc_code, mac_code, txn_date,
+            document_type, document_no, entry_no, basis, amount, reason, created_by, metadata)
+         VALUES (?, ?, ?, ?, ?, ?, 'detachment', ?, ?, 'direct', ?, ?, ?, CAST(? AS JSON))`,
+        [expense.id, lot.id, day.id, origin.locCode, origin.macCode, origin.txnDate,
+          detachNo, entryNo, amount, reason, userId, JSON.stringify({ detachNumber, lotCode: lot.lot_code })]
+      );
+      await journalRepository.postWithConnection(connection, {
+        businessDayId: day.id, ...origin,
+        documentType: 'expense_detachment', documentNo: detachNo,
+        sourceType: 'expense_allocation', sourceId: String(result.insertId),
+        posting: postingRules.allocationPosting({
+          allocation: { amount, reason },
+          category,
+          lot: { id: Number(lot.id), lotCode: lot.lot_code, ownershipModel: lot.ownership_model }
+        }),
+        userId,
+        metadata: { detachNumber, lotCode: lot.lot_code }
+      });
+      detached.push({ lotId: Number(lot.id), lotCode: lot.lot_code, amount: Math.abs(amount) });
+    }
+
+    await recomputeLotCostsWithConnection(connection, lotIds);
+    await recognizeSoldCostWithConnection(connection, { lotIds, day, origin, userId });
+    const remaining = await refreshExpenseProjection(connection, expense.id, expense.allocation_target === 'none' ? 'lot' : expense.allocation_target, expense.goods_receipt_id);
+    return detached.map((row) => ({ ...row, detachNumber, stillAttached: remaining }));
+  }
+
+  /** "Remove from goods" on its own, from one lot or from all of them. */
+  async function detachExpense(input) {
+    const origin = { locCode: text(input.locCode), macCode: text(input.macCode), txnDate: dateOnly(input.txnDate) };
+    return database.withConnection(async (connection) => {
+      await connection.beginTransaction();
+      try {
+        const reason = text(input.reason);
+        if (!reason) throw new Error('Write why this cost is being taken off the goods.');
+        const [expenses] = await connection.execute(
+          `SELECT e.*, c.name AS category_name, e.treatment_snapshot AS default_treatment, c.id AS category_id
+           FROM expense_entries e JOIN expense_categories c ON c.id = e.expense_category_id
+           WHERE e.id = ? FOR UPDATE`, [Number(input.expenseEntryId)]
+        );
+        const expense = expenses[0];
+        if (!expense) throw new Error('This expense no longer exists.');
+        if (expense.loc_code !== origin.locCode) throw new Error('This expense belongs to another location.');
+        if (expense.status !== 'recorded') throw new Error('This expense has been reversed; there is nothing on the goods to take off.');
+        const day = await businessDayRepository.assertOpenWithConnection(connection, {
+          locationCode: origin.locCode, businessDate: origin.txnDate
+        });
+        const detached = await detachExpenseWithConnection(connection, {
+          expense, inventoryLotId: Number(input.inventoryLotId) || null, reason, day, origin, userId: input.userId
+        });
+        if (!detached.length) throw new Error('This cost is not on those goods any more.');
+        await connection.commit();
+        return {
+          expenseNumber: expense.expense_number,
+          detached,
+          amount: money(detached.reduce((sum, row) => sum + row.amount, 0))
+        };
+      } catch (error) { await connection.rollback(); throw error; }
+    });
+  }
+
   // ── Profitability ───────────────────────────────────────────
 
   /**
@@ -677,6 +772,8 @@ function createLotCostingRepository({ database, documentSequenceRepository, busi
     listLots,
     allocateExpense,
     reallocate,
+    detachExpense,
+    detachExpenseWithConnection,
     getLotProfitability,
     getLotCostDetail,
     reconcileLandedCost,

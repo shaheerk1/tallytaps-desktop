@@ -536,6 +536,9 @@ export type Workstation = {
   name: string;
   status: string;
   created_at: string;
+  business_code?: string;
+  location_name?: string;
+  location_status?: 'active' | 'retired';
 };
 
 export type ManageUser = {
@@ -869,6 +872,8 @@ export type ExpenseEntry = {
   reference: string | null;
   reason: string;
   status: 'recorded' | 'void';
+  voidReason?: string | null;
+  voidedAt?: string | null;
   allocationTarget: 'none' | 'lot' | 'goods_receipt';
   allocatedTotal: number;
   unallocatedTotal: number;
@@ -1009,7 +1014,7 @@ export type LotCostAllocation = {
   expenseNumber: string;
   categoryName: string;
   payee: string | null;
-  documentType: 'expense' | 'reallocation';
+  documentType: 'expense' | 'reallocation' | 'detachment';
   basis: AllocationBasis;
   basisValue: number | null;
   amount: number;
@@ -1112,6 +1117,22 @@ export type AccountingPeriod = {
   id: number; locationCode: string; periodStart: string; periodEnd: string;
   status: 'open' | 'closed'; closedByName: string | null; closedAt: string | null;
   reopenCount: number; notes: string | null;
+};
+
+/**
+ * A location in the registry. The code is issued once and never reused; the
+ * business code only groups locations for combined reports and monitoring.
+ */
+export type PosLocation = {
+  locCode: string;
+  businessCode: string;
+  name: string;
+  status: 'active' | 'retired';
+  notes: string | null;
+  createdAt: string;
+  retiredAt: string | null;
+  workstationCount: number;
+  activeWorkstationCount: number;
 };
 
 export type InventoryLotCandidate = {
@@ -1771,7 +1792,8 @@ export interface PosApi {
   expenses: {
     categories: (includeInactive?: boolean, actor?: ActorContext | null) => Promise<IpcResult<ExpenseCategory[]>>;
     saveCategory: (category: Partial<ExpenseCategory>, actor?: ActorContext | null) => Promise<IpcResult<ExpenseCategory>>;
-    list: (filters: { locCode: string; fromDate?: string; toDate?: string; categoryId?: number; fundAccountId?: number; term?: string; unallocatedOnly?: boolean; limit?: number }, actor?: ActorContext | null) => Promise<IpcResult<ExpenseRegister>>;
+    list: (filters: { locCode: string; fromDate?: string; toDate?: string; categoryId?: number; fundAccountId?: number; term?: string; unallocatedOnly?: boolean; includeReversed?: boolean; limit?: number }, actor?: ActorContext | null) => Promise<IpcResult<ExpenseRegister>>;
+    reverse: (reversal: { expenseEntryId: number; reason: string; userId: number; origin: { locCode: string; macCode: string; txnDate: string } }, actor?: ActorContext | null) => Promise<IpcResult<{ expenseNumber: string; reversalNumber: string; amount: number; returnedTo: string | null; stakeholderName: string | null; detachedFromLots: string[]; recurringDueAgain: boolean }>>;
     create: (expense: { expenseCategoryId: number; fundAccountId: number; amount: number; reason: string; payee?: string; reference?: string; requestId?: string; userId: number; origin: { locCode: string; macCode: string; txnDate: string } }, actor?: ActorContext | null) => Promise<IpcResult<{ id: number; expenseNumber: string; amount: number; categoryName: string; categoryTreatment: ExpenseTreatment; fundName: string; fundBalance: number; stakeholderName: string | null; stakeholderEntryNumber: string | null; replayed?: boolean }>>;
     listRecurring: (locCode: string, includeInactive?: boolean, actor?: ActorContext | null) => Promise<IpcResult<RecurringExpense[]>>;
     saveRecurring: (template: Omit<Partial<RecurringExpense>, 'expenseCategoryId' | 'fundAccountId' | 'amount'> & { locCode: string; userId: number; expenseCategoryId: number | null; fundAccountId: number | null; amount: number | null }, actor?: ActorContext | null) => Promise<IpcResult<RecurringExpense>>;
@@ -1783,6 +1805,7 @@ export interface PosApi {
     lotDetail: (query: { inventoryLotId: number; locCode: string }, actor?: ActorContext | null) => Promise<IpcResult<{ lot: CostedLot; allocations: LotCostAllocation[] }>>;
     reconcile: (locCode: string, actor?: ActorContext | null) => Promise<IpcResult<{ checked: number; drifted: number; lots: Array<{ id: number; lotCode: string; storedLandedCost: number; expectedLandedCost: number }> }>>;
     allocate: (allocation: { expenseEntryId: number; inventoryLotId?: number | null; goodsReceiptId?: number | null; basis?: AllocationBasis; amount?: number | null; reason?: string; userId: number; origin: { locCode: string; macCode: string; txnDate: string } }, actor?: ActorContext | null) => Promise<IpcResult<{ expenseNumber: string; allocatedTotal: number; unallocatedTotal: number; basis: AllocationBasis; allocations: Array<{ lotId: number; lotCode: string; amount: number }>; lots: CostedLot[] }>>;
+    detach: (detachment: { expenseEntryId: number; inventoryLotId?: number | null; reason: string; userId: number; origin: { locCode: string; macCode: string; txnDate: string } }, actor?: ActorContext | null) => Promise<IpcResult<{ expenseNumber: string; amount: number; detached: Array<{ lotId: number; lotCode: string; amount: number }> }>>;
     reallocate: (reallocation: { expenseEntryId: number; fromInventoryLotId: number; toInventoryLotId: number; amount: number; reason: string; userId: number; origin: { locCode: string; macCode: string; txnDate: string } }, actor?: ActorContext | null) => Promise<IpcResult<{ reallocationNumber: string; amount: number; lots: CostedLot[] }>>;
   };
   stakeholders: {
@@ -1821,6 +1844,12 @@ export interface PosApi {
     setAttribution: (attribution: { invoiceItemId: number; supplierId: number; reason: string; userId?: number | null }, actor?: ActorContext | null) => Promise<IpcResult<Record<string, unknown>>>;
     exportXlsx: (document: PrintDocument, fileName: string, actor?: ActorContext | null) => Promise<IpcResult<{ filePath?: string; canceled?: boolean }>>;
     exportDocx: (document: PrintDocument, fileName: string, actor?: ActorContext | null) => Promise<IpcResult<{ filePath?: string; canceled?: boolean }>>;
+  };
+  locations: {
+    list: (actor?: ActorContext | null) => Promise<IpcResult<PosLocation[]>>;
+    create: (location: { locCode: string; businessCode: string; name: string; notes?: string }, actor?: ActorContext | null) => Promise<IpcResult<PosLocation>>;
+    update: (locCode: string, location: { businessCode?: string; name?: string; notes?: string }, actor?: ActorContext | null) => Promise<IpcResult<PosLocation>>;
+    retire: (locCode: string, actor?: ActorContext | null) => Promise<IpcResult<PosLocation>>;
   };
   businessDays: {
     state: (locationCode: string, actor?: ActorContext | null) => Promise<IpcResult<BusinessDayState>>;

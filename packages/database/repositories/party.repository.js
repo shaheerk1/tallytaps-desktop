@@ -1,3 +1,4 @@
+const requestContext = require('../../core/security/request-context');
 function createPartyRepository({ database, businessDayRepository }) {
   if (!database) throw new Error('Party repository requires a database instance.');
 
@@ -12,7 +13,10 @@ function createPartyRepository({ database, businessDayRepository }) {
     return String(value ?? '').trim().toUpperCase();
   }
 
-  function requireOrigin(origin) {
+  function requireOrigin(originValue) {
+    // Inside an IPC request, where a customer is created is always the
+    // signed-in workstation; the value sent is ignored.
+    const origin = requestContext.current() ? requestContext.resolveOrigin(originValue || {}) : originValue;
     const locCode = text(origin?.locCode || origin?.locationCode, 50);
     const macCode = text(origin?.macCode || origin?.machineCode, 50);
     const txnDate = text(origin?.txnDate || origin?.billingDate || origin?.businessDate, 10);
@@ -59,6 +63,8 @@ function createPartyRepository({ database, businessDayRepository }) {
   }
 
   async function searchCustomerAccounts(term = '', options = {}) {
+    // Each location keeps its own customers.
+    const scope = requestContext.scopedLocation(options);
     return database.withConnection(async (connection) => {
       const value = String(term || '').trim();
       const like = `%${value}%`;
@@ -85,6 +91,7 @@ function createPartyRepository({ database, businessDayRepository }) {
            FROM customer_receivable_entries e GROUP BY customer_account_id
          ) rb ON rb.customer_account_id = ca.id
          WHERE ca.status <> 'closed' AND p.status <> 'merged'
+           AND (? IS NULL OR ca.loc_code = ?)
            AND (? = '' OR ca.account_number LIKE ? OR p.display_name LIKE ? OR p.shop_name LIKE ?
                 OR p.mobile LIKE ? OR p.phone LIKE ? OR p.locality LIKE ? OR p.secondary_tag LIKE ?
                 OR EXISTS (SELECT 1 FROM party_identifiers sx WHERE sx.party_id = p.id AND sx.status = 'active'
@@ -93,7 +100,7 @@ function createPartyRepository({ database, businessDayRepository }) {
          ${outstandingOnly ? 'HAVING outstanding_balance > 0.005' : ''}
          ORDER BY ${orderClause}
          LIMIT 100`,
-        [value, like, like, like, like, like, like, like, like, like]
+        [scope, scope, value, like, like, like, like, like, like, like, like, like]
       );
       return rows.map((row) => ({
         ...row,
@@ -108,7 +115,20 @@ function createPartyRepository({ database, businessDayRepository }) {
   }
 
   async function getCustomerAccount(customerAccountId) {
-    return database.withConnection(async (connection) => getCustomerAccountWithConnection(connection, customerAccountId));
+    return database.withConnection(async (connection) => {
+      await assertCustomerInScope(connection, customerAccountId);
+      return getCustomerAccountWithConnection(connection, customerAccountId);
+    });
+  }
+
+  /** A customer can only be read or changed from the location that owns it. */
+  async function assertCustomerInScope(connection, customerAccountId) {
+    const scope = requestContext.scopedLocation();
+    if (!scope) return;
+    const [rows] = await connection.execute(
+      'SELECT id FROM customer_accounts WHERE id = ? AND loc_code = ? LIMIT 1', [Number(customerAccountId), scope]
+    );
+    if (!rows.length) throw new Error('This customer belongs to another location.');
   }
 
   async function getCustomerAccountWithConnection(connection, customerAccountId) {
@@ -254,6 +274,7 @@ function createPartyRepository({ database, businessDayRepository }) {
     return database.withConnection(async (connection) => {
       await connection.beginTransaction();
       try {
+        await assertCustomerInScope(connection, customerAccountId);
         const [rows] = await connection.execute(
           `SELECT ca.id, ca.party_id FROM customer_accounts ca WHERE ca.id = ? FOR UPDATE`,
           [customerAccountId]

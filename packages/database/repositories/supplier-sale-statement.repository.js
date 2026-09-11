@@ -1,3 +1,4 @@
+const requestContext = require('../../core/security/request-context');
 'use strict';
 
 function createSupplierSaleStatementRepository({ database, documentSequenceRepository, businessDayRepository }) {
@@ -194,7 +195,7 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
               SUM(GREATEST(0, ii.merchandise_total - COALESCE(ref.refunded_merchandise, 0) - COALESCE(committed.merchandise, 0))) OVER() AS result_available_merchandise
        FROM invoice_items ii
        JOIN invoices i ON i.id = ii.invoice_id
-       LEFT JOIN suppliers source_supplier ON source_supplier.supplier_code = ii.supplier_code
+       LEFT JOIN suppliers source_supplier ON source_supplier.supplier_code = ii.supplier_code AND source_supplier.loc_code = ii.loc_code
        LEFT JOIN supplier_invoice_item_attributions attr ON attr.invoice_item_id = ii.id
        LEFT JOIN suppliers effective_supplier ON effective_supplier.id = attr.supplier_id
        LEFT JOIN (
@@ -270,6 +271,8 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
     const page = Math.max(1, Number(filters.page || 1));
     const pageSize = Math.max(1, Math.min(Number(filters.pageSize || 20), 100));
     const where = ['1 = 1']; const params = [];
+    const scope = requestContext.scopedLocation(filters);
+    if (scope) { where.push('st.loc_code = ?'); params.push(scope); }
     if (filters.supplierId) { where.push('st.supplier_id = ?'); params.push(filters.supplierId); }
     if (['draft', 'reviewed', 'finalized', 'void'].includes(filters.status)) { where.push('st.status = ?'); params.push(filters.status); }
     if (validDate(filters.fromDate)) { where.push('st.txn_date >= ?'); params.push(dateOnly(filters.fromDate)); }
@@ -434,8 +437,10 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
       await connection.beginTransaction();
       try {
         const businessDay = await businessDayRepository.assertOpenWithConnection(connection, { locationCode: text(payload.locCode), businessDate: originDate });
-        const [suppliers] = await connection.execute('SELECT id, supplier_code, name FROM suppliers WHERE id = ? AND is_active = 1 FOR UPDATE', [supplierId]);
-        if (!suppliers.length) throw new Error('The selected supplier is not active.');
+        const [suppliers] = await connection.execute(
+          'SELECT id, supplier_code, name FROM suppliers WHERE id = ? AND is_active = 1 AND loc_code = ? FOR UPDATE', [supplierId, text(payload.locCode)]
+        );
+        if (!suppliers.length) throw new Error('The selected supplier is not active at this location.');
         let statement;
         if (payload.statementId) {
           const [rows] = await connection.execute("SELECT * FROM supplier_sale_statements WHERE id = ? AND status = 'draft' FOR UPDATE", [payload.statementId]);
@@ -603,8 +608,10 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
         );
         if (!items.length || !['paid', 'partial'].includes(items[0].invoice_status) || items[0].invoice_state !== 'active') throw new Error('Only a finalized active sale line can be re-attributed.');
         const item = items[0];
-        const [suppliers] = await connection.execute('SELECT id, supplier_code, name FROM suppliers WHERE id = ? AND is_active = 1 FOR UPDATE', [supplierId]);
-        if (!suppliers.length) throw new Error('The corrected supplier is not active.');
+        const [suppliers] = await connection.execute(
+          'SELECT id, supplier_code, name FROM suppliers WHERE id = ? AND is_active = 1 AND loc_code = ? FOR UPDATE', [supplierId, item.loc_code]
+        );
+        if (!suppliers.length) throw new Error('The corrected supplier is not active at the location of this sale.');
         const [committed] = await connection.execute(
           `SELECT st.statement_number FROM supplier_sale_statement_allocations a JOIN supplier_sale_statements st ON st.id = a.statement_id
            WHERE a.invoice_item_id = ? AND st.status IN ('reviewed','finalized') LIMIT 1 FOR UPDATE`, [invoiceItemId]

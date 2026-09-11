@@ -91,6 +91,45 @@ function createJournalRepository({ database, documentSequenceRepository }) {
     return { id: Number(result.insertId), journalNumber, totalDebit: balanced.totalDebit };
   }
 
+  /**
+   * Posts the exact mirror of an earlier entry: every debit becomes a credit on
+   * the same account and dimensions, and the reverse. Mirroring the original's
+   * own lines means the reversal is right whatever rule produced them. Returns
+   * null when the source never posted (nothing to reverse).
+   */
+  async function reverseWithConnection(connection, {
+    sourceType, sourceId, reversalSourceType, reversalSourceId,
+    businessDayId, locCode, macCode, txnDate, documentType, documentNo, narration, userId, metadata
+  }) {
+    const [entries] = await connection.execute(
+      'SELECT id, narration FROM journal_entries WHERE source_type = ? AND source_id = ? LIMIT 1',
+      [sourceType, String(sourceId)]
+    );
+    if (!entries[0]) return null;
+    const [lines] = await connection.execute(
+      `SELECT l.*, a.account_code FROM journal_lines l JOIN ledger_accounts a ON a.id = l.ledger_account_id
+       WHERE l.journal_entry_id = ? ORDER BY l.line_no`, [entries[0].id]
+    );
+    return postWithConnection(connection, {
+      businessDayId, locCode, macCode, txnDate, documentType, documentNo,
+      sourceType: reversalSourceType, sourceId: reversalSourceId, userId,
+      metadata: { ...(metadata || {}), reversesJournalEntryId: Number(entries[0].id) },
+      posting: {
+        narration: narration || `Reversal: ${entries[0].narration}`,
+        lines: lines.map((line) => ({
+          accountCode: line.account_code,
+          debit: money(line.credit),
+          credit: money(line.debit),
+          fundAccountId: line.fund_account_id,
+          stakeholderId: line.stakeholder_id,
+          inventoryLotId: line.inventory_lot_id,
+          expenseCategoryId: line.expense_category_id,
+          memo: line.memo ? `Reversal: ${line.memo}`.slice(0, 255) : 'Reversal'
+        }))
+      }
+    });
+  }
+
   // ── Reading ─────────────────────────────────────────────────
 
   async function listAccounts() {
@@ -330,6 +369,7 @@ function createJournalRepository({ database, documentSequenceRepository }) {
 
   return {
     postWithConnection,
+    reverseWithConnection,
     assertPeriodOpenWithConnection,
     listAccounts,
     listJournal,

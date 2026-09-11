@@ -4,6 +4,7 @@ const fs = require('fs/promises');
 const path = require('path');
 const zlib = require('zlib');
 const { PNG } = require('pngjs');
+const { resolveReceiptSettings } = require('./receipt-settings');
 
 const PAGE = { width: 595, height: 842, left: 42, right: 553, top: 805, bottom: 48 };
 
@@ -380,13 +381,14 @@ function createPdfDocumentService({ settingsService, receiptRasterService } = {}
   async function configuredBrand(doc) {
     if (!settingsService) return doc;
     const [general, workstation] = await Promise.all([settingsService.getSettingsByCode('general'), settingsService.getSettingsByCode('workstation')]);
-    const logo = workstation.receipt_logo && typeof workstation.receipt_logo === 'object' ? workstation.receipt_logo : {};
-    const configured = { name: String(general.store_name || workstation.bill_header_1 || 'POS Platform').trim(), tagline: String(general.store_tagline || workstation.bill_header_2 || '').trim(), addressLines: [general.store_address_1 || workstation.store_address_1, general.store_address_2 || workstation.store_address_2].filter(Boolean), phone: String(general.store_phone || workstation.store_phone || '').trim() };
+    // The same resolution the printed bill uses, so a PDF never shows a different address.
+    const receipt = resolveReceiptSettings(general, workstation);
+    const configured = { name: receipt.storeName || 'POS Platform', tagline: receipt.tagline, addressLines: receipt.addressLines, phone: receipt.phone };
     const sourceBrand = doc.brand || {}; const isStoreBranded = !sourceBrand.name || sourceBrand.name === configured.name || sourceBrand.name === 'POS Platform';
     const brand = isStoreBranded
       ? { ...configured, ...sourceBrand, tagline: Object.prototype.hasOwnProperty.call(sourceBrand, 'tagline') ? sourceBrand.tagline : configured.tagline }
       : sourceBrand;
-    return { ...doc, documentTitle: doc.documentTitle || (!isStoreBranded ? sourceBrand.name : 'POS Document'), brand, logoDataUrl: doc.logoDataUrl || (logo.enabled ? logo.dataUrl : '') || '', footerLines: doc.footerLines?.length ? doc.footerLines : [workstation.bill_footer_1, workstation.bill_footer_2].filter(Boolean) };
+    return { ...doc, documentTitle: doc.documentTitle || (!isStoreBranded ? sourceBrand.name : 'POS Document'), brand, logoDataUrl: doc.logoDataUrl || receipt.logoDataUrl || '', footerLines: doc.footerLines?.length ? doc.footerLines : receipt.footers };
   }
   async function saveDocument(doc, { filePath, directory, fileName } = {}) {
     const target = filePath || path.join(String(directory || ''), `${safeName(fileName)}.pdf`);

@@ -69,6 +69,10 @@ async function main() {
         const macCode = 'T1';
         const txnDate = '2099-03-01';
 
+        // Every workstation belongs to a registered location.
+        await connection.execute(
+          'INSERT INTO pos_locations (loc_code, business_code, name) VALUES (?, ?, ?)', [locCode, 'VERIFY', 'Verification location']
+        );
         const [ws] = await connection.execute(
           'INSERT INTO pos_workstations (location_code, machine_code, name) VALUES (?, ?, ?)',
           [locCode, macCode, 'Expense invariant terminal']

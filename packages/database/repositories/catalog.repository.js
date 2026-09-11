@@ -1,3 +1,4 @@
+const requestContext = require('../../core/security/request-context');
 const { createInventoryLedgerRepository } = require('./inventory-ledger.repository');
 
 const PRODUCT_COLUMNS = `
@@ -102,6 +103,13 @@ function normalizeProductPayload({
 }
 
 function createCatalogRepository({ database, documentSequenceRepository, businessDayRepository, issuedChequeRepository = null, inventoryLedgerRepository }) {
+  // Each location owns its catalog. Inside an IPC request the location is the
+  // signed-in workstation's; outside one, trusted code may pass one or none.
+  const scopeLoc = (input) => requestContext.scopedLocation(input || {});
+  const writeLoc = (input) => (requestContext.current()
+    ? requestContext.resolveLocation(input || {})
+    : (String(input?.locCode || '').trim() || null));
+
   if (!database) {
     throw new Error('Catalog repository requires a database instance.');
   }
@@ -112,15 +120,13 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
 
   async function listProducts(options = {}) {
     return database.withConnection(async (connection) => {
+      const loc = scopeLoc(options);
       const includeInactive = Boolean(options.includeInactive);
-      if (includeInactive) {
-        const [rows] = await connection.execute(
-          `SELECT ${PRODUCT_COLUMNS} FROM products ORDER BY name ASC`
-        );
-        return rows;
-      }
       const [rows] = await connection.execute(
-        `SELECT ${PRODUCT_COLUMNS} FROM products WHERE is_active = 1 ORDER BY name ASC`
+        `SELECT ${PRODUCT_COLUMNS} FROM products
+         WHERE (? IS NULL OR loc_code = ?) ${includeInactive ? '' : 'AND is_active = 1'}
+         ORDER BY name ASC`,
+        [loc, loc]
       );
       return rows;
     });
@@ -128,9 +134,10 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
 
   async function getProduct(id) {
     return database.withConnection(async (connection) => {
+      const loc = scopeLoc();
       const [rows] = await connection.execute(
-        `SELECT ${PRODUCT_COLUMNS} FROM products WHERE id = ? LIMIT 1`,
-        [id]
+        `SELECT ${PRODUCT_COLUMNS} FROM products WHERE id = ? AND (? IS NULL OR loc_code = ?) LIMIT 1`,
+        [id, loc, loc]
       );
       return rows[0] || null;
     });
@@ -165,11 +172,14 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
       priceOverrideAllowed, minimumSellPrice, maximumSellPrice, priceOverrideReasonRequired,
       metadata
     });
+    const productLoc = writeLoc(arguments[0]);
     return database.withConnection(async (connection) => {
       await connection.execute(
-        `INSERT INTO products (sku, name, barcode, category, unit, handling_uom, base_uom, dual_uom_enabled, requires_kilos, pricing_basis, quantity_step, allow_zero_quantity, unit_price, bag_charge, wage_charge, wage_basis, price_override_allowed, minimum_sell_price, maximum_sell_price, price_override_reason_required, stock_qty, stock_handling_qty, stock_base_qty, is_active, metadata)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?, CAST(? AS JSON))`,
+        `INSERT INTO products (loc_code, sku, name, barcode, category, unit, handling_uom, base_uom, dual_uom_enabled, requires_kilos, pricing_basis, quantity_step, allow_zero_quantity, unit_price, bag_charge, wage_charge, wage_basis, price_override_allowed, minimum_sell_price, maximum_sell_price, price_override_reason_required, stock_qty, stock_handling_qty, stock_base_qty, is_active, metadata)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?, CAST(? AS JSON))`,
         [
+          // The item joins the signed-in location's catalog, and no other.
+          productLoc,
           normalized.sku,
           normalized.name,
           normalized.barcode,
@@ -259,6 +269,10 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
         return getProduct(id);
       }
 
+      // An item can only be changed from the location whose catalog it is in.
+      const loc = scopeLoc();
+      const [owned] = await connection.execute('SELECT id FROM products WHERE id = ? AND (? IS NULL OR loc_code = ?)', [id, loc, loc]);
+      if (!owned.length) throw new Error("This item is not in this location's catalog.");
       params.push(id);
       await connection.execute(`UPDATE products SET ${sets.join(', ')} WHERE id = ?`, params);
       const [rows] = await connection.execute(
@@ -271,7 +285,8 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
 
   async function deleteProduct(id) {
     return database.withConnection(async (connection) => {
-      const [productRows] = await connection.execute('SELECT name FROM products WHERE id = ? LIMIT 1', [id]);
+      const loc = scopeLoc();
+      const [productRows] = await connection.execute('SELECT name FROM products WHERE id = ? AND (? IS NULL OR loc_code = ?) LIMIT 1', [id, loc, loc]);
       if (productRows.length === 0) {
         return false;
       }
@@ -298,13 +313,14 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
       const value = String(term || '').trim();
       if (!value) return [];
       const prefix = `${value}%`;
+      const loc = scopeLoc();
       const [rows] = await connection.execute(
         `SELECT ${PRODUCT_COLUMNS}
          FROM products
-         WHERE is_active = 1 AND (sku LIKE ? OR name LIKE ? OR barcode LIKE ?)
+         WHERE (? IS NULL OR loc_code = ?) AND is_active = 1 AND (sku LIKE ? OR name LIKE ? OR barcode LIKE ?)
          ORDER BY CASE WHEN barcode = ? THEN 0 WHEN sku = ? THEN 1 WHEN sku LIKE ? THEN 2 ELSE 3 END, name ASC
          LIMIT 30`,
-        [prefix, prefix, prefix, value, value, prefix]
+        [loc, loc, prefix, prefix, prefix, value, value, prefix]
       );
       return rows;
     });
@@ -312,12 +328,14 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
 
   async function listProductCategories() {
     return database.withConnection(async (connection) => {
+      const loc = scopeLoc();
       const [rows] = await connection.execute(
         `SELECT DISTINCT COALESCE(NULLIF(category, ''), JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.category'))) AS category
          FROM products
-         WHERE COALESCE(NULLIF(category, ''), JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.category'))) IS NOT NULL
+         WHERE (? IS NULL OR loc_code = ?) AND COALESCE(NULLIF(category, ''), JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.category'))) IS NOT NULL
            AND COALESCE(NULLIF(category, ''), JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.category'))) <> ''
-         ORDER BY category ASC`
+         ORDER BY category ASC`,
+        [loc, loc]
       );
       return rows.map((row) => row.category);
     });
@@ -413,9 +431,11 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
 
   async function listSuppliers() {
     return database.withConnection(async (connection) => {
+      const loc = scopeLoc();
       const [rows] = await connection.execute(
-        `SELECT id, supplier_code, name, phone, mobile, address, is_active, metadata, created_at
-         FROM suppliers WHERE is_active = 1 ORDER BY name ASC`
+        `SELECT id, loc_code, supplier_code, name, phone, mobile, address, is_active, metadata, created_at
+         FROM suppliers WHERE (? IS NULL OR loc_code = ?) AND is_active = 1 ORDER BY name ASC`,
+        [loc, loc]
       );
       return rows;
     });
@@ -423,11 +443,13 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
 
   async function createSupplier({ supplierCode = null, name, phone = null, mobile = null, address = null, metadata = null }) {
     if (!String(name || '').trim()) throw new Error('Supplier name is required.');
+    // A supplier belongs to the location that records it.
+    const supplierLoc = writeLoc(arguments[0]);
     return database.withConnection(async (connection) => {
       const [result] = await connection.execute(
-        `INSERT INTO suppliers (supplier_code, name, phone, mobile, address, metadata)
-         VALUES (?, ?, ?, ?, ?, CAST(? AS JSON))`,
-        [supplierCode || null, String(name).trim(), phone || null, mobile || null, address || null, JSON.stringify(metadata || {})]
+        `INSERT INTO suppliers (loc_code, supplier_code, name, phone, mobile, address, metadata)
+         VALUES (?, ?, ?, ?, ?, ?, CAST(? AS JSON))`,
+        [supplierLoc, supplierCode || null, String(name).trim(), phone || null, mobile || null, address || null, JSON.stringify(metadata || {})]
       );
       const [rows] = await connection.execute('SELECT * FROM suppliers WHERE id = ?', [result.insertId]);
       return rows[0];
@@ -799,6 +821,8 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
     const offset = (safePage - 1) * safePageSize;
     const value = String(term || '').trim();
     const where = ['1 = 1']; const params = [];
+    const loc = scopeLoc();
+    if (loc) { where.push('g.loc_code = ?'); params.push(loc); }
     if (value) { where.push('(g.grn_number LIKE ? OR s.supplier_code LIKE ? OR s.name LIKE ? OR g.vehicle_no LIKE ?)'); params.push(`%${value}%`, `%${value}%`, `%${value}%`, `%${value}%`); }
     if (supplierId) { where.push('g.supplier_id = ?'); params.push(supplierId); }
     if (status && ['draft', 'finalized', 'cancelled', 'corrected'].includes(status)) { where.push('g.status = ?'); params.push(status); }
@@ -850,7 +874,8 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
     return database.withConnection(async (connection) => {
       const [rows] = await connection.execute(
         `SELECT a.*, s.name AS supplier_name FROM supply_agreements a JOIN suppliers s ON s.id = a.supplier_id
-         WHERE (? IS NULL OR a.supplier_id = ?) ORDER BY a.id DESC`, [supplierId, supplierId]
+         WHERE (? IS NULL OR a.supplier_id = ?) AND (? IS NULL OR s.loc_code = ?) ORDER BY a.id DESC`,
+        [supplierId, supplierId, scopeLoc(), scopeLoc()]
       );
       return rows;
     });
@@ -861,6 +886,10 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
     const rate = Number(commissionRate);
     if (!Number.isFinite(rate) || rate < 0 || rate > 100) throw new Error('Commission rate must be between 0 and 100.');
     return database.withConnection(async (connection) => {
+      // An agreement can only be made with a supplier of this location.
+      const loc = scopeLoc();
+      const [owned] = await connection.execute('SELECT id FROM suppliers WHERE id = ? AND (? IS NULL OR loc_code = ?)', [supplierId, loc, loc]);
+      if (!owned.length) throw new Error('This supplier does not belong to this location.');
       const [result] = await connection.execute(
         `INSERT INTO supply_agreements (supplier_id, ownership_model, settlement_basis, commission_rate, payment_terms_days, metadata)
          VALUES (?, ?, ?, ?, ?, CAST(? AS JSON))`, [supplierId, ownershipModel, settlementBasis, rate, paymentTermsDays || null, JSON.stringify(metadata || {})]
@@ -1078,7 +1107,8 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
            SELECT supplier_settlement_id, SUM(amount) AS outstanding_cheque_total
            FROM issued_cheques WHERE status IN ('prepared','issued') GROUP BY supplier_settlement_id
          ) ic ON ic.supplier_settlement_id = st.id
-         WHERE (? IS NULL OR st.supplier_id = ?) ORDER BY st.created_at DESC LIMIT 100`, [supplierId, supplierId]
+         WHERE (? IS NULL OR st.supplier_id = ?) AND (? IS NULL OR st.loc_code = ?) ORDER BY st.created_at DESC LIMIT 100`,
+        [supplierId, supplierId, scopeLoc(), scopeLoc()]
       );
       return rows.map((row) => ({ ...row, outstanding_cheque_total: Number(row.outstanding_cheque_total || 0) }));
     });
@@ -1110,7 +1140,12 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
   }
 
   async function listSupplierChargeTypes() {
-    return database.withConnection(async (connection) => (await connection.execute(`SELECT * FROM supplier_charge_types WHERE is_active = 1 ORDER BY name`))[0]);
+    // The shared charge types plus any this location added for itself.
+    const loc = scopeLoc();
+    return database.withConnection(async (connection) => (await connection.execute(
+      `SELECT * FROM supplier_charge_types WHERE is_active = 1 AND (loc_code IS NULL OR ? IS NULL OR loc_code = ?) ORDER BY name`,
+      [loc, loc]
+    ))[0]);
   }
 
   async function addSupplierCharge({ supplierId, chargeTypeId, amount, businessDate, locCode, macCode, reason = null, userId = null }) {

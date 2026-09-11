@@ -2,10 +2,11 @@
   <div class="ws-header">
     <div class="header-left">
       <h1>Workstations</h1>
-      <p class="subtitle">Configure POS counters (location + machine identity)</p>
+      <p class="subtitle">Locations, and the POS counters at each one</p>
     </div>
     <div class="header-right">
-      <button class="btn btn-primary" (click)="openCreateModal()">+ New Workstation</button>
+      <button class="btn" (click)="openLocationModal()">+ New Location</button>
+      <button class="btn btn-primary" (click)="openCreateModal()" [disabled]="!activeLocations.length">+ New Workstation</button>
     </div>
   </div>
 
@@ -13,6 +14,34 @@
     <div class="error-banner" *ngIf="errorMessage && !showCreateModal && !showEditModal && !showDeleteModal">
       {{ errorMessage }}
     </div>
+
+    <!-- Locations: each one has its own catalog, customers, settings, and books. -->
+    <section class="loc-section">
+      <div class="loc-head">
+        <h2>Locations</h2>
+        <p>Each location keeps its own items, prices, customers, suppliers, settings, and books. A location code is issued once and never used again — not even after the location is retired.</p>
+      </div>
+      <div class="loc-business" *ngFor="let business of businesses">
+        <div class="loc-business-label">{{ business.code }}</div>
+        <div class="loc-grid">
+          <article class="loc-card" *ngFor="let location of business.locations" [class.retired]="location.status === 'retired'">
+            <header>
+              <strong class="monospace">{{ location.locCode }}</strong>
+              <span class="status-badge" [class.inactive]="location.status !== 'active'">{{ location.status }}</span>
+            </header>
+            <div class="loc-name">{{ location.name }}</div>
+            <div class="loc-meta">{{ location.activeWorkstationCount }} active of {{ location.workstationCount }} workstation{{ location.workstationCount === 1 ? '' : 's' }}</div>
+            <footer *ngIf="location.status === 'active'">
+              <button class="btn btn-sm" (click)="openLocationModal(location)">Edit</button>
+              <button class="btn btn-sm btn-danger-outline" (click)="openRetire(location)">Retire</button>
+            </footer>
+          </article>
+        </div>
+      </div>
+      <div class="empty-state" *ngIf="!locations.length">
+        No locations yet. Add a location first; every workstation belongs to one.
+      </div>
+    </section>
 
     <div class="ws-table">
       <div class="ws-row ws-row-head">
@@ -27,7 +56,10 @@
 
       <div class="ws-row" *ngFor="let ws of workstations">
         <span class="col-id">{{ ws.id }}</span>
-        <span class="col-loc monospace">{{ ws.location_code }}</span>
+        <span class="col-loc">
+          <span class="monospace">{{ ws.location_code }}</span>
+          <small class="loc-sub" *ngIf="ws.business_code && ws.business_code !== ws.location_code">{{ ws.business_code }}</small>
+        </span>
         <span class="col-mac monospace">{{ ws.machine_code }}</span>
         <span class="col-name">{{ ws.name }}</span>
         <span class="col-status">
@@ -62,13 +94,15 @@
 
     <div class="form-grid">
       <div class="form-field">
-        <label>Location Code *</label>
-        <input class="form-input" type="text" [(ngModel)]="newWs.locationCode" placeholder="e.g. MAIN" />
-        <span class="field-hint">Store / branch code. Part of the receipt key.</span>
+        <label>Location *</label>
+        <select class="form-input" [(ngModel)]="newWs.locationCode">
+          <option *ngFor="let location of activeLocations" [value]="location.locCode">{{ location.locCode }} — {{ location.name }}</option>
+        </select>
+        <span class="field-hint">This counter uses that location's catalog, customers, and books.</span>
       </div>
       <div class="form-field">
         <label>Machine Code *</label>
-        <input class="form-input" type="text" [(ngModel)]="newWs.machineCode" placeholder="e.g. WS01" />
+        <input class="form-input" type="text" [(ngModel)]="newWs.machineCode" placeholder="e.g. T1" maxlength="20" />
         <span class="field-hint">This terminal's counter code. Part of the receipt key.</span>
       </div>
       <div class="form-field form-full">
@@ -136,6 +170,64 @@
     <div class="modal-actions">
       <button class="btn btn-cancel" (click)="closeDeleteModal()">Cancel</button>
       <button class="btn btn-danger" (click)="submitDelete()">Delete Workstation</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Location Modal ─────────────────────────────────────── -->
+<div class="modal-overlay" *ngIf="showLocationModal" (click)="closeLocationModal()">
+  <div class="modal-box" (click)="$event.stopPropagation()">
+    <h3>{{ locationDraft.editing ? 'Edit Location' : 'New Location' }}</h3>
+    <div class="error-banner" *ngIf="errorMessage">{{ errorMessage }}</div>
+
+    <div class="form-grid">
+      <div class="form-field">
+        <label>Location Code *</label>
+        <input class="form-input monospace" type="text" [(ngModel)]="locationDraft.locCode" [disabled]="locationDraft.editing" placeholder="e.g. KST01" maxlength="20" />
+        <span class="field-hint">Printed on every receipt and document number — keep it short. It can never be changed or reused.</span>
+      </div>
+      <div class="form-field">
+        <label>Business *</label>
+        <input class="form-input monospace" type="text" [(ngModel)]="locationDraft.businessCode" placeholder="e.g. KHANSTORE" maxlength="20" />
+        <span class="field-hint">Groups locations of the same business for combined reports. It does not share data.</span>
+      </div>
+      <div class="form-field form-full">
+        <label>Name *</label>
+        <input class="form-input" type="text" [(ngModel)]="locationDraft.name" placeholder="e.g. Khan Store, Colombo" />
+      </div>
+      <div class="form-field form-full">
+        <label>Notes</label>
+        <input class="form-input" type="text" [(ngModel)]="locationDraft.notes" />
+      </div>
+    </div>
+
+    <p class="confirm-text note-text" *ngIf="!locationDraft.editing">
+      A new location starts with an empty item catalog. Items, suppliers, and customers added while signed in to it belong to it alone.
+    </p>
+
+    <div class="modal-actions">
+      <button class="btn btn-cancel" (click)="closeLocationModal()">Cancel</button>
+      <button class="btn btn-primary" (click)="submitLocation()" [disabled]="!locationDraft.locCode || !locationDraft.businessCode || !locationDraft.name">
+        {{ locationDraft.editing ? 'Save Changes' : 'Create Location' }}
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Retire Location ────────────────────────────────────── -->
+<div class="modal-overlay" *ngIf="retireTarget" (click)="closeRetire()">
+  <div class="modal-box modal-sm" (click)="$event.stopPropagation()">
+    <h3>Retire {{ retireTarget.locCode }}</h3>
+    <div class="error-banner" *ngIf="errorMessage">{{ errorMessage }}</div>
+    <p class="confirm-text">
+      <strong>{{ retireTarget.name }}</strong> will no longer be available for sign-in or new workstations. Its history stays exactly as it is.
+    </p>
+    <p class="confirm-text">
+      The code <strong class="monospace">{{ retireTarget.locCode }}</strong> stays taken for good — it cannot be given to another location later.
+    </p>
+    <div class="modal-actions">
+      <button class="btn btn-cancel" (click)="closeRetire()">Cancel</button>
+      <button class="btn btn-danger" (click)="submitRetire()">Retire Location</button>
     </div>
   </div>
 </div>

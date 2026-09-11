@@ -103,6 +103,36 @@ function createStakeholderRepository({ database, documentSequenceRepository, bus
     return database.withConnection((connection) => loadStakeholders(connection, { locCode, includeInactive }));
   }
 
+  /**
+   * A pocket can be linked to a person only if it is a partner pocket at the
+   * same location that nobody owns yet. A pocket with no owner cannot pay for
+   * anything, because the business would not know whom it owes.
+   */
+  async function assertLinkablePocket(connection, fundAccountId, locCode, stakeholderId) {
+    const [rows] = await connection.execute(
+      `SELECT f.id, f.name, f.fund_kind, f.loc_code, s.id AS owner_id, s.display_name AS owner_name
+       FROM fund_accounts f LEFT JOIN stakeholders s ON s.fund_account_id = f.id
+       WHERE f.id = ? FOR UPDATE`, [Number(fundAccountId)]
+    );
+    const fund = rows[0];
+    if (!fund) throw new Error('That pocket no longer exists.');
+    if (fund.fund_kind !== 'stakeholder') throw new Error(`${fund.name} is not a partner pocket.`);
+    if (fund.loc_code !== locCode) throw new Error(`${fund.name} belongs to another location.`);
+    if (fund.owner_id && Number(fund.owner_id) !== Number(stakeholderId || 0)) {
+      throw new Error(`${fund.name} already belongs to ${fund.owner_name}.`);
+    }
+  }
+
+  async function createPocket(connection, { locCode, code, name }) {
+    const [fund] = await connection.execute(
+      `INSERT INTO fund_accounts (fund_code, name, fund_kind, loc_code, is_active, sort_order, holder_name, notes)
+       VALUES (?, ?, 'stakeholder', ?, 1, 60, ?, ?)`,
+      [`POCKET-${locCode}-${code}`.slice(0, 60), `${name} (pocket)`, locCode, name,
+        'Money this person spends for the business from their own hand.']
+    );
+    return Number(fund.insertId);
+  }
+
   async function saveStakeholder(input) {
     return database.withConnection(async (connection) => {
       await connection.beginTransaction();
@@ -120,10 +150,23 @@ function createStakeholderRepository({ database, documentSequenceRepository, bus
         let stakeholderId = Number(input.id || 0);
         let fundAccountId = input.fundAccountId == null ? null : Number(input.fundAccountId);
 
+        let linkedNow = false;
         if (stakeholderId) {
           const [existing] = await connection.execute('SELECT * FROM stakeholders WHERE id = ? FOR UPDATE', [stakeholderId]);
           if (!existing[0]) throw new Error('This stakeholder no longer exists.');
-          fundAccountId = fundAccountId ?? (existing[0].fund_account_id == null ? null : Number(existing[0].fund_account_id));
+          const current = existing[0].fund_account_id == null ? null : Number(existing[0].fund_account_id);
+          // A person keeps one pocket, so their history stays in one place.
+          if (fundAccountId && current && fundAccountId !== current) {
+            throw new Error(`${name} already has a pocket. A person keeps one pocket so their history stays in one place.`);
+          }
+          if (fundAccountId && !current) {
+            await assertLinkablePocket(connection, fundAccountId, locCode, stakeholderId);
+            linkedNow = true;
+          }
+          if (!fundAccountId && !current && input.createPocket === true) {
+            fundAccountId = await createPocket(connection, { locCode, code: existing[0].stakeholder_code, name });
+          }
+          fundAccountId = fundAccountId ?? current;
           await connection.execute(
             `UPDATE stakeholders SET display_name = ?, stakeholder_type = ?, borne_cost_treatment = ?,
                mobile = ?, notes = ?, is_active = ?, sort_order = ?, fund_account_id = ? WHERE id = ?`,
@@ -133,16 +176,13 @@ function createStakeholderRepository({ database, documentSequenceRepository, bus
         } else {
           const code = (text(input.stakeholderCode) || name).toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50)
             || `STK-${Date.now().toString().slice(-6)}`;
-          // Every stakeholder gets their own pocket fund, so a cost they pay
-          // personally has a real place to come from.
-          if (!fundAccountId && input.createPocket !== false) {
-            const [fund] = await connection.execute(
-              `INSERT INTO fund_accounts (fund_code, name, fund_kind, loc_code, is_active, sort_order, holder_name, notes)
-               VALUES (?, ?, 'stakeholder', ?, 1, 60, ?, ?)`,
-              [`POCKET-${locCode}-${code}`.slice(0, 60), `${name} (pocket)`, locCode, name,
-                'Money this person spends for the business from their own hand.']
-            );
-            fundAccountId = Number(fund.insertId);
+          // Every stakeholder has a pocket, so a cost they pay personally has a
+          // real place to come from: an existing unlinked pocket, or a new one.
+          if (fundAccountId) {
+            await assertLinkablePocket(connection, fundAccountId, locCode, null);
+            linkedNow = true;
+          } else if (input.createPocket !== false) {
+            fundAccountId = await createPocket(connection, { locCode, code, name });
           }
           const [result] = await connection.execute(
             `INSERT INTO stakeholders
@@ -153,6 +193,10 @@ function createStakeholderRepository({ database, documentSequenceRepository, bus
               text(input.notes) || null, input.isActive === false ? 0 : 1, Number(input.sortOrder || 100)]
           );
           stakeholderId = Number(result.insertId);
+        }
+        if (linkedNow) {
+          // The pocket now shows whose it is.
+          await connection.execute('UPDATE fund_accounts SET holder_name = ? WHERE id = ?', [name, fundAccountId]);
         }
         await connection.commit();
         const [saved] = await loadStakeholders(connection, { locCode, includeInactive: true, stakeholderId });

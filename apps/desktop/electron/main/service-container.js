@@ -48,6 +48,8 @@ const { createDatabaseHealthService } = require('../../../../packages/core/healt
 const { createUserManagementService } = require('../../../../packages/core/user-management/user-management.service');
 const { createPriorityListService } = require('../../../../packages/core/priority-lists/priority-list.service');
 const { createIpcAuthorizationService } = require('../../../../packages/core/security/ipc-authorization.service');
+const { createSessionContextService } = require('../../../../packages/core/security/session-context.service');
+const requestContext = require('../../../../packages/core/security/request-context');
 const { createFieldInboxService } = require('../../../../packages/core/field-inbox/field-inbox.service');
 const { createCloudSyncService } = require('../../../../packages/core/cloud-sync/cloud-sync.service');
 const { createCloudSyncScheduler } = require('../../../../packages/core/cloud-sync/cloud-sync.scheduler');
@@ -112,14 +114,16 @@ async function createServiceContainer() {
   // The journal is created first: every money-side repository posts through it
   // inside the same transaction as the business event it records.
   const journalRepository = createJournalRepository({ database, documentSequenceRepository });
-  const expenseRepository = createExpenseRepository({ database, documentSequenceRepository, businessDayRepository, journalRepository });
+  // Costing comes first: reversing an expense takes its cost back off goods.
   const lotCostingRepository = createLotCostingRepository({ database, documentSequenceRepository, businessDayRepository, journalRepository });
+  const expenseRepository = createExpenseRepository({ database, documentSequenceRepository, businessDayRepository, journalRepository, lotCostingRepository });
   const inventoryIssueRepository = createInventoryIssueRepository({ database, documentSequenceRepository, businessDayRepository, inventoryLedgerRepository });
   const stakeholderRepository = createStakeholderRepository({ database, documentSequenceRepository, businessDayRepository, journalRepository, expenseRepository });
   const operationalAccountingRepository = createOperationalAccountingRepository({ database, journalRepository });
 
   const eventBus = createEventBus();
   const ipcAuthorizationService = createIpcAuthorizationService();
+  const sessionContextService = createSessionContextService({ authRepository });
   const paymentModes = createPaymentModeRegistry();
   paymentModes.replaceConfigured(await paymentModeRepository.listModes());
 
@@ -197,6 +201,8 @@ async function createServiceContainer() {
     fieldInboxRepository,
     cloudSyncRepository,
     ipcAuthorizationService,
+    sessionContextService,
+    requestContext,
     authService,
     workstationService,
     settingsService,

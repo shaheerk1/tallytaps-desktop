@@ -100,7 +100,7 @@ export class SessionService {
     password: string,
     billingDate?: string,
     workstationId?: number
-  ): Promise<{ success: boolean; warning?: string }> {
+  ): Promise<{ success: boolean; warning?: string; error?: string }> {
     if (!window.posApi) return { success: false };
 
     const result = await window.posApi.auth.login({
@@ -110,7 +110,9 @@ export class SessionService {
       workstationId
     });
 
-    if (!result.success) return { success: false };
+    // A refused sign-in carries its reason, such as a cash shift still open on
+    // another workstation; the login screen shows it instead of a generic error.
+    if (!result.success) return { success: false, error: result.error };
 
     this.user = result.data.user;
     this.token = result.data.token;
@@ -124,9 +126,13 @@ export class SessionService {
       localStorage.setItem(this.WORKSTATION_ID_KEY, String(workstationId));
     }
 
+    const closedElsewhere = (this.workstationSession as { closedElsewhere?: string[] } | null)?.closedElsewhere || [];
+    const moved = closedElsewhere.length
+      ? `Your earlier session on ${closedElsewhere.join(', ')} was closed so you could sign in here.`
+      : '';
     return {
       success: true,
-      warning: result.data.workstationWarning || undefined
+      warning: [result.data.workstationWarning, moved].filter(Boolean).join(' ') || undefined
     };
   }
 

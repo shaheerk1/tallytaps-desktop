@@ -49,6 +49,9 @@ type MoveCostDraft = {
 type PartnerDraft = {
   id?: number; displayName: string; stakeholderType: 'owner' | 'partner' | 'investor';
   borneCostTreatment: 'capital' | 'liability'; mobile: string; notes: string; isActive: boolean;
+  // Their pocket: 'new' creates one, a number links an existing unlinked pocket,
+  // null keeps what they have. `currentPocket` is shown when they already have one.
+  pocket: 'new' | number | null; currentPocket: string | null;
 };
 
 type PartnerMoveDraft = {
@@ -78,8 +81,12 @@ export class ExpensesComponent implements OnInit {
   filterCategoryId: number | null = null;
   filterFundId: number | null = null;
   unallocatedOnly = false;
+  showReversed = false;
 
   expenseDraft: ExpenseDraft | null = null;
+  /** Undoing a mistake: the whole expense, or only the cost it put on goods. */
+  reverseDraft: { expense: ExpenseEntry; reason: string } | null = null;
+  detachDraft: { expenseEntryId: number; expenseNumber: string; amount: number; lotId: number | null; lotCode: string | null; reason: string } | null = null;
   transferDraft: TransferDraft | null = null;
   fundDraft: FundDraft | null = null;
   ledger: { fund: FundAccount; movements: FundMovement[] } | null = null;
@@ -109,6 +116,7 @@ export class ExpensesComponent implements OnInit {
   journal: JournalEntry[] = [];
   periods: AccountingPeriod[] = [];
   closeDraft: { periodStart: string; periodEnd: string; notes: string } | null = null;
+  reopenDraft: { period: AccountingPeriod; reason: string } | null = null;
 
   loading = false;
   saving = false;
@@ -130,6 +138,7 @@ export class ExpensesComponent implements OnInit {
   get canSeeFunds(): boolean { return this.session.hasPermission('funds.view'); }
   get canSeeLots(): boolean { return this.session.hasPermission('lot-costing.view'); }
   get canAllocate(): boolean { return this.session.hasPermission('expenses.allocate'); }
+  get canReverse(): boolean { return this.session.hasPermission('expenses.reverse'); }
   get canSeePartners(): boolean { return this.session.hasPermission('stakeholders.view'); }
   get canManagePartners(): boolean { return this.session.hasPermission('stakeholders.manage'); }
   get canContribute(): boolean { return this.session.hasPermission('stakeholders.contribute'); }
@@ -155,7 +164,7 @@ export class ExpensesComponent implements OnInit {
 
   closeAll(): void {
     this.expenseDraft = null; this.transferDraft = null; this.fundDraft = null; this.ledger = null;
-    this.recurringDraft = null;
+    this.recurringDraft = null; this.reverseDraft = null; this.detachDraft = null; this.reopenDraft = null;
     this.attachDraft = null; this.moveCostDraft = null; this.lotDetail = null;
     this.partnerDraft = null; this.partnerMove = null; this.partnerStatement = null; this.closeDraft = null;
   }
@@ -183,7 +192,7 @@ export class ExpensesComponent implements OnInit {
     await this.loadRecurringExpenses();
     await this.search();
     if (this.activeTab === 'lots') await this.loadLotCosting();
-    if (this.activeTab === 'partners') await this.loadPartners();
+    if (this.canSeePartners) await this.loadPartners();
     if (this.activeTab === 'accounts') await this.loadAccounts();
     this.loading = false;
   }
@@ -252,10 +261,108 @@ export class ExpensesComponent implements OnInit {
       categoryId: this.filterCategoryId || undefined,
       fundAccountId: this.filterFundId || undefined,
       term: this.term || undefined,
-      unallocatedOnly: this.unallocatedOnly || undefined
+      unallocatedOnly: this.unallocatedOnly || undefined,
+      includeReversed: this.showReversed || undefined
     } as any, this.actor());
     if (!result.success) { this.error = result.error || 'Could not load the expense register.'; return; }
     this.register = result.data;
+  }
+
+  /** Reversed rows can be shown for the record but never count as spending. */
+  get recordedCount(): number { return (this.register?.rows || []).filter((row) => row.status === 'recorded').length; }
+
+  // ── Undoing mistakes ──────────────────────────────────────
+
+  openReverse(expense: ExpenseEntry): void {
+    this.closeAll(); this.error = ''; this.info = '';
+    this.reverseDraft = { expense, reason: '' };
+  }
+
+  /** What reversing this particular expense will do, in the order it happens. */
+  reverseEffects(expense: ExpenseEntry): string[] {
+    const effects: string[] = [];
+    if (expense.allocatedTotal > 0.005) {
+      effects.push(`${this.formatMoney(expense.allocatedTotal)} comes off the goods it was attached to. If some of those goods were already sold, that part of their cost is taken back too, so the profit on those sales goes up again.`);
+    }
+    if (expense.fundKind === 'pos_drawer') {
+      effects.push(`${this.formatMoney(expense.amount)} goes back into ${expense.fundName}. This only works while the shift it was paid in is still open; once that shift is closed and counted, ask a manager to record a cash correction instead.`);
+    } else if (expense.fundKind === 'stakeholder') {
+      effects.push(`${expense.stakeholderName || 'The partner'} is no longer owed ${this.formatMoney(expense.amount)} for paying this from their own pocket.`);
+    } else {
+      effects.push(`${this.formatMoney(expense.amount)} is added back to ${expense.fundName}.`);
+    }
+    effects.push('The expense stays in the register, struck through, with your name and reason. Nothing is deleted.');
+    return effects;
+  }
+
+  async saveReverse(): Promise<void> {
+    if (!window.posApi || !this.reverseDraft || this.saving) return;
+    const origin = this.origin(); const user = this.session.getUser();
+    if (!origin || !user) { this.error = 'An active workstation session is required.'; return; }
+    if (!this.reverseDraft.reason.trim()) { this.error = 'Write why this expense is being reversed.'; return; }
+    this.saving = true; this.error = '';
+    const result = await window.posApi.expenses.reverse({
+      expenseEntryId: this.reverseDraft.expense.id, reason: this.reverseDraft.reason.trim(), userId: user.id, origin
+    }, this.actor());
+    this.saving = false;
+    if (!result.success) { this.error = result.error || 'Could not reverse this expense.'; return; }
+    const done = result.data;
+    const parts = [`${done.expenseNumber} is reversed (${done.reversalNumber}).`];
+    if (done.stakeholderName) parts.push(`${done.stakeholderName} is no longer owed ${this.formatMoney(done.amount)}.`);
+    else if (done.returnedTo) parts.push(`${this.formatMoney(done.amount)} is back in ${done.returnedTo}.`);
+    if (done.detachedFromLots.length) parts.push(`Its cost was taken off ${done.detachedFromLots.length} lot${done.detachedFromLots.length === 1 ? '' : 's'}.`);
+    if (done.recurringDueAgain) parts.push('The recurring cost is due again.');
+    this.info = parts.join(' ');
+    this.reverseDraft = null;
+    await this.reload();
+  }
+
+  /** Takes a cost off goods — all of them, or just one lot — without undoing the payment. */
+  openDetach(expense: { id: number; expenseNumber: string; amount: number }, lot?: { id: number; lotCode: string }): void {
+    this.closeAll(); this.error = ''; this.info = '';
+    this.detachDraft = {
+      expenseEntryId: expense.id, expenseNumber: expense.expenseNumber, amount: expense.amount,
+      lotId: lot?.id ?? null, lotCode: lot?.lotCode ?? null, reason: ''
+    };
+  }
+
+  async saveDetach(): Promise<void> {
+    if (!window.posApi || !this.detachDraft || this.saving) return;
+    const origin = this.origin(); const user = this.session.getUser();
+    if (!origin || !user) { this.error = 'An active workstation session is required.'; return; }
+    if (!this.detachDraft.reason.trim()) { this.error = 'Write why this cost is being taken off the goods.'; return; }
+    this.saving = true; this.error = '';
+    const draft = this.detachDraft;
+    const result = await window.posApi.lotCosting.detach({
+      expenseEntryId: draft.expenseEntryId, inventoryLotId: draft.lotId, reason: draft.reason.trim(), userId: user.id, origin
+    }, this.actor());
+    this.saving = false;
+    if (!result.success) { this.error = result.error || 'Could not take this cost off the goods.'; return; }
+    const done = result.data;
+    this.info = `${this.formatMoney(done.amount)} of ${done.expenseNumber} taken off ${done.detached.map((row) => row.lotCode).join(', ')}. `
+      + 'It now counts as a general cost until you attach it to the right goods.';
+    this.detachDraft = null;
+    await this.reload();
+  }
+
+  /**
+   * One lot's net cost per expense. The history shows every add, move and
+   * removal; this is what is still sitting on the lot and can be taken off.
+   */
+  get lotCostsStillAttached(): Array<{ expenseEntryId: number; expenseNumber: string; categoryName: string; amount: number }> {
+    const byExpense = new Map<number, { expenseEntryId: number; expenseNumber: string; categoryName: string; amount: number }>();
+    for (const row of this.lotDetail?.allocations || []) {
+      const entry = byExpense.get(row.expenseEntryId) || { expenseEntryId: row.expenseEntryId, expenseNumber: row.expenseNumber, categoryName: row.categoryName, amount: 0 };
+      entry.amount = Math.round((entry.amount + Number(row.amount || 0)) * 100) / 100;
+      byExpense.set(row.expenseEntryId, entry);
+    }
+    return [...byExpense.values()].filter((entry) => entry.amount > 0.005);
+  }
+
+  allocationLabel(allocation: LotCostAllocation): string {
+    if (allocation.documentType === 'reallocation') return 'moved';
+    if (allocation.documentType === 'detachment') return 'taken off';
+    return allocation.basis.replace('_', ' ');
   }
 
   // ── Funds ─────────────────────────────────────────────────
@@ -501,7 +608,7 @@ export class ExpensesComponent implements OnInit {
     await this.reload();
   }
 
-  openMoveCost(allocation?: LotCostAllocation): void {
+  openMoveCost(allocation?: { expenseEntryId: number; amount: number }): void {
     const detail = this.lotDetail;
     this.closeAll();
     this.moveCostDraft = {
@@ -568,7 +675,23 @@ export class ExpensesComponent implements OnInit {
 
   newPartner(): void {
     this.closeAll();
-    this.partnerDraft = { displayName: '', stakeholderType: 'partner', borneCostTreatment: 'capital', mobile: '', notes: '', isActive: true };
+    this.partnerDraft = {
+      displayName: '', stakeholderType: 'partner', borneCostTreatment: 'capital', mobile: '', notes: '', isActive: true,
+      // An unlinked pocket is offered first: it most likely was made for this person.
+      pocket: this.unlinkedPockets[0]?.id ?? 'new', currentPocket: null
+    };
+  }
+
+  /** Partner pockets at this location that nobody owns yet. */
+  get unlinkedPockets(): FundAccount[] {
+    const owned = new Set(this.partners.map((partner) => partner.fundAccountId).filter((id) => id != null));
+    return this.funds.filter((fund) => fund.fundKind === 'stakeholder' && fund.isActive && !owned.has(fund.id));
+  }
+
+  /** A pocket fund that no partner owns, so it cannot pay for anything yet. */
+  isUnlinkedPocket(fund: FundAccount): boolean {
+    return this.canSeePartners && fund.fundKind === 'stakeholder'
+      && !this.partners.some((partner) => partner.fundAccountId === fund.id);
   }
 
   editPartner(partner: Stakeholder): void {
@@ -576,7 +699,8 @@ export class ExpensesComponent implements OnInit {
     this.partnerDraft = {
       id: partner.id, displayName: partner.displayName, stakeholderType: partner.stakeholderType,
       borneCostTreatment: partner.borneCostTreatment, mobile: partner.mobile || '',
-      notes: partner.notes || '', isActive: partner.isActive
+      notes: partner.notes || '', isActive: partner.isActive,
+      pocket: null, currentPocket: partner.fundAccountId ? (partner.fundName || 'Their pocket') : null
     };
   }
 
@@ -585,7 +709,11 @@ export class ExpensesComponent implements OnInit {
     const origin = this.origin();
     if (!origin) { this.error = 'An active workstation session is required.'; return; }
     this.saving = true; this.error = '';
-    const result = await window.posApi.stakeholders.save({ ...this.partnerDraft, locCode: origin.locCode } as any, this.actor());
+    const { pocket, currentPocket, ...draft } = this.partnerDraft;
+    const payload: Record<string, unknown> = { ...draft, locCode: origin.locCode };
+    if (typeof pocket === 'number') payload['fundAccountId'] = pocket;
+    else if (pocket === 'new') payload['createPocket'] = true;
+    const result = await window.posApi.stakeholders.save(payload as any, this.actor());
     this.saving = false;
     if (!result.success) { this.error = result.error || 'Could not save this stakeholder.'; return; }
     this.info = `${result.data.displayName} saved.`;
@@ -741,14 +869,21 @@ export class ExpensesComponent implements OnInit {
     await this.loadAccounts();
   }
 
-  async reopenPeriod(period: AccountingPeriod): Promise<void> {
-    if (!window.posApi) return;
+  // The desktop shell has no window.prompt, so the reason is asked for inline.
+  beginReopenPeriod(period: AccountingPeriod): void { this.reopenDraft = { period, reason: '' }; this.error = ''; }
+
+  async reopenPeriod(): Promise<void> {
+    if (!window.posApi || !this.reopenDraft || this.saving) return;
     const user = this.session.getUser();
-    const reason = window.prompt('Reopening a closed period is recorded. Why is it being reopened?');
-    if (!reason || !user) return;
-    const result = await window.posApi.accounting.reopenPeriod({ periodId: period.id, userId: user.id, reason }, this.actor());
+    const reason = this.reopenDraft.reason.trim();
+    if (!user) return;
+    if (!reason) { this.error = 'Write why this period is being reopened.'; return; }
+    this.saving = true;
+    const result = await window.posApi.accounting.reopenPeriod({ periodId: this.reopenDraft.period.id, userId: user.id, reason }, this.actor());
+    this.saving = false;
     if (!result.success) { this.error = result.error || 'Could not reopen the period.'; return; }
     this.info = 'The period is open again. The reason has been recorded.';
+    this.reopenDraft = null;
     await this.loadAccounts();
   }
 

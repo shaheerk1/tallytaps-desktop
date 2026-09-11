@@ -391,11 +391,14 @@ export class SettingsComponent implements OnInit {
         this.settings.getByCode('billing')
       ]);
 
-      this.form.general.storeName = String(general['store_name'] ?? workstation['bill_header_1'] ?? '');
-      this.form.general.tagline = String(general['store_tagline'] ?? workstation['bill_header_2'] ?? '');
-      this.form.general.address1 = String(general['store_address_1'] ?? workstation['store_address_1'] ?? '');
-      this.form.general.address2 = String(general['store_address_2'] ?? workstation['store_address_2'] ?? '');
-      this.form.general.phone = String(general['store_phone'] ?? workstation['store_phone'] ?? '');
+      // The store's identity lives only in `general`, exactly as the bill reads
+      // it (packages/core/printing/receipt-settings.js). No fallback to other
+      // groups, or this form could show one address while the bill prints another.
+      this.form.general.storeName = String(general['store_name'] ?? '');
+      this.form.general.tagline = String(general['store_tagline'] ?? '');
+      this.form.general.address1 = String(general['store_address_1'] ?? '');
+      this.form.general.address2 = String(general['store_address_2'] ?? '');
+      this.form.general.phone = String(general['store_phone'] ?? '');
       this.form.general.currencySymbol = String(general['currency_symbol'] ?? 'Rs.');
       this.form.general.dateFormat = String(general['date_format'] ?? 'Y-m-d');
 

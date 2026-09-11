@@ -5,6 +5,8 @@
  * expenses to the goods they belong to. The service holds the rules a person
  * can get wrong; the repository holds the ledger writes.
  */
+const requestContext = require('../security/request-context');
+
 function createLotCostingService({ lotCostingRepository }) {
   if (!lotCostingRepository) throw new Error('Lot costing service requires a repository.');
 
@@ -12,12 +14,10 @@ function createLotCostingService({ lotCostingRepository }) {
   const money = (value) => Math.round(Number(value || 0) * 100) / 100;
   const BASES = ['direct', 'base_quantity', 'handling_quantity', 'sale_value', 'equal'];
 
+  // Inside an IPC request the origin is the signed-in workstation's own; what
+  // the screen sent is ignored. Outside one, the caller is trusted main-process code.
   function requireOrigin(input) {
-    const origin = {
-      locCode: text(input?.origin?.locCode ?? input?.locCode),
-      macCode: text(input?.origin?.macCode ?? input?.macCode),
-      txnDate: text(input?.origin?.txnDate ?? input?.txnDate).slice(0, 10)
-    };
+    const origin = requestContext.resolveOrigin(input || {});
     if (!origin.locCode || !origin.macCode || !/^\d{4}-\d{2}-\d{2}$/.test(origin.txnDate)) {
       throw new Error('An active workstation session is required to record this.');
     }
@@ -70,6 +70,21 @@ function createLotCostingService({ lotCostingRepository }) {
     });
   }
 
+  /** Takes a cost back off goods: one lot, or every lot it was put on. */
+  async function detachExpense(input = {}) {
+    const origin = requireOrigin(input);
+    if (!Number(input.userId)) throw new Error('A signed-in user is required.');
+    if (!Number(input.expenseEntryId)) throw new Error('Choose the cost to take off the goods.');
+    if (!text(input.reason)) throw new Error('Write why this cost is being taken off the goods.');
+    return lotCostingRepository.detachExpense({
+      ...origin,
+      userId: Number(input.userId),
+      expenseEntryId: Number(input.expenseEntryId),
+      inventoryLotId: Number(input.inventoryLotId) || null,
+      reason: text(input.reason)
+    });
+  }
+
   async function getProfitability(input = {}) {
     if (!text(input.locCode)) throw new Error('A location is required for the profitability report.');
     return lotCostingRepository.getLotProfitability(input);
@@ -85,7 +100,7 @@ function createLotCostingService({ lotCostingRepository }) {
     return lotCostingRepository.reconcileLandedCost(input);
   }
 
-  return { listLots, allocateExpense, reallocate, getProfitability, getLotCostDetail, reconcile };
+  return { listLots, allocateExpense, reallocate, detachExpense, getProfitability, getLotCostDetail, reconcile };
 }
 
 module.exports = { createLotCostingService };

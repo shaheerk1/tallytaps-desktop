@@ -509,6 +509,28 @@ These were settled during Phases 2 to 4 and are part of the contract now.
 7. **Sales are still outside the journal.** Billing remains the source of truth
    for revenue, so the profit and loss reports costs only and says so on screen
    rather than implying a complete profit figure.
+8. **Mistakes are undone by reversal, never by deletion** (migration 106,
+   permission `expenses.reverse`, granted to every role that may record an
+   expense). Reversing an expense writes the opposite of each record it
+   created, in one transaction, and marks the expense `void` with who, when
+   and why. Specifically:
+   - its cost is taken off the goods;
+   - a safe, bank or pocket gets a matching `in` movement, or a till payment is
+     voided inside its shift;
+   - a partner's `expense_borne` claim gets a negative entry;
+   - the journal gets a mirror posting (`expense_reversal`);
+   - a recurring cost it settled becomes due again.
+
+   A till payment whose shift is already closed and counted is refused: putting
+   the cash back would falsify that count, so it needs a cash correction
+   instead. Reversed rows can be shown in the register, struck through, but
+   never count in any total.
+9. **A cost can be taken off goods without undoing the payment.** A detachment
+   writes negative `detachment` allocation rows (all lots, or one), then
+   recomputes each lot's cost. Because cost recognition is delta-based, the part
+   already recognised as sold is reversed as well. The expense stays recorded
+   and counts as a general cost until it is attached again.
+   `npm run verify:expense-reversal` covers both.
 
 ## Explicit Deferrals
 

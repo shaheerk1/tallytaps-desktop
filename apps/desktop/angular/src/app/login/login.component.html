@@ -61,7 +61,7 @@
               No workstation configured
             </option>
             <option *ngFor="let ws of workstations" [ngValue]="ws.id">
-              {{ ws.machine_code }} — {{ ws.name }} ({{ ws.location_code }})
+              {{ ws.business_code ? ws.business_code + ' · ' : '' }}{{ ws.location_code }} / {{ ws.machine_code }} — {{ ws.name }}
             </option>
           </select>
         </div>

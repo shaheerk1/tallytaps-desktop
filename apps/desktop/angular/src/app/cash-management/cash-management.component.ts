@@ -36,6 +36,10 @@ export class CashManagementComponent implements OnInit {
   historyTerm = '';
   historyIncludeVoided = true;
   editingMovementId: number | null = null;
+  // Removal asks for its reason in the row itself. window.prompt() is not
+  // supported in Electron -- it returns nothing -- which silently stopped removal.
+  removingMovementId: number | null = null;
+  removeReason = '';
   editDirection: 'in' | 'out' = 'in';
   editAmount = 0;
   editReason = '';
@@ -227,6 +231,7 @@ export class CashManagementComponent implements OnInit {
 
   beginMovementEdit(movement: CashMovement): void {
     if (!movement.editable || !this.canCorrectMovements) return;
+    this.removingMovementId = null;
     this.editingMovementId = movement.id;
     this.editDirection = movement.direction;
     this.editAmount = movement.amount;
@@ -255,13 +260,25 @@ export class CashManagementComponent implements OnInit {
     await this.loadMovementHistory();
   }
 
-  async removeMovement(movement: CashMovement): Promise<void> {
-    if (!window.posApi || !movement.editable || !this.canCorrectMovements) return;
-    const reason = window.prompt('Why are you removing this cash movement? This reason is kept in the audit history.', movement.reason || 'Entered by mistake');
-    if (!reason?.trim()) return;
-    const result = await window.posApi.cash.removeMovement({ movementId: movement.id, reason, userId: this.context().userId }, this.actor());
+  beginMovementRemove(movement: CashMovement): void {
+    if (!movement.editable || !this.canCorrectMovements) return;
+    this.cancelMovementEdit();
+    this.removingMovementId = movement.id;
+    this.removeReason = 'Entered by mistake';
+  }
+
+  cancelMovementRemove(): void {
+    this.removingMovementId = null;
+    this.removeReason = '';
+  }
+
+  async confirmMovementRemove(): Promise<void> {
+    if (!window.posApi || !this.removingMovementId) return;
+    if (!this.removeReason.trim()) { this.error = 'Write why this entry is being removed. The reason is kept in the audit history.'; return; }
+    const result = await window.posApi.cash.removeMovement({ movementId: this.removingMovementId, reason: this.removeReason.trim(), userId: this.context().userId }, this.actor());
     if (!result.success) { this.error = result.error || 'Could not remove the cash movement.'; return; }
     this.shift = result.data;
+    this.cancelMovementRemove();
     this.info = 'Cash movement removed from the drawer total and retained as a voided audit record.';
     await this.loadMovementHistory();
   }

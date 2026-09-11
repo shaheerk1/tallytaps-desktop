@@ -325,3 +325,22 @@
   font-size: 0.7rem;
   color: #9ca3af;
 }
+
+/* ── Locations ───────────────────────────────────────── */
+.header-right { display: flex; gap: 0.5rem; }
+.loc-section { margin-bottom: 1.5rem; }
+.loc-head { display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap; margin-bottom: 0.6rem; }
+.loc-head h2 { margin: 0; font-size: 1rem; color: var(--ui-navy, #172b4d); }
+.loc-head p { flex: 1 1 320px; margin: 0; color: #6b7280; font-size: 0.78rem; }
+.loc-business { margin-bottom: 0.8rem; }
+.loc-business-label { margin-bottom: 0.35rem; color: var(--ui-ops-title-accent, #bb5c1c); font-size: 0.68rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+.loc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0.6rem; }
+.loc-card { display: flex; flex-direction: column; gap: 0.25rem; padding: 0.7rem 0.8rem; border: 1px solid var(--border, #dbe3ee); border-radius: var(--radius, 8px); background: var(--surface, #fff); }
+.loc-card.retired { border-style: dashed; opacity: 0.6; }
+.loc-card > header { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.loc-card > header strong { font-size: 0.95rem; }
+.loc-name { color: #374151; font-size: 0.85rem; }
+.loc-meta { color: #9ca3af; font-size: 0.72rem; }
+.loc-card > footer { display: flex; gap: 0.4rem; margin-top: 0.3rem; }
+.col-loc { display: flex; flex-direction: column; }
+.loc-sub { color: #9ca3af; font-size: 0.68rem; }

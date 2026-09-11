@@ -5,13 +5,15 @@
  * "create journal entry" method: every posting is derived by a fixed rule from
  * a business event, so an operator has nothing to type here.
  */
+const requestContext = require('../security/request-context');
+
 function createAccountingService({ journalRepository, operationalAccountingRepository, lotCostingRepository }) {
   if (!journalRepository) throw new Error('Accounting service requires the journal repository.');
 
   const text = (value) => String(value || '').trim();
 
   function requireLocation(input, action) {
-    const locCode = text(input.locCode);
+    const locCode = text(requestContext.resolveLocation(input || {}));
     if (!locCode) throw new Error(`A location is required to ${action}.`);
     return locCode;
   }
@@ -23,12 +25,13 @@ function createAccountingService({ journalRepository, operationalAccountingRepos
     reconcile: async (input = {}) => {
       if (!operationalAccountingRepository || !lotCostingRepository) throw new Error('Accounting reconciliation dependencies are incomplete.');
       const locCode = requireLocation(input, 'refresh accounting');
-      const userId = Number(input.userId);
+      const userId = Number(requestContext.resolveUserId(input));
       if (!userId) throw new Error('A signed-in user is required to refresh accounting.');
       const operational = await operationalAccountingRepository.syncAll({ locCode, userId });
       let lotCosts = { checked: 0, changed: 0, lots: [] };
-      const macCode = text(input.macCode);
-      const txnDate = text(input.txnDate).slice(0, 10);
+      const { macCode, txnDate } = requestContext.current()
+        ? requestContext.resolveOrigin(input)
+        : { macCode: text(input.macCode), txnDate: text(input.txnDate).slice(0, 10) };
       if (macCode && /^\d{4}-\d{2}-\d{2}$/.test(txnDate)) {
         lotCosts = await lotCostingRepository.reconcileRecognizedCosts({ locCode, macCode, txnDate, userId });
       }
@@ -46,8 +49,9 @@ function createAccountingService({ journalRepository, operationalAccountingRepos
       if (operationalAccountingRepository) {
         await operationalAccountingRepository.syncAll({ locCode, userId: Number(input.userId) });
       }
-      const macCode = text(input.macCode);
-      const txnDate = text(input.txnDate).slice(0, 10);
+      const { macCode, txnDate } = requestContext.current()
+        ? requestContext.resolveOrigin(input)
+        : { macCode: text(input.macCode), txnDate: text(input.txnDate).slice(0, 10) };
       if (lotCostingRepository && macCode && /^\d{4}-\d{2}-\d{2}$/.test(txnDate)) {
         await lotCostingRepository.reconcileRecognizedCosts({ locCode, macCode, txnDate, userId: Number(input.userId) });
       }

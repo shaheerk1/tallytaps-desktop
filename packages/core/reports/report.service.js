@@ -1,3 +1,5 @@
+const requestContext = require('../security/request-context');
+
 /**
  * Drops any sale line that a completed refund has returned. It is line-level on
  * purpose: a partly returned bill keeps the lines that were genuinely sold
@@ -14,7 +16,9 @@ function createReportService({ database }) {
     throw new Error('Report service requires database.');
   }
 
+  // Every report reads one location: the signed-in workstation's.
   async function salesSummary() {
+    const scope = requestContext.scopedLocation();
     return database.withConnection(async (connection) => {
       const [rows] = await connection.execute(
         `SELECT
@@ -22,27 +26,31 @@ function createReportService({ database }) {
            COALESCE(SUM(grand_total), 0) AS grossSales,
            COALESCE(SUM(paid_total), 0) AS paidSales
          FROM invoices
-         WHERE status <> 'cancelled'`
+         WHERE status <> 'cancelled' AND (? IS NULL OR loc_code = ?)`,
+        [scope, scope]
       );
       return rows[0];
     });
   }
 
-  async function supplierSummary({ fromDate = null, toDate = null } = {}) {
+  async function supplierSummary({ fromDate = null, toDate = null, locCode = null } = {}) {
+    const scope = requestContext.scopedLocation({ locCode });
     return database.withConnection(async (connection) => {
       const [rows] = await connection.execute(
         `SELECT s.id, s.supplier_code, s.name,
                 COALESCE(SUM(e.amount), 0) AS balance,
                 COALESCE(SUM(CASE WHEN e.entry_type = 'consignment_accrual' THEN e.amount ELSE 0 END), 0) AS accruals
-         FROM suppliers s LEFT JOIN supplier_payable_entries e ON e.supplier_id = s.id
+         FROM suppliers s LEFT JOIN supplier_payable_entries e ON e.supplier_id = s.id AND e.loc_code = s.loc_code
            AND (? IS NULL OR e.business_date >= ?) AND (? IS NULL OR e.business_date <= ?)
-         GROUP BY s.id ORDER BY s.name`, [fromDate, fromDate, toDate, toDate]
+         WHERE (? IS NULL OR s.loc_code = ?)
+         GROUP BY s.id ORDER BY s.name`, [fromDate, fromDate, toDate, toDate, scope, scope]
       );
       return rows;
     });
   }
 
-  async function inventoryMovementSummary({ fromDate = null, toDate = null } = {}) {
+  async function inventoryMovementSummary({ fromDate = null, toDate = null, locCode = null } = {}) {
+    const scope = requestContext.scopedLocation({ locCode });
     return database.withConnection(async (connection) => {
       const [rows] = await connection.execute(
         `SELECT p.sku, p.name, p.handling_uom, p.base_uom, p.dual_uom_enabled,
@@ -51,7 +59,8 @@ function createReportService({ database }) {
                 COALESCE(SUM(m.base_quantity_delta), 0) AS net_base_quantity
          FROM stock_movements m JOIN products p ON p.id = m.product_id
          WHERE (? IS NULL OR m.business_date >= ?) AND (? IS NULL OR m.business_date <= ?)
-         GROUP BY p.id ORDER BY p.name`, [fromDate, fromDate, toDate, toDate]
+           AND (? IS NULL OR m.loc_code = ?)
+         GROUP BY p.id ORDER BY p.name`, [fromDate, fromDate, toDate, toDate, scope, scope]
       );
       return rows;
     });
@@ -123,9 +132,13 @@ function createReportService({ database }) {
       else { where.push(`ii.item_code IN (${itemCodes.map(() => '?').join(', ')})`); params.push(...itemCodes); }
     }
     if (excludeRefunded) where.push(REFUNDED_LINE_EXCLUSION);
+    const scope = requestContext.scopedLocation(filters);
+    if (scope) { where.push('ii.loc_code = ?'); params.push(scope); }
 
     const grouping = {
-      line: { order: '0', label: "CONCAT(COALESCE(NULLIF(ii.supplier_code, ''), ''), CASE WHEN ii.supplier_code <> '' THEN '~' ELSE '' END, ii.item_code)" },
+      // No grouping order: every line follows the chosen sort. MySQL reads
+      // `ORDER BY 0` as a column position and refuses it, so NULL is used.
+      line: { order: 'NULL', label: "CONCAT(COALESCE(NULLIF(ii.supplier_code, ''), ''), CASE WHEN ii.supplier_code <> '' THEN '~' ELSE '' END, ii.item_code)" },
       item: { order: 'ii.item_code ASC, ii.description ASC', label: "CONCAT(ii.item_code, CASE WHEN ii.description <> '' THEN ' ' ELSE '' END, ii.description)" },
       date: { order: `${saleDate} ASC`, label: `DATE_FORMAT(${saleDate}, '%Y-%m-%d')` },
       supplier: { order: 'ii.supplier_code ASC', label: "COALESCE(NULLIF(ii.supplier_code, ''), 'No supplier code')" },
@@ -185,6 +198,8 @@ function createReportService({ database }) {
     if (fromDate) { where.push(`${saleDate} >= ?`); params.push(fromDate); }
     if (toDate) { where.push(`${saleDate} <= ?`); params.push(toDate); }
     if (excludeRefunded !== false) where.push(REFUNDED_LINE_EXCLUSION);
+    const scope = requestContext.scopedLocation();
+    if (scope) { where.push('ii.loc_code = ?'); params.push(scope); }
     return database.withConnection(async (connection) => {
       const [rows] = await connection.execute(
         `SELECT ii.item_code, MAX(ii.description) AS description, COUNT(*) AS sales_count
@@ -224,12 +239,14 @@ function createReportService({ database }) {
     const { writeWorkbook } = require('./xlsx-export.service');
     const [suppliers, inventory] = await Promise.all([supplierSummary(filters), inventoryMovementSummary(filters)]);
     const { fromDate = null, toDate = null } = filters;
+    const scope = requestContext.scopedLocation(filters);
     const source = await database.withConnection(async (connection) => {
       const [payables] = await connection.execute(
         `SELECT e.business_date, s.supplier_code, s.name AS supplier_name, e.entry_type, e.amount, e.reason, e.created_at
          FROM supplier_payable_entries e JOIN suppliers s ON s.id = e.supplier_id
          WHERE (? IS NULL OR e.business_date >= ?) AND (? IS NULL OR e.business_date <= ?)
-         ORDER BY e.business_date, e.id`, [fromDate, fromDate, toDate, toDate]
+           AND (? IS NULL OR e.loc_code = ?)
+         ORDER BY e.business_date, e.id`, [fromDate, fromDate, toDate, toDate, scope, scope]
       );
       const [movements] = await connection.execute(
         `SELECT m.business_date, p.sku, p.name AS product_name, m.movement_type,
@@ -237,7 +254,8 @@ function createReportService({ database }) {
                 m.base_quantity_delta, m.base_uom_snapshot, m.note, m.created_at
          FROM stock_movements m JOIN products p ON p.id = m.product_id
          WHERE (? IS NULL OR m.business_date >= ?) AND (? IS NULL OR m.business_date <= ?)
-         ORDER BY m.business_date, m.id`, [fromDate, fromDate, toDate, toDate]
+           AND (? IS NULL OR m.loc_code = ?)
+         ORDER BY m.business_date, m.id`, [fromDate, fromDate, toDate, toDate, scope, scope]
       );
       return { payables, movements };
     });

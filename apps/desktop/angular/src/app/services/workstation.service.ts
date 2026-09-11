@@ -8,6 +8,9 @@ export type Workstation = {
   name: string;
   status: string;
   created_at: string;
+  business_code?: string;
+  location_name?: string;
+  location_status?: 'active' | 'retired';
 };
 
 @Injectable({ providedIn: 'root' })

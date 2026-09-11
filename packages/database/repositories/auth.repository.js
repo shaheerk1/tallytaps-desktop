@@ -69,6 +69,43 @@ function createAuthRepository({ database }) {
     });
   }
 
+  /** Ties one sign-in to the workstation session it opened. */
+  async function bindWorkstationSession(token, workstationSessionId) {
+    return database.withConnection(async (connection) => {
+      await connection.execute(
+        'UPDATE sessions SET workstation_session_id = ? WHERE token = ?',
+        [workstationSessionId || null, token]
+      );
+    });
+  }
+
+  /**
+   * Everything the main process needs to trust a request, in one read: the
+   * signed-in user, and the open workstation session this sign-in is bound to
+   * with its location, terminal, and business date. The workstation part is
+   * null when the sign-in has no open workstation session.
+   */
+  async function findRequestContext(token) {
+    return database.withConnection(async (connection) => {
+      const [rows] = await connection.execute(
+        `SELECT s.user_id, u.username, u.display_name, u.status AS user_status,
+                ws.id AS workstation_session_id, ws.status AS workstation_session_status,
+                ws.billing_date, pw.id AS workstation_id, pw.location_code, pw.machine_code,
+                pw.name AS workstation_name, pw.status AS workstation_status,
+                pl.business_code, pl.status AS location_status
+         FROM sessions s
+         JOIN users u ON u.id = s.user_id
+         LEFT JOIN workstation_sessions ws ON ws.id = s.workstation_session_id AND ws.status = 'open'
+         LEFT JOIN pos_workstations pw ON pw.id = ws.workstation_id
+         LEFT JOIN pos_locations pl ON pl.loc_code = pw.location_code
+         WHERE s.token = ? AND s.expires_at > NOW()
+         LIMIT 1`,
+        [token]
+      );
+      return rows.length > 0 ? rows[0] : null;
+    });
+  }
+
   async function deleteSession(token) {
     return database.withConnection(async (connection) => {
       await connection.execute('DELETE FROM sessions WHERE token = ?', [token]);
@@ -100,6 +137,8 @@ function createAuthRepository({ database }) {
   }
 
   return {
+    bindWorkstationSession,
+    findRequestContext,
     findUserByUsername,
     getUserPermissions,
     getUserRoles,

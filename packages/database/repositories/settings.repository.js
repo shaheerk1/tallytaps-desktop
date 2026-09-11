@@ -8,11 +8,15 @@ function createSettingsRepository({ database }) {
    * Returns the parsed value (auto-deserializes JSON when serialized=1).
    * Returns undefined if not found.
    */
-  async function getSetting(code, key) {
+  // `locCode` null reads and writes the shared value. With a location, a read
+  // prefers that location's own value and falls back to the shared one.
+  async function getSetting(code, key, locCode = null) {
     return database.withConnection(async (connection) => {
       const [rows] = await connection.execute(
-        `SELECT value, serialized FROM system_settings WHERE code = ? AND \`key\` = ? LIMIT 1`,
-        [code, key]
+        `SELECT value, serialized FROM system_settings
+         WHERE code = ? AND \`key\` = ? AND (loc_code IS NULL OR loc_code = ?)
+         ORDER BY loc_code IS NULL LIMIT 1`,
+        [code, key, locCode || null]
       );
       if (rows.length === 0) return undefined;
       return deserialize(rows[0].value, rows[0].serialized);
@@ -22,11 +26,14 @@ function createSettingsRepository({ database }) {
   /**
    * Get all settings for a given code group as a flat object { key: value }.
    */
-  async function getSettingsByCode(code) {
+  async function getSettingsByCode(code, locCode = null) {
     return database.withConnection(async (connection) => {
+      // Shared rows first, then the location's own, so its values win.
       const [rows] = await connection.execute(
-        `SELECT \`key\`, value, serialized FROM system_settings WHERE code = ?`,
-        [code]
+        `SELECT \`key\`, value, serialized FROM system_settings
+         WHERE code = ? AND (loc_code IS NULL OR loc_code = ?)
+         ORDER BY loc_code IS NOT NULL, id`,
+        [code, locCode || null]
       );
       const result = {};
       for (const row of rows) {
@@ -39,17 +46,17 @@ function createSettingsRepository({ database }) {
   /**
    * Upsert a single setting.
    */
-  async function setSetting(code, key, value) {
+  async function setSetting(code, key, value, locCode = null) {
     const { serializedValue, serialized } = serialize(value);
     return database.withConnection(async (connection) => {
       await connection.execute(
-        `INSERT INTO system_settings (code, \`key\`, value, serialized)
-         VALUES (?, ?, ?, ?)
+        `INSERT INTO system_settings (loc_code, code, \`key\`, value, serialized)
+         VALUES (?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE
            value = VALUES(value),
            serialized = VALUES(serialized),
            updated_at = CURRENT_TIMESTAMP`,
-        [code, key, serializedValue, serialized]
+        [locCode || null, code, key, serializedValue, serialized]
       );
       return deserialize(serializedValue, serialized);
     });
@@ -59,7 +66,7 @@ function createSettingsRepository({ database }) {
    * Bulk upsert all settings for a code group.
    * Existing keys not in the payload are left untouched.
    */
-  async function setSettings(code, settingsObj) {
+  async function setSettings(code, settingsObj, locCode = null) {
     const entries = Object.entries(settingsObj);
     if (entries.length === 0) return;
 
@@ -67,13 +74,13 @@ function createSettingsRepository({ database }) {
       for (const [key, value] of entries) {
         const { serializedValue, serialized } = serialize(value);
         await connection.execute(
-          `INSERT INTO system_settings (code, \`key\`, value, serialized)
-           VALUES (?, ?, ?, ?)
+          `INSERT INTO system_settings (loc_code, code, \`key\`, value, serialized)
+           VALUES (?, ?, ?, ?, ?)
            ON DUPLICATE KEY UPDATE
              value = VALUES(value),
              serialized = VALUES(serialized),
              updated_at = CURRENT_TIMESTAMP`,
-          [code, key, serializedValue, serialized]
+          [locCode || null, code, key, serializedValue, serialized]
         );
       }
     });
@@ -82,11 +89,11 @@ function createSettingsRepository({ database }) {
   /**
    * Delete a single setting.
    */
-  async function deleteSetting(code, key) {
+  async function deleteSetting(code, key, locCode = null) {
     return database.withConnection(async (connection) => {
       const [result] = await connection.execute(
-        `DELETE FROM system_settings WHERE code = ? AND \`key\` = ?`,
-        [code, key]
+        `DELETE FROM system_settings WHERE code = ? AND \`key\` = ? AND scope_key = ?`,
+        [code, key, locCode || '']
       );
       return result.affectedRows > 0;
     });

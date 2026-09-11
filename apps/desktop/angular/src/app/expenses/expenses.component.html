@@ -50,6 +50,10 @@
           <option *ngFor="let fund of funds" [ngValue]="fund.id">{{ fund.name }}</option>
         </select>
       </label>
+      <label class="toggle" title="Reversed expenses are kept for the record. They never count in the totals.">
+        <input type="checkbox" [(ngModel)]="showReversed" (change)="search()" />
+        <span>Show reversed</span>
+      </label>
     </ng-container>
     <label *ngIf="activeTab === 'lots'">
       <span>Ownership</span>
@@ -83,7 +87,8 @@
             <b [class.negative]="fund.balance < 0">{{ formatMoney(fund.balance) }}</b>
             <small>{{ fund.holderName || fund.accountReference || fund.fundCode }}</small>
           </button>
-          <footer>{{ fundBalanceHint(fund) }}</footer>
+          <footer *ngIf="!isUnlinkedPocket(fund)">{{ fundBalanceHint(fund) }}</footer>
+          <footer class="pocket-warning" *ngIf="isUnlinkedPocket(fund)">Not linked to anyone yet. Go to Partners, then Add partner, and choose this pocket as theirs.</footer>
         </article>
       </div>
       <p class="empty" *ngIf="!funds.length && !loading">
@@ -95,7 +100,7 @@
       <div><span>Total spent</span><strong>{{ formatMoney(register.total) }}</strong></div>
       <div><span>Belongs to goods</span><strong>{{ formatMoney(register.goodsTotal) }}</strong></div>
       <div><span>General business cost</span><strong>{{ formatMoney(register.overheadTotal) }}</strong></div>
-      <div><span>Entries</span><strong>{{ register.rows.length }}</strong></div>
+      <div><span>Entries</span><strong>{{ recordedCount }}</strong></div>
     </div>
 
     <!-- The nudge that turns a recorded cost into a real cost price. -->
@@ -128,10 +133,11 @@
         <div class="register-head">
           <span>Voucher</span><span>Category</span><span>What it was for</span><span>Paid from</span><span class="right">Amount</span>
         </div>
-        <div class="register-row" *ngFor="let row of register?.rows">
+        <div class="register-row" *ngFor="let row of register?.rows" [class.reversed]="row.status !== 'recorded'">
           <span class="voucher">
             <strong>{{ row.expenseNumber }}</strong>
             <small>{{ formatDate(row.date) }} · {{ row.userName }}</small>
+            <small class="reversed-note" *ngIf="row.status !== 'recorded'" [title]="row.voidReason || ''">Reversed: {{ row.voidReason }}</small>
           </span>
           <span>
             <strong>{{ row.categoryName }}</strong>
@@ -142,7 +148,7 @@
           <span class="purpose">
             <strong>{{ row.reason }}</strong>
             <small *ngIf="row.payee || row.reference">{{ row.payee }}<ng-container *ngIf="row.payee && row.reference"> · </ng-container>{{ row.reference }}</small>
-            <small class="attach-state" *ngIf="row.categoryTreatment === 'lot_cost'">
+            <small class="attach-state" *ngIf="row.categoryTreatment === 'lot_cost' && row.status === 'recorded'">
               <ng-container *ngIf="row.allocatedTotal > 0.005">On goods: {{ formatMoney(row.allocatedTotal) }}<ng-container *ngIf="row.grnNumber"> · {{ row.grnNumber }}</ng-container></ng-container>
               <ng-container *ngIf="row.allocatedTotal <= 0.005">Not attached to any goods yet</ng-container>
             </small>
@@ -153,8 +159,15 @@
           </span>
           <b class="right">
             {{ formatMoney(row.amount) }}
-            <button class="link" *ngIf="canAllocate && row.unallocatedTotal > 0.005 && row.categoryTreatment === 'lot_cost'"
-              (click)="openAttach(row)">Attach</button>
+            <ng-container *ngIf="row.status === 'recorded'">
+              <button class="link" *ngIf="canAllocate && row.unallocatedTotal > 0.005 && row.categoryTreatment === 'lot_cost'"
+                (click)="openAttach(row)">Attach</button>
+              <button class="link" *ngIf="canAllocate && row.allocatedTotal > 0.005"
+                (click)="openDetach({ id: row.id, expenseNumber: row.expenseNumber, amount: row.allocatedTotal })"
+                title="Take this cost off the goods, but keep the payment">Take off goods</button>
+              <button class="link danger" *ngIf="canReverse" (click)="openReverse(row)"
+                title="Undo this expense completely">Reverse</button>
+            </ng-container>
           </b>
         </div>
         <p class="empty" *ngIf="register && !register.rows.length">
@@ -364,13 +377,25 @@
 
       <aside class="breakdown">
         <h3>Periods</h3>
-        <div class="breakdown-row" *ngFor="let period of periods">
+        <ng-container *ngFor="let period of periods">
+        <div class="breakdown-row">
           <span>
             <strong>{{ formatDate(period.periodStart) }} – {{ formatDate(period.periodEnd) }}</strong>
             <small>{{ period.status }}<ng-container *ngIf="period.reopenCount"> · reopened {{ period.reopenCount }}×</ng-container></small>
           </span>
-          <button class="link" *ngIf="period.status === 'closed' && canClosePeriod" (click)="reopenPeriod(period)">Reopen</button>
+          <button class="link" *ngIf="period.status === 'closed' && canClosePeriod && reopenDraft?.period?.id !== period.id" (click)="beginReopenPeriod(period)">Reopen</button>
         </div>
+        <div class="inline-reason" *ngIf="reopenDraft && reopenDraft.period.id === period.id">
+          <label>
+            <span>Reopening a closed period is recorded. Why is it being reopened?</span>
+            <input type="text" [(ngModel)]="reopenDraft.reason" (keyup.enter)="reopenPeriod()" placeholder="e.g. A supplier bill for March arrived late" />
+          </label>
+          <div>
+            <button class="link" (click)="reopenDraft = null">Cancel</button>
+            <button class="secondary" (click)="reopenPeriod()" [disabled]="saving || !reopenDraft.reason.trim()">Reopen period</button>
+          </div>
+        </div>
+        </ng-container>
         <p class="empty inline" *ngIf="!periods.length">No period has been closed yet.</p>
 
         <h3>Recent postings</h3>
@@ -525,15 +550,26 @@
       <div class="ledger-row" *ngFor="let allocation of lotDetail.allocations">
         <span>
           <strong>{{ allocation.categoryName }}</strong>
-          <small>{{ allocation.expenseNumber }} · {{ formatDate(allocation.date) }} · {{ allocation.documentType === 'reallocation' ? 'moved' : allocation.basis.replace('_', ' ') }}</small>
+          <small>{{ allocation.expenseNumber }} · {{ formatDate(allocation.date) }} · {{ allocationLabel(allocation) }}</small>
         </span>
         <b [class.credit]="allocation.amount < 0" [class.debit]="allocation.amount > 0">{{ formatMoney(allocation.amount) }}</b>
       </div>
       <p class="empty" *ngIf="!lotDetail.allocations.length">No costs attached to this lot yet.</p>
     </div>
-    <div class="drawer-actions" *ngIf="canAllocate && lotDetail.allocations.length">
-      <button class="secondary" (click)="openMoveCost(lotDetail.allocations[0])">Move a cost to another lot</button>
-    </div>
+    <ng-container *ngIf="canAllocate && lotCostsStillAttached.length">
+      <h3>Still on this lot</h3>
+      <p class="guidance">Attached a cost to the wrong goods? Take it off here. The payment itself stays recorded and becomes a general cost again until you attach it to the right delivery.</p>
+      <div class="ledger-list">
+        <div class="ledger-row" *ngFor="let cost of lotCostsStillAttached">
+          <span><strong>{{ cost.categoryName }}</strong><small>{{ cost.expenseNumber }}</small></span>
+          <span class="row-actions">
+            <b>{{ formatMoney(cost.amount) }}</b>
+            <button class="link" (click)="openMoveCost(cost)">Move</button>
+            <button class="link danger" (click)="openDetach({ id: cost.expenseEntryId, expenseNumber: cost.expenseNumber, amount: cost.amount }, { id: lotDetail.lot.id, lotCode: lotDetail.lot.lotCode })">Take off</button>
+          </span>
+        </div>
+      </div>
+    </ng-container>
   </section>
 </div>
 
@@ -565,6 +601,69 @@
       <button class="primary" (click)="saveMoveCost()"
         [disabled]="saving || !moveCostDraft.toInventoryLotId || !moveCostDraft.amount || !moveCostDraft.reason">
         {{ saving ? 'Moving…' : 'Move cost' }}
+      </button>
+    </div>
+  </section>
+</div>
+
+<!-- ── Reverse an expense ────────────────────────────────── -->
+<div class="workspace-overlay" *ngIf="reverseDraft" (click)="closeAll()">
+  <section class="workspace-drawer" (click)="$event.stopPropagation()">
+    <button class="drawer-close" (click)="closeAll()" title="Close">×</button>
+    <div class="panel-head">
+      <div>
+        <p class="eyebrow">UNDO A MISTAKE</p>
+        <h2>Reverse {{ reverseDraft.expense.expenseNumber }}</h2>
+        <p>{{ reverseDraft.expense.categoryName }} · {{ reverseDraft.expense.reason }} · paid from {{ reverseDraft.expense.fundName }}</p>
+      </div>
+      <b class="ledger-balance">{{ formatMoney(reverseDraft.expense.amount) }}</b>
+    </div>
+    <p class="guidance">Use this when the expense should never have been recorded — typed twice, the wrong amount, or the wrong fund. To fix it, reverse it and then record it again correctly.</p>
+    <h3>What happens</h3>
+    <ol class="effects">
+      <li *ngFor="let effect of reverseEffects(reverseDraft.expense)">{{ effect }}</li>
+    </ol>
+    <div class="form-grid">
+      <label class="wide">
+        <span>Why is it being reversed?</span>
+        <input type="text" [(ngModel)]="reverseDraft.reason" (keyup.enter)="saveReverse()" placeholder="e.g. Entered twice by mistake" />
+      </label>
+    </div>
+    <div class="drawer-actions">
+      <button class="secondary" (click)="closeAll()">Keep it</button>
+      <button class="primary danger" (click)="saveReverse()" [disabled]="saving || !reverseDraft.reason.trim()">
+        {{ saving ? 'Reversing…' : 'Reverse expense' }}
+      </button>
+    </div>
+  </section>
+</div>
+
+<!-- ── Take a cost off goods ─────────────────────────────── -->
+<div class="workspace-overlay" *ngIf="detachDraft" (click)="closeAll()">
+  <section class="workspace-drawer" (click)="$event.stopPropagation()">
+    <button class="drawer-close" (click)="closeAll()" title="Close">×</button>
+    <div class="panel-head">
+      <div>
+        <p class="eyebrow">CORRECTION</p>
+        <h2>Take {{ detachDraft.expenseNumber }} off {{ detachDraft.lotCode || 'the goods' }}</h2>
+        <p>{{ detachDraft.lotCode ? 'Only this lot changes. Any other lots keep their share.' : 'Every lot this cost was attached to gives it back.' }}</p>
+      </div>
+      <b class="ledger-balance">{{ formatMoney(detachDraft.amount) }}</b>
+    </div>
+    <p class="guidance">
+      The payment stays recorded — only its link to the goods is removed. The goods go back to costing what they cost before,
+      and if some were already sold, the cost those sales carried is taken back too. Until you attach it again, the amount counts as a general cost of this period.
+    </p>
+    <div class="form-grid">
+      <label class="wide">
+        <span>Why is it being taken off?</span>
+        <input type="text" [(ngModel)]="detachDraft.reason" (keyup.enter)="saveDetach()" placeholder="e.g. Attached to the wrong delivery" />
+      </label>
+    </div>
+    <div class="drawer-actions">
+      <button class="secondary" (click)="closeAll()">Cancel</button>
+      <button class="primary" (click)="saveDetach()" [disabled]="saving || !detachDraft.reason.trim()">
+        {{ saving ? 'Taking off…' : 'Take off goods' }}
       </button>
     </div>
   </section>
@@ -654,7 +753,7 @@
     <button class="drawer-close" (click)="closeAll()" title="Close">×</button>
     <div class="panel-head">
       <div><p class="eyebrow">STAKEHOLDER</p><h2>{{ partnerDraft.id ? 'Edit partner' : 'Add a partner' }}</h2>
-        <p>A pocket fund is created for each person, so a cost they pay themselves has somewhere to come from.</p></div>
+        <p>Each person has a pocket, so a cost they pay from their own hand has somewhere to come from.</p></div>
     </div>
     <div class="form-grid">
       <label><span>Name</span><input type="text" [(ngModel)]="partnerDraft.displayName" placeholder="Nuwan Perera" /></label>
@@ -671,6 +770,21 @@
           <option value="liability">…the business owes it back to them</option>
         </select>
         <small>Choose once per person; you can change it later for new entries.</small>
+      </label>
+      <label class="wide" *ngIf="!partnerDraft.currentPocket">
+        <span>Their pocket</span>
+        <select [(ngModel)]="partnerDraft.pocket">
+          <option *ngIf="partnerDraft.id" [ngValue]="null">No pocket yet</option>
+          <option *ngFor="let fund of unlinkedPockets" [ngValue]="fund.id">Use {{ fund.name }}</option>
+          <option [ngValue]="'new'">Create a new pocket for them</option>
+        </select>
+        <small *ngIf="unlinkedPockets.length">{{ unlinkedPockets.length === 1 ? 'This pocket is' : 'These pockets are' }} not linked to anyone yet, so {{ unlinkedPockets.length === 1 ? 'it' : 'they' }} cannot pay for anything until you choose {{ unlinkedPockets.length === 1 ? 'it' : 'one' }} here.</small>
+        <small *ngIf="!unlinkedPockets.length">The pocket is where money they spend for the business comes from.</small>
+      </label>
+      <label class="wide" *ngIf="partnerDraft.currentPocket">
+        <span>Their pocket</span>
+        <input type="text" [value]="partnerDraft.currentPocket" disabled />
+        <small>A person keeps one pocket, so their history stays in one place.</small>
       </label>
       <label><span>Mobile (optional)</span><input type="text" [(ngModel)]="partnerDraft.mobile" /></label>
       <label class="check inline"><input type="checkbox" [(ngModel)]="partnerDraft.isActive" /><span>Active</span></label>
@@ -757,11 +871,13 @@
       <label>
         <span>Kind</span>
         <select [(ngModel)]="fundDraft.fundKind">
-          <option value="cash_safe">Cash safe</option><option value="bank">Bank account</option><option value="stakeholder">Stakeholder pocket</option>
+          <option value="cash_safe">Cash safe</option><option value="bank">Bank account</option>
+          <option value="stakeholder" *ngIf="fundDraft.id && fundDraft.fundKind === 'stakeholder'">Partner pocket</option>
         </select>
+        <small *ngIf="!fundDraft.id">A partner's own pocket is added from Partners, so it always belongs to that person.</small>
       </label>
       <p class="guidance wide" *ngIf="fundDraft.fundKind === 'stakeholder'">
-        Money here belongs to the partner, not the business. When it pays a business cost, the business owes them that amount. Adding the person under Partners creates their pocket automatically.
+        Money here belongs to the partner, not the business. When it pays a business cost, the business owes them that amount.
       </p>
       <label><span>Held by (optional)</span><input type="text" [(ngModel)]="fundDraft.holderName" placeholder="Partner or bank name" /></label>
       <label><span>Account reference (optional)</span><input type="text" [(ngModel)]="fundDraft.accountReference" placeholder="Account number or branch" /></label>

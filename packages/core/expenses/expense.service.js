@@ -5,18 +5,18 @@
  * Every expense and transfer states which fund it left, so no amount can enter
  * or leave the business without a place it came from.
  */
+const requestContext = require('../security/request-context');
+
 function createExpenseService({ expenseRepository }) {
   if (!expenseRepository) throw new Error('Expense service requires a repository.');
 
   const text = (value) => String(value || '').trim();
   const money = (value) => Math.round(Number(value || 0) * 100) / 100;
 
+  // Inside an IPC request the origin is the signed-in workstation's own; what
+  // the screen sent is ignored. Outside one, the caller is trusted main-process code.
   function requireOrigin(input) {
-    const origin = {
-      locCode: text(input?.origin?.locCode ?? input?.locCode),
-      macCode: text(input?.origin?.macCode ?? input?.macCode),
-      txnDate: text(input?.origin?.txnDate ?? input?.txnDate).slice(0, 10)
-    };
+    const origin = requestContext.resolveOrigin(input || {});
     if (!origin.locCode || !origin.macCode || !/^\d{4}-\d{2}-\d{2}$/.test(origin.txnDate)) {
       throw new Error('An active workstation session is required to record this.');
     }
@@ -24,7 +24,7 @@ function createExpenseService({ expenseRepository }) {
   }
 
   function requireUser(input) {
-    const userId = Number(input?.userId);
+    const userId = Number(requestContext.resolveUserId(input || {}));
     if (!userId) throw new Error('A signed-in user is required.');
     return userId;
   }
@@ -72,6 +72,15 @@ function createExpenseService({ expenseRepository }) {
       reason: text(input.reason),
       requestId: text(input.requestId)
     });
+  }
+
+  /** Undoes a mistaken expense; see expenseRepository.reverseExpense for what that covers. */
+  async function reverseExpense(input = {}) {
+    const origin = requireOrigin(input);
+    const userId = requireUser(input);
+    if (!Number(input.expenseEntryId)) throw new Error('Choose the expense to reverse.');
+    if (!text(input.reason)) throw new Error('Write why this expense is being reversed.');
+    return expenseRepository.reverseExpense({ ...origin, userId, expenseEntryId: Number(input.expenseEntryId), reason: text(input.reason) });
   }
 
   async function listExpenses(input = {}) {
@@ -137,6 +146,7 @@ function createExpenseService({ expenseRepository }) {
     listCategories,
     saveCategory,
     recordExpense,
+    reverseExpense,
     listExpenses,
     listRecurringExpenses,
     saveRecurringExpense,

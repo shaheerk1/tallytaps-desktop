@@ -9,6 +9,10 @@
  * values you've changed through the admin UI.
  */
 
+// Each value has one home. The store's name, address and phone are `general`;
+// `workstation` holds only the receipt's extra lines, logo and language; the
+// printer is `printing.default_printer`. (Migration 107 removed the old
+// workstation copies of the address and phone.)
 const DEFAULT_SETTINGS = [
   // ── Workstation / receipt ─────────────────────────────
   { code: 'workstation', key: 'bill_header_1',   value: '' },
@@ -16,10 +20,6 @@ const DEFAULT_SETTINGS = [
   { code: 'workstation', key: 'bill_header_3',   value: '' },
   { code: 'workstation', key: 'bill_footer_1',   value: 'Thank you for your business!' },
   { code: 'workstation', key: 'bill_footer_2',   value: '' },
-  { code: 'workstation', key: 'store_address_1', value: '123 Main Street' },
-  { code: 'workstation', key: 'store_address_2', value: '' },
-  { code: 'workstation', key: 'store_phone',     value: '' },
-  { code: 'workstation', key: 'default_printer', value: '' },
 
   // ── General ───────────────────────────────────────────
   { code: 'general', key: 'currency_symbol', value: 'Rs.' },
@@ -48,7 +48,7 @@ async function seedDefaultSettings(database) {
 
     for (const s of DEFAULT_SETTINGS) {
       const [existing] = await connection.execute(
-        'SELECT id FROM system_settings WHERE code = ? AND `key` = ? LIMIT 1',
+        'SELECT id FROM system_settings WHERE code = ? AND `key` = ? AND loc_code IS NULL LIMIT 1',
         [s.code, s.key]
       );
       if (existing.length === 0) {

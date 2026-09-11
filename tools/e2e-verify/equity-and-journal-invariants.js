@@ -66,8 +66,6 @@ async function main() {
         const [[user]] = await connection.execute('SELECT id FROM users WHERE status = ? ORDER BY id LIMIT 1', ['active']);
         const [[approver]] = await connection.execute('SELECT id FROM users WHERE status = ? ORDER BY id LIMIT 1', ['active']);
         assert(user, 'Equity invariants require an active user.');
-        const [products] = await connection.execute('SELECT id FROM products ORDER BY id LIMIT 1');
-        assert(products.length, 'Equity invariants require at least one product.');
 
         const stamp = String(Date.now()).slice(-8);
         const locCode = `EQ${stamp}`.slice(0, 30);
@@ -75,6 +73,14 @@ async function main() {
         const txnDate = '2099-05-01';
         const origin = { locCode, macCode, txnDate };
         const base = { userId: user.id, origin };
+        // Every workstation belongs to a registered location.
+        await connection.execute(
+          'INSERT INTO pos_locations (loc_code, business_code, name) VALUES (?, ?, ?)', [locCode, 'VERIFY', 'Verification location']
+        );
+        const [item] = await connection.execute(
+          'INSERT INTO products (loc_code, sku, name, unit_price) VALUES (?, ?, ?, 0)', [locCode, 'EQ-ITEM-1', 'Equity item']
+        );
+        const products = [{ id: item.insertId }];
 
         await connection.execute(
           'INSERT INTO pos_workstations (location_code, machine_code, name) VALUES (?, ?, ?)',
@@ -85,7 +91,7 @@ async function main() {
           [locCode, txnDate, user.id]
         );
         const [supplier] = await connection.execute(
-          'INSERT INTO suppliers (supplier_code, name) VALUES (?, ?)', [`SUP-${stamp}`, 'Equity Farms']
+          'INSERT INTO suppliers (loc_code, supplier_code, name) VALUES (?, ?, ?)', [locCode, `SUP-${stamp}`, 'Equity Farms']
         );
         const [safeFund] = await connection.execute(
           `INSERT INTO fund_accounts (fund_code, name, fund_kind, loc_code, opening_balance)

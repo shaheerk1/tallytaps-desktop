@@ -1,8 +1,11 @@
-const { wrapIpcHandler } = require('./ipc-response');
+const { wrapIpcHandler, configureIpcSecurity } = require('./ipc-response');
 const { dialog } = require('electron');
-const { normalizeReceiptLanguage, getReceiptLabels } = require('../../../../packages/core/printing/receipt-localization.service');
+const { resolveReceiptSettings } = require('../../../../packages/core/printing/receipt-settings');
 
 function registerIpcHandlers(services) {
+  // Every protected channel resolves the signed-in user and workstation from
+  // the session token; nothing identity-bearing is taken from the screen.
+  configureIpcSecurity({ sessionContextService: services.sessionContextService, requestContext: services.requestContext });
   const requireSettingsManage = services.ipcAuthorizationService.requirePermission('settings.manage');
   const requireBillingCreate = services.ipcAuthorizationService.requirePermission('billing.create');
   const requireBillingView = services.ipcAuthorizationService.requirePermission('billing.view');
@@ -45,6 +48,7 @@ function registerIpcHandlers(services) {
   const requireExpensesView = services.ipcAuthorizationService.requirePermission('expenses.view');
   const requireExpensesCreate = services.ipcAuthorizationService.requirePermission('expenses.create');
   const requireExpensesAllocate = services.ipcAuthorizationService.requirePermission('expenses.allocate');
+  const requireExpensesReverse = services.ipcAuthorizationService.requirePermission('expenses.reverse');
   const requireRecurringExpenses = services.ipcAuthorizationService.requirePermission('expenses.recurring.manage');
   const requireLotCostingView = services.ipcAuthorizationService.requirePermission('lot-costing.view');
   const requireStakeholdersView = services.ipcAuthorizationService.requirePermission('stakeholders.view');
@@ -63,6 +67,14 @@ function registerIpcHandlers(services) {
   };
   const requireFieldInboxView = services.ipcAuthorizationService.requirePermission('field-inbox.view');
   const requireFieldInboxResolve = services.ipcAuthorizationService.requirePermission('field-inbox.resolve');
+
+  // The catalog is read while selling, receiving, reporting, and managing
+  // items. It is no longer open to a request without a signed-in session.
+  const requireCatalogRead = async (payload) => {
+    const permissions = payload?.actor?.permissions || [];
+    const readers = ['billing.view', 'billing.create', 'products.manage', 'receiving.view', 'receiving.manage', 'reports.view'];
+    if (!readers.some((key) => permissions.includes(key))) throw new Error('Permission denied: catalog access');
+  };
 
   // Billing auto-prints receipts (billing.create) and admins test printers
   // (settings.manage) — either permission is enough to send a document.
@@ -119,7 +131,8 @@ function registerIpcHandlers(services) {
   wrapIpcHandler('auth.login', async (payload) => {
     const loginResult = await services.authService.login(payload || {});
 
-    // Open a workstation session for the billing context
+    // Open a session on the workstation the user chose, and bind this sign-in to
+    // it: every later request made with this token comes from that workstation.
     try {
       const wsSession = await services.workstationService.openSession({
         userId: loginResult.user.id,
@@ -127,8 +140,15 @@ function registerIpcHandlers(services) {
         billingDate: payload?.billingDate || null,
         openingBalance: payload?.openingBalance || 0
       });
+      await services.authRepository.bindWorkstationSession(loginResult.token, wsSession.sessionId);
       loginResult.workstationSession = wsSession;
     } catch (wsError) {
+      // A cash shift left open on another workstation is a reason to refuse the
+      // sign-in, not to switch the user there silently.
+      if (wsError.code === 'SHIFT_OPEN_ON_ANOTHER_WORKSTATION') {
+        await services.authService.logout(loginResult.token);
+        throw wsError;
+      }
       console.warn('[auth.login] Could not open workstation session:', wsError.message);
       loginResult.workstationSession = null;
       loginResult.workstationWarning = wsError.message;
@@ -140,10 +160,14 @@ function registerIpcHandlers(services) {
   wrapIpcHandler('auth.session.validate', async (payload) => {
     const sessionResult = await services.authService.validateSession(payload?.token);
 
-    // Also fetch active workstation session
+    // Restore the workstation this sign-in is bound to -- never some other
+    // session the user may have open.
     try {
-      const wsSession = await services.workstationService.getActiveSession(sessionResult.user.id);
-      sessionResult.workstationSession = wsSession;
+      services.sessionContextService.invalidate(payload?.token);
+      const context = await services.sessionContextService.resolve(payload?.token);
+      sessionResult.workstationSession = context.workstation
+        ? await services.workstationService.getSession(context.workstation.workstationSessionId)
+        : null;
     } catch (_err) {
       sessionResult.workstationSession = null;
     }
@@ -161,6 +185,7 @@ function registerIpcHandlers(services) {
     } catch (_err) {
       // Non-fatal: session might already be expired
     }
+    services.sessionContextService.invalidate(payload?.token);
     return services.authService.logout(payload?.token);
   });
 
@@ -172,6 +197,15 @@ function registerIpcHandlers(services) {
   wrapIpcHandler('workstations.list', async () => {
     return services.workstationService.listWorkstations();
   });
+
+  // ── Locations ───────────────────────────────────────────────
+  // A location code is issued once and never reused. Managing the list is set-up
+  // work, done by whoever manages workstations.
+  const requireLocationsManage = services.ipcAuthorizationService.requirePermission('locations.manage');
+  wrapIpcHandler('locations.list', async () => services.workstationService.listLocations(), { authorize: requireLocationsManage });
+  wrapIpcHandler('locations.create', async (payload) => services.workstationService.createLocation(payload?.location || {}), { authorize: requireLocationsManage });
+  wrapIpcHandler('locations.update', async (payload) => services.workstationService.updateLocation(payload?.locCode, payload?.location || {}), { authorize: requireLocationsManage });
+  wrapIpcHandler('locations.retire', async (payload) => services.workstationService.retireLocation(payload?.locCode), { authorize: requireLocationsManage });
 
   wrapIpcHandler(
     'workstations.listAll',
@@ -205,22 +239,36 @@ function registerIpcHandlers(services) {
     { authorize: requireSettingsManage }
   );
 
-  wrapIpcHandler('workstations.activeSession', async (payload) => {
-    return services.workstationService.getActiveSession(payload?.userId);
-  });
+  // These act only for the signed-in user; the user is taken from the token.
+  wrapIpcHandler('workstations.activeSession', async (_payload, context) => {
+    return context.workstation ? services.workstationService.getSession(context.workstation.workstationSessionId) : null;
+  }, { session: true });
 
-  wrapIpcHandler('workstations.openSession', async (payload) => {
-    return services.workstationService.openSession(payload);
-  });
+  wrapIpcHandler('workstations.openSession', async (payload, context) => {
+    const session = await services.workstationService.openSession({
+      userId: context.user.id,
+      workstationId: payload?.targetWorkstationId || null,
+      billingDate: payload?.billingDate || null,
+      openingBalance: payload?.openingBalance || 0
+    });
+    await services.authRepository.bindWorkstationSession(context.token, session.sessionId);
+    services.sessionContextService.invalidate(context.token);
+    return session;
+  }, { session: true });
 
-  wrapIpcHandler('workstations.closeSession', async (payload) => {
-    return services.workstationService.closeSession(payload?.userId);
-  });
+  wrapIpcHandler('workstations.closeSession', async (_payload, context) => {
+    const result = await services.workstationService.closeSession(context.user.id);
+    services.sessionContextService.invalidate(context.token);
+    return result;
+  }, { session: true });
 
   wrapIpcHandler(
     'workstations.updateSessionDate',
-    async (payload) => {
-      return services.workstationService.updateSessionDate(payload?.userId, payload?.billingDate);
+    async (payload, context) => {
+      const updated = await services.workstationService.updateSessionDate(payload?.userId, payload?.billingDate);
+      // The business date is part of this sign-in's identity; drop the cached copy.
+      services.sessionContextService.invalidate(context.token);
+      return updated;
     },
     { authorize: requireBillingOrSettings }
   );
@@ -254,45 +302,15 @@ function registerIpcHandlers(services) {
   // Cashiers need receipt branding to print a bill, but should not gain access
   // to the complete settings groups. This intentionally exposes only public,
   // customer-facing display values and never requires settings.manage.
+  // It must run signed in: the store's name and address belong to the
+  // location, and an anonymous call would only see the shared values.
   wrapIpcHandler('settings.receipt.get', async () => {
     const [general, workstation] = await Promise.all([
       services.settingsService.getSettingsByCode('general'),
       services.settingsService.getSettingsByCode('workstation')
     ]);
-    const asText = (value) => String(value ?? '').trim();
-    const nonEmpty = (values) => values.map(asText).filter(Boolean);
-    const logo = workstation.receipt_logo && typeof workstation.receipt_logo === 'object'
-      ? workstation.receipt_logo
-      : {};
-
-    const storeName = asText(general.store_name) || asText(workstation.bill_header_1);
-    const tagline = asText(general.store_tagline) || asText(workstation.bill_header_2);
-    const addressLines = nonEmpty([
-      general.store_address_1 || workstation.store_address_1,
-      general.store_address_2 || workstation.store_address_2
-    ]);
-    const phone = asText(general.store_phone) || asText(workstation.store_phone);
-    const language = normalizeReceiptLanguage(asText(workstation.receipt_language));
-    const brandLines = new Set([storeName, tagline, ...addressLines, phone].filter(Boolean).map((line) => line.toLocaleLowerCase()));
-
-    return {
-      storeName,
-      tagline,
-      addressLines,
-      phone,
-      headers: nonEmpty([
-        workstation.bill_header_1,
-        workstation.bill_header_2,
-        workstation.bill_header_3
-      ]).filter((line) => !brandLines.has(line.toLocaleLowerCase())),
-      footers: nonEmpty([workstation.bill_footer_1, workstation.bill_footer_2]),
-      currencySymbol: asText(general.currency_symbol) || 'Rs.',
-      dateFormat: asText(general.date_format) || 'Y-m-d',
-      logoDataUrl: logo.enabled && typeof logo.dataUrl === 'string' ? logo.dataUrl : '',
-      language,
-      labels: getReceiptLabels(language)
-    };
-  });
+    return resolveReceiptSettings(general, workstation);
+  }, { session: true });
 
   // Cashiers need only the configured automatic invoice-output destination.
   // Keep the rest of the billing settings group behind settings.manage.
@@ -458,11 +476,12 @@ function registerIpcHandlers(services) {
   // ── Catalog ─────────────────────────────────────────────────
   wrapIpcHandler('catalog.products.list', async (payload) => {
     return services.catalogService.listProducts(payload?.options || {});
-  });
+  }, { authorize: requireCatalogRead });
 
+  // Signed in, like the list: an item belongs to one location's catalog.
   wrapIpcHandler('catalog.products.get', async (payload) => {
     return services.catalogService.getProduct(payload?.id);
-  });
+  }, { authorize: requireCatalogRead });
 
   wrapIpcHandler(
     'catalog.products.create',
@@ -491,7 +510,7 @@ function registerIpcHandlers(services) {
 
   wrapIpcHandler('catalog.products.categories', async () => {
     return services.catalogService.listProductCategories();
-  });
+  }, { authorize: requireCatalogRead });
 
   wrapIpcHandler('catalog.customers.list', async () => services.catalogService.listCustomers(), { authorize: requireCustomersView });
   wrapIpcHandler('catalog.customers.search', async (payload) => services.catalogService.searchCustomers(payload?.term || '', payload?.options || {}), { authorize: requireCustomersView });
@@ -527,6 +546,8 @@ function registerIpcHandlers(services) {
   wrapIpcHandler('lotCosting.lot.detail', async (payload) => services.lotCostingService.getLotCostDetail(payload || {}), { authorize: requireLotCostingView });
   wrapIpcHandler('lotCosting.reconcile', async (payload) => services.lotCostingService.reconcile(payload || {}), { authorize: requireLotCostingView });
   wrapIpcHandler('lotCosting.allocate', async (payload) => services.lotCostingService.allocateExpense(payload?.allocation || {}), { authorize: requireExpensesAllocate });
+  wrapIpcHandler('lotCosting.detach', async (payload) => services.lotCostingService.detachExpense(payload?.detachment || {}), { authorize: requireExpensesAllocate });
+  wrapIpcHandler('expenses.reverse', async (payload) => services.expenseService.reverseExpense(payload?.reversal || {}), { authorize: requireExpensesReverse });
   wrapIpcHandler('lotCosting.reallocate', async (payload) => services.lotCostingService.reallocate(payload?.reallocation || {}), { authorize: requireExpensesAllocate });
 
   // ── Stakeholders and equity ─────────────────────────────────

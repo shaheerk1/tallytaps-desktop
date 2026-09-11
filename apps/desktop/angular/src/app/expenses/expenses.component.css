@@ -241,3 +241,22 @@ button,input,select,textarea { font:inherit; }
 .recurring-list article.due { border-left:4px solid var(--ui-warning); }
 .recurring-list article.inactive { opacity:.62; }
 @media (max-width:800px) { .recurring-list article { grid-template-columns:1fr 1fr; } }
+
+/* ── Undoing mistakes ──────────────────────────────────── */
+.link.danger { color:var(--ui-danger); }
+.primary.danger { background:var(--ui-danger); box-shadow:0 5px 12px rgba(180,40,40,.18); }
+.toolbar label.toggle { display:flex; align-items:center; gap:6px; min-height:35px; text-transform:none; letter-spacing:0; font-size:11px; }
+.toolbar label.toggle input { min-height:auto; }
+.register-row.reversed { background:repeating-linear-gradient(135deg,transparent 0 10px,rgba(23,43,77,.025) 10px 20px); }
+.register-row.reversed > span:not(.voucher) strong,.register-row.reversed > b { color:var(--ui-ink-muted); text-decoration:line-through; }
+.register-row .reversed-note { color:var(--ui-danger); font-weight:700; }
+.effects { display:grid; gap:7px; margin:8px 0 4px; padding-left:20px; color:var(--ui-ink); font-size:12px; line-height:1.5; }
+.workspace-drawer h3 { margin:16px 0 4px; color:var(--ui-navy); font-size:13px; }
+.ledger-row .row-actions { display:flex; align-items:center; gap:4px; }
+.inline-reason { display:grid; gap:6px; padding:8px 0 10px; border-top:1px dashed var(--ui-border); }
+.inline-reason label { display:grid; gap:4px; color:var(--ui-ink-muted); font-size:10.5px; }
+.inline-reason input { min-height:32px; box-sizing:border-box; padding:6px 8px; border:1px solid var(--ui-border-strong); border-radius:var(--ui-radius-sm); }
+.inline-reason > div { display:flex; justify-content:flex-end; gap:6px; }
+
+/* A pocket with no owner cannot pay for anything yet; say so on its card. */
+.fund-card > footer.pocket-warning { background:#fff8ef; color:#8a4a10; font-weight:650; }

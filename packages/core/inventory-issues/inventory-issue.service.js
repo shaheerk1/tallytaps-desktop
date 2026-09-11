@@ -7,6 +7,8 @@
  * The issue is written first for that reason; the fee is then attached to the
  * lot the goods came from, so the cost lands on the right stock.
  */
+const requestContext = require('../security/request-context');
+
 function createInventoryIssueService({ inventoryIssueRepository, expenseRepository, lotCostingRepository }) {
   if (!inventoryIssueRepository) throw new Error('Inventory issue service requires its repository.');
 
@@ -14,7 +16,17 @@ function createInventoryIssueService({ inventoryIssueRepository, expenseReposito
     return inventoryIssueRepository.listIssues(filters || {});
   }
 
-  async function recordIssue(input = {}) {
+  async function recordIssue(rawInput = {}) {
+    // The load leaves the signed-in workstation's location on its business date,
+    // whatever the screen sent.
+    const origin = requestContext.resolveOrigin({ locCode: rawInput.locCode, macCode: rawInput.macCode, txnDate: rawInput.businessDate });
+    const input = {
+      ...rawInput,
+      locCode: origin.locCode,
+      macCode: origin.macCode,
+      businessDate: origin.txnDate,
+      userId: requestContext.resolveUserId(rawInput)
+    };
     const issue = await inventoryIssueRepository.createIssue(input);
 
     const charge = Math.round(Number(input.weighbridgeCharge || 0) * 100) / 100;

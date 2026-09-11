@@ -5,18 +5,18 @@
  * Taking more than the available claim is not silently blocked and not silently
  * allowed: it needs a named approver and a reason.
  */
+const requestContext = require('../security/request-context');
+
 function createStakeholderService({ stakeholderRepository }) {
   if (!stakeholderRepository) throw new Error('Stakeholder service requires a repository.');
 
   const text = (value) => String(value || '').trim();
   const money = (value) => Math.round(Number(value || 0) * 100) / 100;
 
+  // Inside an IPC request the origin is the signed-in workstation's own; what
+  // the screen sent is ignored. Outside one, the caller is trusted main-process code.
   function requireOrigin(input) {
-    const origin = {
-      locCode: text(input?.origin?.locCode ?? input?.locCode),
-      macCode: text(input?.origin?.macCode ?? input?.macCode),
-      txnDate: text(input?.origin?.txnDate ?? input?.txnDate).slice(0, 10)
-    };
+    const origin = requestContext.resolveOrigin(input || {});
     if (!origin.locCode || !origin.macCode || !/^\d{4}-\d{2}-\d{2}$/.test(origin.txnDate)) {
       throw new Error('An active workstation session is required to record this.');
     }

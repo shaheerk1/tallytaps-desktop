@@ -9,6 +9,8 @@ type WorkstationOption = {
   machine_code: string;
   name: string;
   status: string;
+  business_code?: string;
+  location_name?: string;
 };
 
 @Component({
@@ -127,7 +129,7 @@ export class LoginComponent implements OnInit {
         const landing = this.shellMenu.landingRoute || '/';
         await this.router.navigate([landing]);
       } else {
-        this.error = 'Invalid username or password.';
+        this.error = result.error || 'Invalid username or password.';
       }
     } catch (err: unknown) {
       this.error = err instanceof Error ? err.message : 'Login failed. Please try again.';

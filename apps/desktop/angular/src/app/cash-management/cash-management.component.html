@@ -86,15 +86,22 @@
       <h2>Shift Activity</h2>
       <p>Automatic entries are corrected from their sale, refund, advance, or settlement. Manually entered cash can be corrected here until this shift closes.</p>
       <div *ngFor="let movement of shift.movements" class="movement-row">
+        <ng-container *ngIf="removingMovementId === movement.id">
+          <span><b>Remove this entry?</b><small>{{ movement.direction === 'out' ? '-' : '+' }}{{ movement.amount | number:'1.2-2' }} · {{ movement.reason || movement.movement_type }}</small></span>
+          <input [(ngModel)]="removeReason" placeholder="Why is it being removed?" aria-label="Removal reason" (keyup.enter)="confirmMovementRemove()" />
+          <span class="movement-actions"><button type="button" class="danger-link" (click)="confirmMovementRemove()">Remove entry</button><button type="button" (click)="cancelMovementRemove()">Cancel</button></span>
+        </ng-container>
+        <ng-container *ngIf="removingMovementId !== movement.id">
         <ng-container *ngIf="editingMovementId !== movement.id; else editMovement">
           <span><b>{{ movement.direction === 'in' ? 'Cash in' : 'Cash out' }}</b><small>{{ movement.movement_type }}</small></span>
           <span>{{ movement.reason || 'System transaction' }}</span>
           <strong [class.out]="movement.direction === 'out'">{{ movement.direction === 'out' ? '-' : '+' }}{{ movement.amount | number:'1.2-2' }}</strong>
           <span class="movement-actions" *ngIf="movement.editable && canCorrectMovements">
             <button type="button" (click)="beginMovementEdit(movement)">Edit</button>
-            <button type="button" class="danger-link" (click)="removeMovement(movement)">Remove</button>
+            <button type="button" class="danger-link" (click)="beginMovementRemove(movement)">Remove</button>
           </span>
           <small class="source-lock" *ngIf="!movement.editable && movement.reference_type">Linked to {{ movement.reference_type }}</small>
+        </ng-container>
         </ng-container>
         <ng-template #editMovement>
           <select [(ngModel)]="editDirection"><option value="in">Cash coming in</option><option value="out">Cash going out</option></select>

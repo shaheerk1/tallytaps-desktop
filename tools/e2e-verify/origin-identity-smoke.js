@@ -48,8 +48,9 @@ async function main() {
         );
         const workstation = context ? { id: context.id, location_code: context.location_code, machine_code: context.machine_code } : null;
         const session = context ? { id: context.session_id, user_id: context.user_id, billing_date: context.billing_date } : null;
-        const [[supplier]] = await connection.execute('SELECT id, supplier_code FROM suppliers WHERE is_active = 1 ORDER BY id LIMIT 1');
-        const [[product]] = await connection.execute('SELECT id, sku, name, unit_price, dual_uom_enabled, handling_uom, base_uom FROM products WHERE is_active = 1 ORDER BY id LIMIT 1');
+        // Items and suppliers belong to one location; use the workstation's own.
+        const [[supplier]] = await connection.execute('SELECT id, supplier_code FROM suppliers WHERE is_active = 1 AND loc_code = ? ORDER BY id LIMIT 1', [context?.location_code || '']);
+        const [[product]] = await connection.execute('SELECT id, sku, name, unit_price, dual_uom_enabled, handling_uom, base_uom FROM products WHERE is_active = 1 AND loc_code = ? ORDER BY id LIMIT 1', [context?.location_code || '']);
         if (!workstation || !session || !supplier || !product) throw new Error('Smoke test requires a workstation session, supplier, and active product.');
         const locCode = workstation.location_code;
         const macCode = workstation.machine_code;

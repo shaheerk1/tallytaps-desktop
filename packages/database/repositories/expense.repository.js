@@ -1,3 +1,4 @@
+const requestContext = require('../../core/security/request-context');
 /**
  * Funds and expenses.
  *
@@ -19,7 +20,7 @@
  */
 const rules = require('../../core/accounting/posting-rules');
 
-function createExpenseRepository({ database, documentSequenceRepository, businessDayRepository, journalRepository }) {
+function createExpenseRepository({ database, documentSequenceRepository, businessDayRepository, journalRepository, lotCostingRepository = null }) {
   if (!database) throw new Error('Expense repository requires a database instance.');
   if (!documentSequenceRepository || !businessDayRepository) {
     throw new Error('Expenses require document numbering and business-day control.');
@@ -157,6 +158,11 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
       await connection.beginTransaction();
       try {
         const kind = text(input.fundKind);
+        // A partner's pocket is created with the partner, so it always has an
+        // owner. Existing pockets can still be renamed here.
+        if (kind === 'stakeholder' && !Number(input.id || 0)) {
+          throw new Error('A partner pocket is added from Partners, so it belongs to that person. Open Money, then Partners, then Add partner.');
+        }
         if (!['cash_safe', 'bank', 'stakeholder'].includes(kind)) {
           throw new Error('A fund can be a cash safe, a bank account, or a stakeholder pocket. Drawer funds are created with their workstation.');
         }
@@ -212,15 +218,22 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
       name: row.name,
       defaultTreatment: row.default_treatment,
       helpText: row.help_text || null,
+      locationCode: row.loc_code || null,
+      isShared: row.loc_code == null,
       isActive: !!row.is_active,
       sortOrder: Number(row.sort_order || 0)
     };
   }
 
-  async function listCategories({ includeInactive = false } = {}) {
+  // A location sees the shared categories plus the ones it added itself.
+  async function listCategories({ includeInactive = false, locCode = null } = {}) {
+    const scope = requestContext.scopedLocation({ locCode });
     return database.withConnection(async (connection) => {
       const [rows] = await connection.execute(
-        `SELECT * FROM expense_categories ${includeInactive ? '' : 'WHERE is_active = 1'} ORDER BY sort_order, name, id`
+        `SELECT * FROM expense_categories
+         WHERE (loc_code IS NULL OR ? IS NULL OR loc_code = ?) ${includeInactive ? '' : 'AND is_active = 1'}
+         ORDER BY sort_order, name, id`,
+        [scope, scope]
       );
       return rows.map(mapCategory);
     });
@@ -238,7 +251,16 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
       const isActive = input.isActive === false ? 0 : 1;
       const sortOrder = Number(input.sortOrder || 100);
       const id = Number(input.id || 0);
+      const scope = requestContext.scopedLocation(input);
       if (id) {
+        // A location changes only its own categories. The shared ones are the
+        // same for every location, so no single location may rewrite them.
+        const [owned] = await connection.execute(
+          'SELECT loc_code FROM expense_categories WHERE id = ? AND (? IS NULL OR loc_code = ?)', [id, scope, scope]
+        );
+        if (!owned.length) {
+          throw new Error('This category is shared by every location and cannot be changed here. Add a category of your own instead.');
+        }
         await connection.execute(
           'UPDATE expense_categories SET name = ?, default_treatment = ?, help_text = ?, is_active = ?, sort_order = ? WHERE id = ?',
           [name, treatment, helpText, isActive, sortOrder, id]
@@ -249,9 +271,9 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
       const code = (text(input.categoryCode) || name).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 80);
       if (!code) throw new Error('Give the category a name using letters or numbers.');
       const [result] = await connection.execute(
-        `INSERT INTO expense_categories (category_code, name, default_treatment, help_text, is_active, sort_order)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [code, name, treatment, helpText, isActive, sortOrder]
+        `INSERT INTO expense_categories (loc_code, category_code, name, default_treatment, help_text, is_active, sort_order)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [scope, code, name, treatment, helpText, isActive, sortOrder]
       );
       const [rows] = await connection.execute('SELECT * FROM expense_categories WHERE id = ?', [result.insertId]);
       return mapCategory(rows[0]);
@@ -382,6 +404,8 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
       reference: row.reference || null,
       reason: row.reason,
       status: row.status,
+      voidReason: row.void_reason || null,
+      voidedAt: row.voided_at || null,
       allocationTarget: row.allocation_target,
       allocatedTotal: money(row.allocated_total),
       unallocatedTotal: money(money(row.amount) - money(row.allocated_total)),
@@ -424,7 +448,7 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
         const fund = await lockFund(connection, input.fundAccountId, origin.locCode);
         const stakeholder = fund.fundKind === 'stakeholder' ? await stakeholderForFund(connection, fund.id) : null;
         if (fund.fundKind === 'stakeholder' && !stakeholder) {
-          throw new Error(`${fund.name} is a stakeholder pocket that is not linked to anyone. Link it in Stakeholders first.`);
+          throw new Error(`${fund.name} is a partner pocket that is not linked to anyone yet. Open Money, then Partners, then Add partner, and choose ${fund.name} under Their pocket.`);
         }
         if (stakeholder && !stakeholder.isActive) throw new Error(`${stakeholder.displayName} is not active.`);
 
@@ -515,6 +539,170 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
     });
   }
 
+  /**
+   * Reverses a mistaken expense. Nothing is deleted: every record the expense
+   * created gets its opposite, in one transaction --
+   *
+   *   * any cost it put on goods is taken back off (and any part already
+   *     recognised as sold is reversed with it);
+   *   * the money goes back: a till payment is voided inside its still-open
+   *     shift, and any other fund receives a matching "in" movement;
+   *   * a partner who paid it personally has their claim reduced again;
+   *   * the journal gets the exact mirror of the original posting;
+   *   * a recurring cost it settled becomes due again.
+   *
+   * The expense is then marked void with who, when, and why. A till payment
+   * whose shift was already closed and counted is refused: putting cash back
+   * would make that count wrong.
+   */
+  async function reverseExpense(input) {
+    const origin = { locCode: text(input.locCode), macCode: text(input.macCode), txnDate: dateOnly(input.txnDate) };
+    return database.withConnection(async (connection) => {
+      await connection.beginTransaction();
+      try {
+        const reason = text(input.reason);
+        if (!reason) throw new Error('Write why this expense is being reversed.');
+        const [rows] = await connection.execute(
+          `SELECT e.*, c.name AS category_name, e.treatment_snapshot AS default_treatment, c.id AS category_id
+           FROM expense_entries e JOIN expense_categories c ON c.id = e.expense_category_id
+           WHERE e.id = ? FOR UPDATE`, [Number(input.expenseEntryId)]
+        );
+        const expense = rows[0];
+        if (!expense) throw new Error('This expense no longer exists.');
+        if (expense.loc_code !== origin.locCode) throw new Error('This expense belongs to another location.');
+        if (expense.status !== 'recorded') throw new Error(`${expense.expense_number} has already been reversed.`);
+        const amount = money(expense.amount);
+
+        const day = await businessDayRepository.assertOpenWithConnection(connection, {
+          locationCode: origin.locCode, businessDate: origin.txnDate
+        });
+        const reversalNo = await documentSequenceRepository.allocateWithConnection(connection, { documentType: 'expense_reversal', ...origin });
+        const reversalNumber = `EXR-${origin.locCode}-${origin.macCode}-${origin.txnDate.replace(/-/g, '')}-${String(reversalNo).padStart(6, '0')}`;
+        const note = `Reversed ${expense.expense_number}: ${reason}`;
+
+        // 1. Off the goods first, so the cost leaves inventory before the expense goes.
+        let detached = [];
+        if (money(expense.allocated_total) > 0.005) {
+          if (!lotCostingRepository) throw new Error('This build cannot take a cost off goods, so the expense cannot be reversed here.');
+          detached = await lotCostingRepository.detachExpenseWithConnection(connection, {
+            expense, reason: note, day, origin, userId: input.userId
+          });
+        }
+
+        // 2. The money goes back where it came from.
+        let fundMovementId = null;
+        let fundName = null;
+        if (expense.cash_movement_id) {
+          const [movements] = await connection.execute(
+            `SELECT m.*, s.status AS shift_status FROM cash_movements m
+             JOIN cash_shifts s ON s.id = m.cash_shift_id WHERE m.id = ? FOR UPDATE`, [expense.cash_movement_id]
+          );
+          const movement = movements[0];
+          if (!movement || movement.shift_status !== 'open') {
+            throw new Error('This expense was paid from the till in a shift that has since been closed and counted. Putting the cash back now would make that count wrong, so ask a manager to record a cash correction instead.');
+          }
+          if (movement.status === 'active') {
+            const [[sequence]] = await connection.execute(
+              'SELECT COALESCE(MAX(event_no), 0) AS event_no FROM cash_movement_events WHERE cash_movement_id = ?', [movement.id]
+            );
+            await connection.execute(
+              `INSERT INTO cash_movement_events
+                 (cash_movement_id, event_no, action, reason, before_state, after_state, created_by)
+               VALUES (?, ?, 'voided', ?, CAST(? AS JSON), NULL, ?)`,
+              [movement.id, Number(sequence.event_no || 0) + 1, note.slice(0, 255),
+                JSON.stringify({ movementType: movement.movement_type, direction: movement.direction, amount: money(movement.amount), reason: movement.reason, status: movement.status }),
+                input.userId]
+            );
+            await connection.execute(
+              "UPDATE cash_movements SET status = 'void', voided_at = NOW(), voided_by = ?, void_reason = ? WHERE id = ?",
+              [input.userId, note.slice(0, 255), movement.id]
+            );
+          }
+          fundName = 'the till';
+        } else if (expense.fund_movement_id) {
+          const [funds] = await connection.execute('SELECT id, name FROM fund_accounts WHERE id = ? FOR UPDATE', [expense.fund_account_id]);
+          fundName = funds[0] ? funds[0].name : 'its fund';
+          fundMovementId = await insertFundMovement(connection, {
+            fundAccountId: expense.fund_account_id, businessDayId: day.id, origin,
+            documentType: 'expense_reversal', documentNo: reversalNo, entryNo: 1,
+            direction: 'in', amount, sourceType: 'expense_reversal', sourceId: reversalNumber,
+            reason: note.slice(0, 255), userId: input.userId,
+            metadata: { reversalNumber, expenseNumber: expense.expense_number }
+          });
+        }
+
+        // 3. A partner who paid it personally is no longer owed it.
+        const [borne] = await connection.execute(
+          `SELECT * FROM stakeholder_ledger_entries
+           WHERE expense_entry_id = ? AND entry_type = 'expense_borne' AND amount > 0 ORDER BY id LIMIT 1`, [expense.id]
+        );
+        let stakeholderName = null;
+        if (borne[0]) {
+          const entryNo = await documentSequenceRepository.allocateWithConnection(connection, { documentType: 'stakeholder_ledger', ...origin });
+          const entryNumber = `SLE-${origin.locCode}-${origin.macCode}-${origin.txnDate.replace(/-/g, '')}-${String(entryNo).padStart(6, '0')}`;
+          await connection.execute(
+            `INSERT INTO stakeholder_ledger_entries
+               (stakeholder_id, business_day_id, loc_code, mac_code, txn_date,
+                document_type, document_no, entry_no, entry_number, entry_type, balance_bucket, amount,
+                fund_account_id, expense_entry_id, fund_movement_id, reason, created_by, metadata)
+             VALUES (?, ?, ?, ?, ?, 'expense_reversal', ?, 1, ?, 'expense_borne', ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON))`,
+            [borne[0].stakeholder_id, day.id, origin.locCode, origin.macCode, origin.txnDate,
+              reversalNo, entryNumber, borne[0].balance_bucket, money(-money(borne[0].amount)),
+              expense.fund_account_id, expense.id, fundMovementId, note.slice(0, 255), input.userId,
+              JSON.stringify({ reversalNumber, reverses: borne[0].entry_number })]
+          );
+          const [[person]] = await connection.execute('SELECT display_name FROM stakeholders WHERE id = ?', [borne[0].stakeholder_id]);
+          stakeholderName = person ? person.display_name : null;
+        }
+
+        // 4. The journal gets the mirror of the original posting.
+        await journalRepository.reverseWithConnection(connection, {
+          sourceType: 'expense', sourceId: String(expense.id),
+          reversalSourceType: 'expense_reversal', reversalSourceId: String(expense.id),
+          businessDayId: day.id, ...origin, documentType: 'expense_reversal', documentNo: reversalNo,
+          narration: note.slice(0, 255), userId: input.userId,
+          metadata: { reversalNumber, expenseNumber: expense.expense_number }
+        });
+
+        // 5. A recurring cost this settled becomes due again. The run is only a
+        //    reminder link; the voided expense keeps the full history.
+        const [runs] = await connection.execute(
+          `SELECT r.id, r.due_date, t.id AS template_id, t.next_due_date, t.cadence, t.interval_count
+           FROM recurring_expense_runs r JOIN recurring_expense_templates t ON t.id = r.recurring_expense_template_id
+           WHERE r.expense_entry_id = ? FOR UPDATE`, [expense.id]
+        );
+        for (const run of runs) {
+          const due = dateOnly(run.due_date);
+          if (dateOnly(run.next_due_date) === nextRecurringDate(due, run.cadence, Number(run.interval_count))) {
+            await connection.execute(
+              'UPDATE recurring_expense_templates SET next_due_date = ?, is_active = 1, updated_by = ? WHERE id = ?',
+              [due, input.userId, run.template_id]
+            );
+          }
+          await connection.execute('DELETE FROM recurring_expense_runs WHERE id = ?', [run.id]);
+        }
+
+        // 6. The expense itself is kept, marked void.
+        await connection.execute(
+          `UPDATE expense_entries SET status = 'void', voided_at = NOW(), voided_by = ?, void_reason = ?,
+             metadata = JSON_SET(COALESCE(metadata, JSON_OBJECT()), '$.reversalNumber', ?)
+           WHERE id = ?`,
+          [input.userId, reason.slice(0, 255), reversalNumber, expense.id]
+        );
+        await connection.commit();
+        return {
+          expenseNumber: expense.expense_number,
+          reversalNumber,
+          amount,
+          returnedTo: fundName,
+          stakeholderName,
+          detachedFromLots: detached.map((row) => row.lotCode),
+          recurringDueAgain: runs.length > 0
+        };
+      } catch (error) { await connection.rollback(); throw error; }
+    });
+  }
+
   async function listExpenses(filters = {}) {
     return database.withConnection(async (connection) => {
       const clauses = ['e.loc_code = ?'];
@@ -540,9 +728,9 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
          JOIN users u ON u.id = e.created_by
          LEFT JOIN goods_receipts g ON g.id = e.goods_receipt_id
          LEFT JOIN stakeholders sh ON sh.fund_account_id = f.id
-         WHERE ${where} AND e.status = 'recorded'
+         WHERE ${where} AND (e.status = 'recorded' OR ? = 1)
          ORDER BY e.txn_date DESC, e.expense_no DESC, e.id DESC
-         LIMIT ${limit}`, params
+         LIMIT ${limit}`, [...params, filters.includeReversed ? 1 : 0]
       );
       const [byCategory] = await connection.query(
          `SELECT c.id, c.name, e.treatment_snapshot, COUNT(*) AS entry_count, COALESCE(SUM(e.amount), 0) AS total
@@ -557,13 +745,15 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
          GROUP BY f.id, f.name, f.fund_kind ORDER BY total DESC`, params
       );
       const rowsOut = rows.map(mapExpense);
+      // Reversed expenses may be shown, struck through, but never counted.
+      const counted = rowsOut.filter((row) => row.status === 'recorded');
       return {
         rows: rowsOut,
-        total: money(rowsOut.reduce((sum, row) => sum + row.amount, 0)),
-        goodsTotal: money(rowsOut.filter((row) => row.categoryTreatment === 'lot_cost').reduce((sum, row) => sum + row.amount, 0)),
-        overheadTotal: money(rowsOut.filter((row) => row.categoryTreatment !== 'lot_cost').reduce((sum, row) => sum + row.amount, 0)),
-        attachedTotal: money(rowsOut.reduce((sum, row) => sum + row.allocatedTotal, 0)),
-        unattachedTotal: money(rowsOut.reduce((sum, row) => sum + row.unallocatedTotal, 0)),
+        total: money(counted.reduce((sum, row) => sum + row.amount, 0)),
+        goodsTotal: money(counted.filter((row) => row.categoryTreatment === 'lot_cost').reduce((sum, row) => sum + row.amount, 0)),
+        overheadTotal: money(counted.filter((row) => row.categoryTreatment !== 'lot_cost').reduce((sum, row) => sum + row.amount, 0)),
+        attachedTotal: money(counted.reduce((sum, row) => sum + row.allocatedTotal, 0)),
+        unattachedTotal: money(counted.reduce((sum, row) => sum + row.unallocatedTotal, 0)),
         byCategory: byCategory.map((row) => ({
           id: Number(row.id), name: row.name, treatment: row.treatment_snapshot,
           entryCount: Number(row.entry_count), total: money(row.total)
@@ -847,6 +1037,7 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
     listCategories,
     saveCategory,
     recordExpense,
+    reverseExpense,
     listExpenses,
     listRecurringExpenses,
     saveRecurringExpense,
