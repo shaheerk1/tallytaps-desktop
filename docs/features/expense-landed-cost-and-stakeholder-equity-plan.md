@@ -532,6 +532,34 @@ These were settled during Phases 2 to 4 and are part of the contract now.
    and counts as a general cost until it is attached again.
    `npm run verify:expense-reversal` covers both.
 
+10. **Money may be recorded on the day it actually happened** (migration 108,
+    permission `money.backdate`). People remember late: a transfer made last
+    week, a lorry a partner paid for on Monday that we hear about on Friday.
+    The rules live in one place, `packages/core/security/entry-date.js`, and
+    apply to expenses, transfers and partner money alike:
+    - only backwards, never into the future;
+    - only a day this location actually opened (`business_days` row exists);
+      the day may be closed, because nothing recorded this way belongs to that
+      day's counted cash;
+    - **never money paid from a till** -- that drawer was counted with its
+      shift, so putting cash into a past shift would falsify a signed-off count;
+    - never inside a closed accounting period, which still needs the deliberate
+      "reopen period" act;
+    - always with a reason, kept with the entry along with the day it was typed
+      in, so a late entry is never hidden.
+
+    The entry is stamped with the day it happened -- its voucher number, fund
+    movement and journal posting all carry that date -- so the books and the
+    register agree. The screen cannot ask for a date on its own: the gate
+    overwrites `origin`, and the server decides from `paidOn` plus permission.
+    `npm run verify:money-backdating` covers all of it.
+11. **Both sides of a fund transfer are one document** (migration 109). The
+    idempotency key added in 097, `(source_type, source_id)` on
+    `fund_movements`, could not hold the two sides of a transfer, so any
+    transfer between two non-till funds (safe to bank, safe to a pocket) failed
+    on its second side. The key now includes `entry_no`, which already
+    distinguishes the giving side from the receiving one.
+
 ## Explicit Deferrals
 
 Not in the first release:

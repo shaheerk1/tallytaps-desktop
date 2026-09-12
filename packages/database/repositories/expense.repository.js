@@ -406,6 +406,7 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
       status: row.status,
       voidReason: row.void_reason || null,
       voidedAt: row.voided_at || null,
+      backdated: json(row.metadata)?.backdated || null,
       allocationTarget: row.allocation_target,
       allocatedTotal: money(row.allocated_total),
       unallocatedTotal: money(money(row.amount) - money(row.allocated_total)),
@@ -436,8 +437,11 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
         const reason = text(input.reason);
         if (!reason) throw new Error('Write what this money was for.');
 
-        const day = await businessDayRepository.assertOpenWithConnection(connection, {
-          locationCode: origin.locCode, businessDate: origin.txnDate
+        // Remembered late: the entry is dated the day it happened, which may be
+        // a day already closed. See packages/core/security/entry-date.js.
+        const backdate = input.backdate || null;
+        const day = await businessDayRepository.assertPostableWithConnection(connection, {
+          locationCode: origin.locCode, businessDate: origin.txnDate, allowClosed: Boolean(backdate)
         });
         const [categories] = await connection.execute(
           'SELECT * FROM expense_categories WHERE id = ? LIMIT 1', [Number(input.expenseCategoryId)]
@@ -446,6 +450,11 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
         if (!category || !category.is_active) throw new Error('Choose an active expense category.');
 
         const fund = await lockFund(connection, input.fundAccountId, origin.locCode);
+        // A till payment belongs to the shift that counted it, so it can only be
+        // recorded on the day it was paid.
+        if (backdate && fund.fundKind === 'pos_drawer') {
+          throw new Error(`${fund.name} is a till. Cash from a till is counted with its shift, so it cannot be recorded on an earlier date. Record it as today's payment, or ask a manager to correct that day's cash.`);
+        }
         const stakeholder = fund.fundKind === 'stakeholder' ? await stakeholderForFund(connection, fund.id) : null;
         if (fund.fundKind === 'stakeholder' && !stakeholder) {
           throw new Error(`${fund.name} is a partner pocket that is not linked to anyone yet. Open Money, then Partners, then Add partner, and choose ${fund.name} under Their pocket.`);
@@ -497,7 +506,7 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
             origin.locCode, origin.macCode, origin.txnDate, expenseNo, expenseNumber, requestId, amount,
             text(input.payee) || null, text(input.reference) || null, reason,
             ledger.cashMovementId, ledger.fundMovementId, input.userId,
-            JSON.stringify({ categoryCode: category.category_code, treatment: category.default_treatment, fundCode: fund.fundCode })]
+            JSON.stringify({ categoryCode: category.category_code, treatment: category.default_treatment, fundCode: fund.fundCode, ...(backdate ? { backdated: backdate } : {}) })]
         );
 
         let borneEntryNumber = null;
@@ -910,8 +919,9 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
         if (!fromId || !toId) throw new Error('Choose where the money leaves from and where it goes.');
         if (fromId === toId) throw new Error('Choose two different funds.');
 
-        const day = await businessDayRepository.assertOpenWithConnection(connection, {
-          locationCode: origin.locCode, businessDate: origin.txnDate
+        const backdate = input.backdate || null;
+        const day = await businessDayRepository.assertPostableWithConnection(connection, {
+          locationCode: origin.locCode, businessDate: origin.txnDate, allowClosed: Boolean(backdate)
         });
         // Locked in id order so two simultaneous transfers cannot deadlock.
         const [firstId, secondId] = fromId < toId ? [fromId, toId] : [toId, fromId];
@@ -919,6 +929,16 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
         const second = await lockFund(connection, secondId, origin.locCode);
         const fromFund = first.id === fromId ? first : second;
         const toFund = first.id === toId ? first : second;
+        // A till payment belongs to the shift that counted it, so it can only be
+        // recorded on the day it was paid.
+        if (backdate && fromFund.fundKind === 'pos_drawer') {
+          throw new Error(`${fromFund.name} is a till. Cash from a till is counted with its shift, so it cannot be recorded on an earlier date. Record it as today's payment, or ask a manager to correct that day's cash.`);
+        }
+        // A till payment belongs to the shift that counted it, so it can only be
+        // recorded on the day it was paid.
+        if (backdate && toFund.fundKind === 'pos_drawer') {
+          throw new Error(`${toFund.name} is a till. Cash from a till is counted with its shift, so it cannot be recorded on an earlier date. Record it as today's payment, or ask a manager to correct that day's cash.`);
+        }
         const fromStakeholder = fromFund.fundKind === 'stakeholder' ? await stakeholderForFund(connection, fromFund.id) : null;
         const toStakeholder = toFund.fundKind === 'stakeholder' ? await stakeholderForFund(connection, toFund.id) : null;
 
@@ -948,7 +968,7 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
           [day.id, fromFund.id, toFund.id, out.cashShiftId || into.cashShiftId,
             origin.locCode, origin.macCode, origin.txnDate, transferNo, transferNumber, amount, reason,
             out.cashMovementId, out.fundMovementId, into.cashMovementId, into.fundMovementId,
-            input.userId, JSON.stringify({ transferNumber })]
+            input.userId, JSON.stringify({ transferNumber, ...(backdate ? { backdated: backdate } : {}) })]
         );
 
         await journalRepository.postWithConnection(connection, {

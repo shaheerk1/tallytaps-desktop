@@ -138,6 +138,7 @@
             <strong>{{ row.expenseNumber }}</strong>
             <small>{{ formatDate(row.date) }} · {{ row.userName }}</small>
             <small class="reversed-note" *ngIf="row.status !== 'recorded'" [title]="row.voidReason || ''">Reversed: {{ row.voidReason }}</small>
+            <small class="late-note" *ngIf="row.backdated" [title]="row.backdated.reason">Entered {{ formatDate(row.backdated.enteredOn) }} · {{ row.backdated.reason }}</small>
           </span>
           <span>
             <strong>{{ row.categoryName }}</strong>
@@ -451,6 +452,23 @@
         <input type="text" [(ngModel)]="expenseDraft.reason" placeholder="Onion lorry from Dambulla, 12 bags" />
         <small>Write it so it still makes sense to you in three months.</small>
       </label>
+      <ng-container *ngIf="canBackdate">
+        <label>
+          <span>When did this happen?</span>
+          <input type="date" [(ngModel)]="expenseDraft.paidOn" [max]="currentBusinessDate" [disabled]="!canDateFund(draftFund)" />
+          <small>Leave it on today unless you are recording something from an earlier day.</small>
+        </label>
+        <label class="wide" *ngIf="isEarlierDate(expenseDraft)">
+          <span>Why is it being recorded now?</span>
+          <input type="text" [(ngModel)]="expenseDraft.paidOnReason" placeholder="The driver only gave the bill today" />
+        </label>
+        <p class="guidance wide" *ngIf="isEarlierDate(expenseDraft)">
+          This cost will count against the day it was paid, not today. It will be recorded on the day you chose, and the register will show that it was entered today, by you, for this reason.
+        </p>
+        <p class="guidance warn wide" *ngIf="!canDateFund(draftFund) && expenseDraft.paidOn !== currentBusinessDate">
+          Money paid from a till belongs to the shift that counted it, so it can only be recorded on today's date.
+        </p>
+      </ng-container>
     </div>
     <div class="drawer-actions">
       <button class="secondary" (click)="closeAll()">Cancel</button>
@@ -694,6 +712,20 @@
         <span>Reason</span>
         <input type="text" [(ngModel)]="partnerMove.reason" placeholder="Opening capital for the season" />
       </label>
+      <ng-container *ngIf="canBackdate && partnerMove.mode !== 'profit_share'">
+        <label>
+          <span>When did this happen?</span>
+          <input type="date" [(ngModel)]="partnerMove.paidOn" [max]="currentBusinessDate" [disabled]="!canDateFund(partnerMoveFund)" />
+          <small>Leave it on today unless the money moved on an earlier day.</small>
+        </label>
+        <label class="wide" *ngIf="isEarlierDate(partnerMove)">
+          <span>Why is it being recorded now?</span>
+          <input type="text" [(ngModel)]="partnerMove.paidOnReason" placeholder="He told us about it only today" />
+        </label>
+        <p class="guidance warn wide" *ngIf="!canDateFund(partnerMoveFund) && partnerMove.paidOn !== currentBusinessDate">
+          Money through a till belongs to the shift that counted it. Choose the safe or a bank account to record an earlier day.
+        </p>
+      </ng-container>
       <ng-container *ngIf="partnerMoveOverLimit">
         <p class="guidance warn wide">
           This is more than the correct balance for this action. An authorised excess-drawing approval and a clear reason are required.
@@ -846,6 +878,24 @@
       </label>
       <label><span>Amount</span><input type="number" min="0" step="0.01" [(ngModel)]="transferDraft.amount" placeholder="0.00" /></label>
       <label><span>Reason</span><input type="text" [(ngModel)]="transferDraft.reason" placeholder="End of day drop to the safe" /></label>
+      <ng-container *ngIf="canBackdate">
+        <label>
+          <span>When did this happen?</span>
+          <input type="date" [(ngModel)]="transferDraft.paidOn" [max]="currentBusinessDate" [disabled]="!canDateFund(transferFrom) && canDateFund(transferTo)" />
+          <small>Leave it on today unless you are recording something from an earlier day.</small>
+        </label>
+        <label class="wide" *ngIf="isEarlierDate(transferDraft)">
+          <span>Why is it being recorded now?</span>
+          <input type="text" [(ngModel)]="transferDraft.paidOnReason" placeholder="The driver only gave the bill today" />
+        </label>
+        <p class="guidance wide" *ngIf="isEarlierDate(transferDraft)">
+          Both funds will show the money moving on the day you chose. It will be recorded on the day you chose, and the register will show that it was entered today, by you, for this reason.
+        </p>
+        <p class="guidance warn wide" *ngIf="!canDateFund(transferFrom) && canDateFund(transferTo) && transferDraft.paidOn !== currentBusinessDate">
+          Money paid from a till belongs to the shift that counted it, so it can only be recorded on today's date.
+        </p>
+      </ng-container>
+
       <p class="guidance warn wide" *ngIf="transferShortfall">{{ transferFrom?.name }} holds only {{ formatMoney(transferFrom?.balance) }}.</p>
     </div>
     <div class="drawer-actions">

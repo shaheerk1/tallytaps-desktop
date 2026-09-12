@@ -6,6 +6,7 @@
  * allowed: it needs a named approver and a reason.
  */
 const requestContext = require('../security/request-context');
+const { resolveEntryDate, backdateMetadata } = require('../security/entry-date');
 
 function createStakeholderService({ stakeholderRepository }) {
   if (!stakeholderRepository) throw new Error('Stakeholder service requires a repository.');
@@ -30,8 +31,11 @@ function createStakeholderService({ stakeholderRepository }) {
     if (!Number(input.fundAccountId)) throw new Error('Choose which fund the money moves through.');
     if (money(input.amount) <= 0) throw new Error('The amount must be greater than zero.');
     if (!text(input.reason)) throw new Error('Write why this money is moving.');
+    const entryDate = resolveEntryDate(input, origin);
     return {
       ...origin,
+      txnDate: entryDate.txnDate,
+      backdate: backdateMetadata(entryDate),
       userId: Number(input.userId),
       stakeholderId: Number(input.stakeholderId),
       fundAccountId: Number(input.fundAccountId),

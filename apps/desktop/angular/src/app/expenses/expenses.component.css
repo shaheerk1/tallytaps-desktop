@@ -250,6 +250,8 @@ button,input,select,textarea { font:inherit; }
 .register-row.reversed { background:repeating-linear-gradient(135deg,transparent 0 10px,rgba(23,43,77,.025) 10px 20px); }
 .register-row.reversed > span:not(.voucher) strong,.register-row.reversed > b { color:var(--ui-ink-muted); text-decoration:line-through; }
 .register-row .reversed-note { color:var(--ui-danger); font-weight:700; }
+/* An entry recorded for an earlier day says so, quietly but plainly. */
+.register-row .late-note { color:#8a4a10; font-weight:700; }
 .effects { display:grid; gap:7px; margin:8px 0 4px; padding-left:20px; color:var(--ui-ink); font-size:12px; line-height:1.5; }
 .workspace-drawer h3 { margin:16px 0 4px; color:var(--ui-navy); font-size:13px; }
 .ledger-row .row-actions { display:flex; align-items:center; gap:4px; }

@@ -79,6 +79,27 @@ function createBusinessDayRepository({ database }) {
     return { id: Number(day.id), locationCode: day.loc_code, businessDate: dateOnly(day.business_date), status: day.status };
   }
 
+  /**
+   * Where a back-dated entry may land. Only a day this location actually
+   * opened -- a closed one is allowed, because nothing recorded this way
+   * touches that day's counted cash (see entry-date.js).
+   */
+  async function assertPostableWithConnection(connection, { locationCode, businessDate, allowClosed = false }) {
+    if (!allowClosed) return assertOpenWithConnection(connection, { locationCode, businessDate });
+    const date = dateOnly(businessDate);
+    const [rows] = await connection.execute(
+      `SELECT id, loc_code, business_date, status
+       FROM business_days
+       WHERE loc_code = ? AND business_date = ?
+       LIMIT 1`,
+      [String(locationCode || '').trim(), date]
+    );
+    const day = rows[0];
+    if (!day) throw new Error(`The shop had no business day on ${date} at this location. Choose a day it was open.`);
+    if (day.status === 'closing') throw new Error('That business day is being closed right now. Try again once it is closed.');
+    return { id: Number(day.id), locationCode: day.loc_code, businessDate: dateOnly(day.business_date), status: day.status };
+  }
+
   async function assertOpen({ locationCode, businessDate }) {
     return database.withConnection((connection) => assertOpenWithConnection(connection, { locationCode, businessDate }));
   }
@@ -410,6 +431,7 @@ function createBusinessDayRepository({ database }) {
   return {
     assertOpen,
     assertOpenWithConnection,
+    assertPostableWithConnection,
     getCurrent,
     list,
     getOperationalState,

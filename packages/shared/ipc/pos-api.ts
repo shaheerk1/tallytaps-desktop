@@ -872,6 +872,8 @@ export type ExpenseEntry = {
   reference: string | null;
   reason: string;
   status: 'recorded' | 'void';
+  /** Set when the entry names an earlier day than the one it was typed in. */
+  backdated?: { enteredOn: string; reason: string } | null;
   voidReason?: string | null;
   voidedAt?: string | null;
   allocationTarget: 'none' | 'lot' | 'goods_receipt';
@@ -909,6 +911,9 @@ export type StakeholderMovementInput = {
   fundAccountId: number;
   amount: number;
   reason: string;
+  /** The day it actually happened, when that is earlier than today. */
+  paidOn?: string;
+  paidOnReason?: string;
   userId: number;
   overrideApprovedBy?: number | null;
   overrideReason?: string;
@@ -1787,14 +1792,14 @@ export interface PosApi {
     list: (locCode: string, includeInactive?: boolean, actor?: ActorContext | null) => Promise<IpcResult<FundAccount[]>>;
     save: (fund: Partial<FundAccount> & { locCode: string }, actor?: ActorContext | null) => Promise<IpcResult<FundAccount>>;
     ledger: (query: { fundAccountId: number; locCode: string; fromDate?: string; toDate?: string; limit?: number }, actor?: ActorContext | null) => Promise<IpcResult<{ fund: FundAccount; movements: FundMovement[] }>>;
-    transfer: (transfer: { fromFundAccountId: number; toFundAccountId: number; amount: number; reason: string; userId: number; origin: { locCode: string; macCode: string; txnDate: string } }, actor?: ActorContext | null) => Promise<IpcResult<{ transferNumber: string; amount: number; fromFund: string; toFund: string; fromBalance: number; toBalance: number }>>;
+    transfer: (transfer: { fromFundAccountId: number; toFundAccountId: number; amount: number; reason: string; paidOn?: string; paidOnReason?: string; userId: number; origin: { locCode: string; macCode: string; txnDate: string } }, actor?: ActorContext | null) => Promise<IpcResult<{ transferNumber: string; amount: number; fromFund: string; toFund: string; fromBalance: number; toBalance: number }>>;
   };
   expenses: {
     categories: (includeInactive?: boolean, actor?: ActorContext | null) => Promise<IpcResult<ExpenseCategory[]>>;
     saveCategory: (category: Partial<ExpenseCategory>, actor?: ActorContext | null) => Promise<IpcResult<ExpenseCategory>>;
     list: (filters: { locCode: string; fromDate?: string; toDate?: string; categoryId?: number; fundAccountId?: number; term?: string; unallocatedOnly?: boolean; includeReversed?: boolean; limit?: number }, actor?: ActorContext | null) => Promise<IpcResult<ExpenseRegister>>;
     reverse: (reversal: { expenseEntryId: number; reason: string; userId: number; origin: { locCode: string; macCode: string; txnDate: string } }, actor?: ActorContext | null) => Promise<IpcResult<{ expenseNumber: string; reversalNumber: string; amount: number; returnedTo: string | null; stakeholderName: string | null; detachedFromLots: string[]; recurringDueAgain: boolean }>>;
-    create: (expense: { expenseCategoryId: number; fundAccountId: number; amount: number; reason: string; payee?: string; reference?: string; requestId?: string; userId: number; origin: { locCode: string; macCode: string; txnDate: string } }, actor?: ActorContext | null) => Promise<IpcResult<{ id: number; expenseNumber: string; amount: number; categoryName: string; categoryTreatment: ExpenseTreatment; fundName: string; fundBalance: number; stakeholderName: string | null; stakeholderEntryNumber: string | null; replayed?: boolean }>>;
+    create: (expense: { expenseCategoryId: number; fundAccountId: number; amount: number; reason: string; payee?: string; reference?: string; requestId?: string; paidOn?: string; paidOnReason?: string; userId: number; origin: { locCode: string; macCode: string; txnDate: string } }, actor?: ActorContext | null) => Promise<IpcResult<{ id: number; expenseNumber: string; amount: number; categoryName: string; categoryTreatment: ExpenseTreatment; fundName: string; fundBalance: number; stakeholderName: string | null; stakeholderEntryNumber: string | null; replayed?: boolean }>>;
     listRecurring: (locCode: string, includeInactive?: boolean, actor?: ActorContext | null) => Promise<IpcResult<RecurringExpense[]>>;
     saveRecurring: (template: Omit<Partial<RecurringExpense>, 'expenseCategoryId' | 'fundAccountId' | 'amount'> & { locCode: string; userId: number; expenseCategoryId: number | null; fundAccountId: number | null; amount: number | null }, actor?: ActorContext | null) => Promise<IpcResult<RecurringExpense>>;
     recordRecurring: (payload: { templateId: number; userId: number; origin: { locCode: string; macCode: string; txnDate: string } }, actor?: ActorContext | null) => Promise<IpcResult<{ expense: { id: number; expenseNumber: string }; schedule: { templateId: number; nextDueDate: string } }>>;

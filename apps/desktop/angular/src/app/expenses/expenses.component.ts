@@ -16,9 +16,11 @@ type ExpenseDraft = {
   reference: string;
   reason: string;
   requestId: string;
+  paidOn: string;
+  paidOnReason: string;
 };
 
-type TransferDraft = { fromFundAccountId: number | null; toFundAccountId: number | null; amount: number | null; reason: string };
+type TransferDraft = { fromFundAccountId: number | null; toFundAccountId: number | null; amount: number | null; reason: string; paidOn: string; paidOnReason: string };
 
 type FundDraft = {
   id?: number; name: string; fundKind: 'cash_safe' | 'bank' | 'stakeholder';
@@ -61,6 +63,8 @@ type PartnerMoveDraft = {
   amount: number | null;
   reason: string;
   overrideReason: string;
+  paidOn: string;
+  paidOnReason: string;
 };
 
 @Component({
@@ -139,6 +143,8 @@ export class ExpensesComponent implements OnInit {
   get canSeeLots(): boolean { return this.session.hasPermission('lot-costing.view'); }
   get canAllocate(): boolean { return this.session.hasPermission('expenses.allocate'); }
   get canReverse(): boolean { return this.session.hasPermission('expenses.reverse'); }
+  /** Recording something on the day it really happened, when that is earlier. */
+  get canBackdate(): boolean { return this.session.hasPermission('money.backdate'); }
   get canSeePartners(): boolean { return this.session.hasPermission('stakeholders.view'); }
   get canManagePartners(): boolean { return this.session.hasPermission('stakeholders.manage'); }
   get canContribute(): boolean { return this.session.hasPermission('stakeholders.contribute'); }
@@ -435,7 +441,8 @@ export class ExpensesComponent implements OnInit {
     this.expenseDraft = {
       expenseCategoryId: this.categories[0]?.id ?? null,
       fundAccountId: this.spendableFunds[0]?.id ?? null,
-      amount: null, payee: '', reference: '', reason: '', requestId: crypto.randomUUID()
+      amount: null, payee: '', reference: '', reason: '', requestId: crypto.randomUUID(),
+      paidOn: this.currentBusinessDate, paidOnReason: ''
     };
   }
 
@@ -474,6 +481,23 @@ export class ExpensesComponent implements OnInit {
     return Number(this.expenseDraft?.amount || 0) > Number(fund.balance || 0) + 0.005;
   }
 
+  /**
+   * Money remembered late. A till payment is counted with its shift, so it can
+   * only ever be recorded on the day it was paid.
+   */
+  isEarlierDate(draft: { paidOn: string } | null): boolean {
+    return Boolean(draft && draft.paidOn && draft.paidOn !== this.currentBusinessDate);
+  }
+
+  canDateFund(fund: FundAccount | null): boolean {
+    return !!fund && fund.fundKind !== 'pos_drawer';
+  }
+
+  /** What the entry sends: nothing at all unless an earlier day was chosen. */
+  private datedFields(draft: { paidOn: string; paidOnReason: string }): { paidOn?: string; paidOnReason?: string } {
+    return this.isEarlierDate(draft) ? { paidOn: draft.paidOn, paidOnReason: draft.paidOnReason } : {};
+  }
+
   async saveExpense(): Promise<void> {
     if (!window.posApi || !this.expenseDraft || this.saving) return;
     const origin = this.origin(); const user = this.session.getUser();
@@ -484,12 +508,15 @@ export class ExpensesComponent implements OnInit {
       fundAccountId: Number(this.expenseDraft.fundAccountId),
       amount: Number(this.expenseDraft.amount),
       payee: this.expenseDraft.payee, reference: this.expenseDraft.reference,
-      reason: this.expenseDraft.reason, requestId: this.expenseDraft.requestId, userId: user.id, origin
+      reason: this.expenseDraft.reason, requestId: this.expenseDraft.requestId, userId: user.id, origin,
+      ...this.datedFields(this.expenseDraft)
     }, this.actor());
     this.saving = false;
     if (!result.success) { this.error = result.error || 'Could not record this expense.'; return; }
     const saved = result.data as any;
-    this.info = `${saved.expenseNumber} recorded. ${saved.fundName} now holds ${this.formatMoney(saved.fundBalance)}.`;
+    this.info = this.isEarlierDate(this.expenseDraft)
+      ? `${saved.expenseNumber} recorded on ${this.formatDate(this.expenseDraft.paidOn)}. ${saved.fundName} now holds ${this.formatMoney(saved.fundBalance)}.`
+      : `${saved.expenseNumber} recorded. ${saved.fundName} now holds ${this.formatMoney(saved.fundBalance)}.`;
     if (saved.stakeholderName) this.info += ` The business now owes ${saved.stakeholderName} this amount.`;
     if (saved.categoryTreatment === 'lot_cost' && this.canAllocate) {
       this.info += ' Attach it to a delivery so it raises what those goods cost.';
@@ -504,11 +531,15 @@ export class ExpensesComponent implements OnInit {
     this.closeAll();
     this.transferDraft = {
       fromFundAccountId: this.spendableFunds[0]?.id ?? null,
-      toFundAccountId: this.spendableFunds[1]?.id ?? null, amount: null, reason: ''
+      toFundAccountId: this.spendableFunds[1]?.id ?? null, amount: null, reason: '',
+      paidOn: this.currentBusinessDate, paidOnReason: ''
     };
   }
   get transferFrom(): FundAccount | null {
     return this.funds.find((row) => row.id === this.transferDraft?.fromFundAccountId) || null;
+  }
+  get transferTo(): FundAccount | null {
+    return this.funds.find((row) => row.id === this.transferDraft?.toFundAccountId) || null;
   }
   get transferShortfall(): boolean {
     const fund = this.transferFrom;
@@ -525,7 +556,7 @@ export class ExpensesComponent implements OnInit {
       fromFundAccountId: Number(this.transferDraft.fromFundAccountId),
       toFundAccountId: Number(this.transferDraft.toFundAccountId),
       amount: Number(this.transferDraft.amount), reason: this.transferDraft.reason,
-      userId: user.id, origin
+      userId: user.id, origin, ...this.datedFields(this.transferDraft)
     }, this.actor());
     this.saving = false;
     if (!result.success) { this.error = result.error || 'Could not move the money.'; return; }
@@ -725,8 +756,13 @@ export class ExpensesComponent implements OnInit {
     this.closeAll();
     this.partnerMove = {
       mode, stakeholder, fundAccountId: this.businessFunds[0]?.id ?? null,
-      amount: null, reason: '', overrideReason: ''
+      amount: null, reason: '', overrideReason: '',
+      paidOn: this.currentBusinessDate, paidOnReason: ''
     };
+  }
+
+  get partnerMoveFund(): FundAccount | null {
+    return this.funds.find((row) => row.id === this.partnerMove?.fundAccountId) || null;
   }
 
   get partnerMoveTitle(): string {
@@ -769,7 +805,8 @@ export class ExpensesComponent implements OnInit {
     const move = this.partnerMove;
     const payload: any = {
       stakeholderId: move.stakeholder.id, fundAccountId: Number(move.fundAccountId),
-      amount: Number(move.amount), reason: move.reason, userId: user.id, origin
+      amount: Number(move.amount), reason: move.reason, userId: user.id, origin,
+      ...this.datedFields(move)
     };
     if (this.partnerMoveOverLimit) { payload.overrideApprovedBy = user.id; payload.overrideReason = move.overrideReason; }
     const api = window.posApi.stakeholders;

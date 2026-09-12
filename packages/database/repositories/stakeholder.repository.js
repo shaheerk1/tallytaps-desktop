@@ -298,7 +298,7 @@ function createStakeholderRepository({ database, documentSequenceRepository, bus
     return { ...loaded, borneCostTreatment: row.borne_cost_treatment };
   }
 
-  async function insertEntry(connection, { stakeholder, day, origin, entryType, balanceBucket, amount, fund, ledger, reason, userId, documentType, documentNo, inventoryLotId, override }) {
+  async function insertEntry(connection, { stakeholder, day, origin, entryType, balanceBucket, amount, fund, ledger, reason, userId, documentType, documentNo, inventoryLotId, override, backdate = null }) {
     const entryNo = await documentSequenceRepository.allocateWithConnection(connection, { documentType: 'stakeholder_ledger', ...origin });
     const entryNumber = `SLE-${origin.locCode}-${origin.macCode}-${origin.txnDate.replace(/-/g, '')}-${String(entryNo).padStart(6, '0')}`;
     const [result] = await connection.execute(
@@ -313,7 +313,7 @@ function createStakeholderRepository({ database, documentSequenceRepository, bus
         fund ? fund.id : null, inventoryLotId || null,
         ledger ? ledger.cashMovementId : null, ledger ? ledger.fundMovementId : null,
         reason, override?.approvedBy || null, override?.reason || null, userId,
-        JSON.stringify({ entryNumber, stakeholder: stakeholder.displayName })]
+        JSON.stringify({ entryNumber, stakeholder: stakeholder.displayName, ...(backdate ? { backdated: backdate } : {}) })]
     );
     return { id: Number(result.insertId), entryNumber };
   }
@@ -333,11 +333,16 @@ function createStakeholderRepository({ database, documentSequenceRepository, bus
         const reason = text(input.reason);
         if (!reason) throw new Error('Write why this money is moving.');
 
-        const day = await businessDayRepository.assertOpenWithConnection(connection, {
-          locationCode: origin.locCode, businessDate: origin.txnDate
+        // Remembered late: dated the day it happened. See core/security/entry-date.js.
+        const backdate = input.backdate || null;
+        const day = await businessDayRepository.assertPostableWithConnection(connection, {
+          locationCode: origin.locCode, businessDate: origin.txnDate, allowClosed: Boolean(backdate)
         });
         const stakeholder = await lockStakeholder(connection, input.stakeholderId, origin.locCode);
         const fund = await expenseRepository.lockFundWithConnection(connection, input.fundAccountId, origin.locCode);
+        if (backdate && fund.fundKind === 'pos_drawer') {
+          throw new Error(`${fund.name} is a till. Cash from a till is counted with its shift, so it cannot be recorded on an earlier date. Use the safe or a bank account, or record it as today's movement.`);
+        }
         if (fund.fundKind === 'stakeholder') {
           throw new Error('Choose the till, the safe, or a bank account. A stakeholder pocket is the person, not a business fund.');
         }
@@ -367,7 +372,7 @@ function createStakeholderRepository({ database, documentSequenceRepository, bus
         const signedAmount = direction === 'in' ? amount : -amount;
         const entry = await insertEntry(connection, {
           stakeholder, day, origin, entryType, balanceBucket, amount: signedAmount, fund, ledger, reason,
-          userId: input.userId, documentType: entryType, documentNo, override
+          userId: input.userId, documentType: entryType, documentNo, override, backdate
         });
 
         await journalRepository.postWithConnection(connection, {

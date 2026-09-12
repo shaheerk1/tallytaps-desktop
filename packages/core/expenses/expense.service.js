@@ -6,6 +6,7 @@
  * or leave the business without a place it came from.
  */
 const requestContext = require('../security/request-context');
+const { resolveEntryDate, backdateMetadata } = require('../security/entry-date');
 
 function createExpenseService({ expenseRepository }) {
   if (!expenseRepository) throw new Error('Expense service requires a repository.');
@@ -56,6 +57,7 @@ function createExpenseService({ expenseRepository }) {
 
   async function recordExpense(input = {}) {
     const origin = requireOrigin(input);
+    const entryDate = resolveEntryDate(input, origin);
     const userId = requireUser(input);
     if (!Number(input.expenseCategoryId)) throw new Error('Choose what this expense was for.');
     if (!Number(input.fundAccountId)) throw new Error('Choose which fund paid this expense.');
@@ -63,6 +65,8 @@ function createExpenseService({ expenseRepository }) {
     if (!text(input.reason)) throw new Error('Write what this money was for.');
     return expenseRepository.recordExpense({
       ...origin,
+      txnDate: entryDate.txnDate,
+      backdate: backdateMetadata(entryDate),
       userId,
       expenseCategoryId: Number(input.expenseCategoryId),
       fundAccountId: Number(input.fundAccountId),
@@ -126,11 +130,14 @@ function createExpenseService({ expenseRepository }) {
 
   async function transferFunds(input = {}) {
     const origin = requireOrigin(input);
+    const entryDate = resolveEntryDate(input, origin);
     const userId = requireUser(input);
     if (money(input.amount) <= 0) throw new Error('A transfer amount must be greater than zero.');
     if (!text(input.reason)) throw new Error('Write why this money is moving.');
     return expenseRepository.transferFunds({
       ...origin,
+      txnDate: entryDate.txnDate,
+      backdate: backdateMetadata(entryDate),
       userId,
       fromFundAccountId: Number(input.fromFundAccountId),
       toFundAccountId: Number(input.toFundAccountId),

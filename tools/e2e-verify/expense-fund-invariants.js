@@ -250,21 +250,40 @@ async function main() {
         assert(nextRecurring.nextDueDate === '2099-04-01', `Monthly schedule should advance to 2099-04-01, got ${nextRecurring.nextDueDate}.`);
         await expectRejection(service.recordRecurringExpense({ ...base, templateId: recurring.id }), 'A future recurring cost');
 
+
+        // Neither side is a till, so both sides are fund movements under one
+        // transfer number. This used to fail on the second side.
+        const [bankFund] = await connection.execute(
+          "INSERT INTO fund_accounts (fund_code, name, fund_kind, loc_code, opening_balance) VALUES (?, 'Bank', 'bank', ?, 0)",
+          [`BANK-${locCode}`, locCode]
+        );
+        const safeBefore = money((await service.listFundAccounts({ locCode })).find((row) => row.id === Number(safeFund.insertId)).balance);
+        const banked = await service.transferFunds({
+          ...base, fromFundAccountId: safeFund.insertId, toFundAccountId: bankFund.insertId,
+          amount: 2000, reason: 'Deposited at the bank'
+        });
+        assert(money(banked.fromBalance) === money(safeBefore - 2000) && money(banked.toBalance) === 2000,
+          `A safe-to-bank transfer must move the money, got ${money(banked.fromBalance)} / ${money(banked.toBalance)}.`);
+        const [[bothSides]] = await connection.execute(
+          `SELECT COUNT(*) AS n FROM fund_movements WHERE source_type = 'fund_transfer' AND source_id = ?`, [banked.transferNumber]
+        );
+        assert(Number(bothSides.n) === 2, `Both sides of a transfer between two non-till funds must be recorded, found ${bothSides.n}.`);
+
         // ── 8. Every money movement posted a balanced entry ─
         const trial = await journalRepository.getTrialBalance({ locCode });
         assert(trial.inBalance, `The journal is out of balance by ${trial.difference}.`);
         const [[postings]] = await connection.execute(
           'SELECT COUNT(*) AS n FROM journal_entries WHERE loc_code = ?', [locCode]
         );
-        // 2 ordinary expenses + 1 transfer + 1 confirmed recurring expense.
-        assert(Number(postings.n) === 4, `Expected 4 derived journal entries, got ${postings.n}.`);
+        // 2 ordinary expenses + 2 transfers + 1 confirmed recurring expense.
+        assert(Number(postings.n) === 5, `Expected 5 derived journal entries, got ${postings.n}.`);
 
         console.log('Expense and fund invariants passed:');
         console.log('  1. a till expense writes both an expense entry and a cash movement, and the shift reconciles');
         console.log('  2. a safe expense writes a fund movement and never touches a drawer');
         console.log('  3. every fund balance equals the sum of its own movements');
         console.log('  4. a fund cannot be overdrawn');
-        console.log('  5. a transfer moves value without creating or destroying any');
+        console.log('  5. a transfer moves value without creating or destroying any, with or without a till');
         console.log('  6. an expense missing a category, fund, amount, reason, or session is refused');
         console.log('  7. a replayed expense is stopped by its origin key');
         console.log('  8. every expense and transfer derived a balanced journal entry');
