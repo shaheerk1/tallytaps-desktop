@@ -1,13 +1,18 @@
 <section class="invoice-history">
   <header class="invoice-header"><h1>Invoice Archive <span>~ Historical Bills</span></h1><p>Find finalized sales, inspect their immutable details, reprint, or save a PDF copy.</p></header>
   <div class="filters">
-    <label>Location<input [(ngModel)]="locCode" (change)="search()" /></label><label>Machine<input [(ngModel)]="macCode" (change)="search()" /></label><label>Billing date<input type="date" [(ngModel)]="txnDate" (change)="search()" /></label><label>Customer code<input [(ngModel)]="customerCode" (keyup.enter)="search()" placeholder="Customer code" /></label><label>Invoice or receipt<input [(ngModel)]="term" (keyup.enter)="search()" placeholder="Invoice or receipt #" /></label><label class="check-filter"><input type="checkbox" [(ngModel)]="showRefunded" (change)="search()" /> Show refunded bills</label><button class="btn" (click)="search()">Search</button>
+    <label>Location<input [(ngModel)]="locCode" (change)="search()" /></label><label>Machine<input [(ngModel)]="macCode" (change)="search()" /></label><label>Billing date<input type="date" [(ngModel)]="txnDate" (change)="search()" /></label><label>Customer code<input [(ngModel)]="customerCode" (keyup.enter)="search()" placeholder="Customer code" /></label><label>Invoice or receipt<input [(ngModel)]="term" (keyup.enter)="search()" placeholder="Invoice or receipt #" /></label><label class="check-filter" title="Bills returned in full are hidden by default. Bills where only part came back always stay in the list, marked, with their net value."><input type="checkbox" [(ngModel)]="showRefunded" (change)="search()" /> Show fully returned bills</label><button class="btn" (click)="search()">Search</button>
   </div>
   <p *ngIf="error" class="message error">{{ error }}</p><p *ngIf="info" class="message">{{ info }}</p>
   <main>
     <aside>
+      <div class="list-summary" *ngIf="rows.length">
+        <span><b>{{ rows.length }}</b> bill{{ rows.length === 1 ? '' : 's' }}</span>
+        <span>Net sales <b>{{ netSalesTotal | number:'1.2-2' }}</b></span>
+        <span class="returned" *ngIf="returnedTotal > 0.005">Returned <b>{{ returnedTotal | number:'1.2-2' }}</b></span>
+      </div>
       <div class="empty" *ngIf="!loading && rows.length === 0">No finalized invoices match these filters.</div>
-      <button class="invoice-row" *ngFor="let row of rows" (click)="select(row)" [class.active]="invoice?.id === row.id" [class.refunded]="isRefunded(row)"><strong>{{ row.invoice_number }}<em class="refund-tag" *ngIf="isRefunded(row)" [class.partial]="row.refundStatus === 'partial'">{{ refundLabel(row) }}</em></strong><b class="row-customer" *ngIf="row.customer_code">{{ row.customer_code }}</b><span *ngIf="$any(row).customer_name">{{ $any(row).customer_name }}</span><span>Receipt #{{ row.receipt_no }} · {{ formatSriLankanDate(row.txn_date) }}</span><span>{{ row.grandTotal | number:'1.2-2' }} · {{ row.status }}</span></button>
+      <button class="invoice-row" *ngFor="let row of rows" (click)="select(row)" [class.active]="invoice?.id === row.id" [class.refunded]="isRefunded(row)"><strong>{{ row.invoice_number }}<em class="refund-tag" *ngIf="isRefunded(row)" [class.partial]="row.refundStatus === 'partial'">{{ refundLabel(row) }}</em></strong><b class="row-customer" *ngIf="row.customer_code">{{ row.customer_code }}</b><span *ngIf="$any(row).customer_name">{{ $any(row).customer_name }}</span><span>Receipt #{{ row.receipt_no }} · {{ formatSriLankanDate(row.txn_date) }}</span><span><ng-container *ngIf="isRefunded(row)"><s>{{ row.grandTotal | number:'1.2-2' }}</s> {{ row.netTotal | number:'1.2-2' }} net</ng-container><ng-container *ngIf="!isRefunded(row)">{{ row.grandTotal | number:'1.2-2' }}</ng-container> · {{ row.status }}</span></button>
     </aside>
     <article *ngIf="invoice" class="invoice-detail">
       <div class="detail-head"><div><span>FINALIZED INVOICE</span><h2>{{ invoice.invoice_number }}<em class="refund-tag detail" *ngIf="selectedRefundLabel" [class.partial]="selectedRefundStatus === 'partial'">{{ selectedRefundLabel }}</em></h2><p>Receipt #{{ invoice.receipt_no }} · {{ invoice.loc_code }}/{{ invoice.mac_code }}</p><b class="detail-customer" *ngIf="invoice.customer_code">{{ invoice.customer_code }}</b></div><div class="actions"><button class="btn secondary" (click)="reprint()">Reprint</button><button class="btn" (click)="savePdf()">Save PDF</button></div></div>
@@ -51,6 +56,36 @@
         </section>
       </section>
       <div class="totals"><span>Subtotal <b>{{ invoice.subtotal | number:'1.2-2' }}</b></span><span *ngIf="invoice.bag_charge_total">Packaging charge <b>{{ invoice.bag_charge_total | number:'1.2-2' }}</b></span><span *ngIf="invoice.wage_charge_total">Wage charge <b>{{ invoice.wage_charge_total | number:'1.2-2' }}</b></span><span *ngIf="invoice.discountTotal">Discount <b>-{{ invoice.discountTotal | number:'1.2-2' }}</b></span><strong>TOTAL <b>{{ invoice.grandTotal | number:'1.2-2' }}</b></strong><span *ngFor="let payment of invoice.payments">{{ paymentLabel(payment) }} <b>{{ payment.amount | number:'1.2-2' }}</b></span><span *ngIf="invoice.balance > 0">Outstanding <b>{{ invoice.balance | number:'1.2-2' }}</b></span></div>
+      <section class="unsettle" *ngIf="canMarkUnpaid && invoice.paidTotal > 0.005 && selectedRefundStatus !== 'full'">
+        <div class="unsettle-head">
+          <div>
+            <b>Money did not actually arrive?</b>
+            <small>Use this when a bill was recorded as paid but the money never came in — the card declined, the cash was short, or the customer will settle later. The goods stay sold; the amount becomes owed by the customer.</small>
+          </div>
+          <button class="btn secondary" *ngIf="!unsettleOpen" (click)="beginUnsettle()">Mark unpaid</button>
+        </div>
+        <p class="unsettle-note" *ngIf="unsettleOpen && unsettleBlocked">{{ unsettleBlocked }}</p>
+        <div class="unsettle-form" *ngIf="unsettleOpen && !unsettleBlocked">
+          <label>Amount<input type="number" min="0.01" [max]="invoice.paidTotal" step="0.01" [(ngModel)]="unsettleAmount" /></label>
+          <label *ngIf="unsettleMethods.length > 1">Which payment<select [(ngModel)]="unsettleMethod">
+            <option value="">The most recent first</option>
+            <option *ngFor="let tender of unsettleMethods" [value]="tender.id" [disabled]="tender.id === 'cheque' || tender.id === 'advance'">{{ tender.id }} · {{ tender.amount | number:'1.2-2' }}</option>
+          </select></label>
+          <label class="wide">Why<input type="text" [(ngModel)]="unsettleReason" placeholder="Card declined after the receipt printed" (keyup.enter)="markUnpaid()" /></label>
+          <p class="unsettle-note" *ngIf="!invoice.customer_account_id">
+            This bill has no customer yet. Assign one above first — an unpaid amount has to belong to somebody.
+          </p>
+          <p class="unsettle-note">
+            Cash can only be taken back while the shift that counted it is still open. The bill will read as part paid, and the amount will show on the customer's account.
+          </p>
+          <div class="unsettle-actions">
+            <button class="btn secondary" (click)="cancelUnsettle()">Cancel</button>
+            <button class="btn" [disabled]="unsettling || !unsettleAmount || !unsettleReason.trim() || !invoice.customer_account_id" (click)="markUnpaid()">
+              {{ unsettling ? 'Working...' : 'Mark unpaid' }}
+            </button>
+          </div>
+        </div>
+      </section>
       <section *ngIf="invoice.balance > 0" class="collection"><div><b>Collect outstanding balance</b><small>This records a customer-account collection and cash in the active shift automatically.</small><small class="collection-advance" *ngIf="advanceAvailable > 0.005">Stored advance available here: {{ advanceAvailable | number:'1.2-2' }}. Settling from advance moves the held money onto this bill and adds no cash to the drawer.</small></div><label>Amount<input type="number" min="0.01" [max]="maxCollectionAmount" step="0.01" [(ngModel)]="collectionAmount"></label><label>Method<select [(ngModel)]="collectionMethod" (ngModelChange)="onCollectionMethodChange()"><option *ngFor="let mode of collectionModes" [value]="mode.id">{{ mode.name }}</option></select></label><label *ngIf="collectionNeedsFund">Received into<select [(ngModel)]="collectionFundAccountId"><option [ngValue]="null">General bank balance</option><option *ngFor="let fund of settlementFunds" [ngValue]="fund.id">{{ fund.name }}</option></select></label><button class="btn" [disabled]="collecting || !collectionAmount || collectionAmount <= 0" (click)="collectBalance()">{{ collecting ? 'Collecting...' : (collectionMethod === 'advance' ? 'Settle from advance' : 'Collect balance') }}</button></section>
     </article>
     <article *ngIf="!invoice" class="detail-empty">Select an invoice to view its original receipt data.</article>

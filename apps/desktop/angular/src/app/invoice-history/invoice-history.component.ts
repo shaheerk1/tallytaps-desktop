@@ -9,7 +9,8 @@ type InvoiceRow = Pick<InvoiceArchive, 'id' | 'invoice_number' | 'loc_code' | 'm
 @Component({ selector: 'pos-invoice-history', templateUrl: './invoice-history.component.html', styleUrls: ['./invoice-history.component.css'] })
 export class InvoiceHistoryComponent implements OnInit {
   term = ''; customerCode = ''; locCode = ''; macCode = ''; txnDate = '';
-  /** Returned bills are hidden by default so the list shows sales that stood. */
+  /** Only bills returned in full are hidden by default; a partly returned bill
+   *  is still a sale that stood, so it stays, marked, with its net value. */
   showRefunded = false;
   rows: InvoiceRow[] = []; invoice: any = null;
   paymentModes: PaymentMode[] = []; collectionAmount = 0; collectionMethod = 'cash'; collecting = false;
@@ -17,6 +18,8 @@ export class InvoiceHistoryComponent implements OnInit {
   advanceAvailable = 0; advanceBalanceLoading = false;
   error = ''; info = ''; loading = false;
   accountTerm = ''; accountMatches: any[] = []; assignmentReason = ''; assigningCustomer = false;
+  /** Money that was recorded as taken but never really arrived. */
+  unsettleOpen = false; unsettleAmount = 0; unsettleReason = ''; unsettleMethod = ''; unsettling = false;
   private receiptSettings: any = null;
 
   constructor(public session: SessionService, private printing: PrintingService) {}
@@ -66,6 +69,14 @@ export class InvoiceHistoryComponent implements OnInit {
   }
 
   isRefunded(row: InvoiceRow): boolean { return row.refundStatus === 'full' || row.refundStatus === 'partial'; }
+
+  /** What the listed sales are worth after returns, and what came back. */
+  get netSalesTotal(): number {
+    return this.rows.reduce((sum, row) => sum + Number(row.netTotal ?? row.grandTotal ?? 0), 0);
+  }
+  get returnedTotal(): number {
+    return this.rows.reduce((sum, row) => sum + Number(row.refundedTotal || 0), 0);
+  }
 
   refundLabel(row: InvoiceRow): string {
     if (row.refundStatus === 'full') return 'Refunded';
@@ -122,6 +133,70 @@ export class InvoiceHistoryComponent implements OnInit {
     if (this.collectionAmount > this.maxCollectionAmount) this.collectionAmount = this.maxCollectionAmount;
   }
   get collectionNeedsFund(): boolean { return !['cash', 'cheque', 'advance'].includes(this.collectionMethod); }
+
+  get canMarkUnpaid(): boolean { return this.session.hasPermission('billing.payment.reverse'); }
+
+  /** Tenders that can be taken back here; a cheque or advance has its own path. */
+  get unsettleMethods(): Array<{ id: string; amount: number }> {
+    const byMethod = new Map<string, number>();
+    for (const payment of (this.invoice?.payments || [])) {
+      const method = String(payment.method || '').toLowerCase();
+      const amount = Number(payment.amount || 0);
+      if (String(payment.status || 'completed') !== 'completed') continue;
+      byMethod.set(method, Math.round(((byMethod.get(method) || 0) + amount) * 100) / 100);
+    }
+    return [...byMethod.entries()]
+      .filter(([, amount]) => amount > 0.005)
+      .map(([id, amount]) => ({ id, amount }));
+  }
+
+  get unsettleBlocked(): string {
+    const methods = this.unsettleMethods.map((row) => row.id);
+    if (methods.includes('cheque') && methods.length === 1) {
+      return 'This bill was paid by cheque. If the cheque did not clear, record a dishonour in the cheque register — that puts the balance back by itself.';
+    }
+    if (methods.includes('advance') && methods.length === 1) {
+      return 'This bill was settled from the customer’s stored advance. Put that back through the customer advance screen.';
+    }
+    return '';
+  }
+
+  beginUnsettle(): void {
+    this.error = ''; this.info = '';
+    const usable = this.unsettleMethods.filter((row) => !['cheque', 'advance'].includes(row.id));
+    this.unsettleOpen = true;
+    this.unsettleMethod = usable.length === 1 ? usable[0].id : '';
+    this.unsettleAmount = Number(this.invoice?.paidTotal || 0);
+    this.unsettleReason = '';
+  }
+
+  cancelUnsettle(): void { this.unsettleOpen = false; this.unsettleReason = ''; }
+
+  async markUnpaid(): Promise<void> {
+    if (!window.posApi || !this.invoice || this.unsettling) return;
+    if (!this.unsettleReason.trim()) { this.error = 'Write why this bill is going back to unpaid.'; return; }
+    this.unsettling = true; this.error = '';
+    const result = await window.posApi.billing.unsettleInvoice({
+      invoiceId: this.invoice.id, amount: Number(this.unsettleAmount),
+      reason: this.unsettleReason.trim(), method: this.unsettleMethod || undefined
+    }, this.actor());
+    this.unsettling = false;
+    if (!result.success) { this.error = result.error || 'Could not mark this bill unpaid.'; return; }
+    const done = result.data;
+    this.info = `${done.invoiceNumber}: ${this.money(done.movedToUnpaid)} is now owed by the customer.`
+      + (done.drawerCorrected ? ` ${this.money(done.drawerCorrected)} was taken back out of the drawer.` : '');
+    this.unsettleOpen = false; this.unsettleReason = '';
+    // Reload the bill and the list without wiping the message just shown.
+    const message = this.info;
+    const invoiceId = this.invoice.id;
+    await this.search();
+    const reloaded = await window.posApi.billing.getInvoice(invoiceId, this.actor());
+    if (reloaded.success && reloaded.data) {
+      this.invoice = reloaded.data;
+      this.collectionAmount = Number(this.invoice.balance || 0);
+    }
+    this.info = message;
+  }
 
   async collectBalance(): Promise<void> {
     if (!window.posApi || !this.invoice || this.collecting) return;

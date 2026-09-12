@@ -40,6 +40,10 @@ const STREAMS = [
   { entity: 'issued_cheque', table: 'issued_cheques' },
   { entity: 'issued_cheque_status_event', table: 'issued_cheque_status_events' },
   { entity: 'business_bank_account', table: 'business_bank_accounts' },
+  // Who and where, so the monitor can say "Khan Store · Counter 2" instead of
+  // printing raw codes at the owner.
+  { entity: 'pos_location', table: 'pos_locations', key: 'loc_code', origin: { loc: 'loc_code' } },
+  { entity: 'pos_workstation', table: 'pos_workstations', origin: { loc: 'location_code', mac: 'machine_code' } },
   { entity: 'business_day', table: 'business_days' },
   { entity: 'business_day_event', table: 'business_day_events' },
   { entity: 'goods_receipt', table: 'goods_receipts', where: "t.status IN ('finalized','corrected')" },
@@ -136,7 +140,8 @@ function createCloudSyncRepository({ database }) {
           delete payload.cloud_sync_updated_at;
           await connection.execute(`INSERT INTO pos_cloud_sync_outbox
             (entity_type,source_key,loc_code,mac_code,payload,source_created_at,source_updated_at)
-            VALUES (?,?,?,?,CAST(? AS JSON),?,?)`, [stream.entity,String(source.id),originValue(source,'loc_code'),originValue(source,'mac_code'),
+            VALUES (?,?,?,?,CAST(? AS JSON),?,?)`, [stream.entity,String(source[stream.key || 'id']),
+            originValue(source,stream.origin?.loc || 'loc_code'),originValue(source,stream.origin?.mac || 'mac_code'),
             JSON.stringify(payload),source.created_at || null,sourceUpdatedAt]);
         }
         if (rows.length) {

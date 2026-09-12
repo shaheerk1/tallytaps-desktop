@@ -1,3 +1,5 @@
+const requestContext = require('../security/request-context');
+
 function createBillingEngineService({
   liveBillRepository,
   billingRepository,
@@ -663,6 +665,24 @@ function createBillingEngineService({
     });
   }
 
+  /**
+   * Moves a settled bill, or part of it, back to being owed. The rules live in
+   * billingRepository.unsettleInvoice; this only checks the request makes sense
+   * and takes the place and person from the signed-in session.
+   */
+  async function unsettleInvoice({ invoiceId, amount, reason, method }) {
+    if (!invoiceId) throw new Error('Choose the bill to mark unpaid.');
+    if (toMoney(amount) <= 0) throw new Error('Enter how much of this bill is going back to unpaid.');
+    if (!String(reason || '').trim()) throw new Error('Write why this bill is going back to unpaid.');
+    const origin = requestContext.resolveOrigin({});
+    const userId = requestContext.resolveUserId({});
+    if (!userId) throw new Error('A signed-in user is required.');
+    return billingRepository.unsettleInvoice({
+      invoiceId: Number(invoiceId), amount: toMoney(amount),
+      reason: String(reason).trim(), method: String(method || '').trim(), userId, origin
+    });
+  }
+
   return {
     openBill,
     holdBill,
@@ -683,7 +703,8 @@ function createBillingEngineService({
     setLiveItemAllocationPriority,
     searchInvoices,
     getInvoiceArchive,
-    collectInvoiceBalance
+    collectInvoiceBalance,
+    unsettleInvoice
   };
 }
 

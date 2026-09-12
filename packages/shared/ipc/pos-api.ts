@@ -723,7 +723,13 @@ export type BillItem = {
 export type InvoiceRefundState = {
   lineCount: number;
   refundedLineCount: number;
+  /** Value of the goods returned. */
   refundedTotal: number;
+  /** Money actually paid back (a credit sale may return no cash). */
+  refundedCashTotal: number;
+  /** The sale after returns, and what the shop kept of it. */
+  netTotal: number;
+  netCollected: number;
   refundStatus: 'none' | 'partial' | 'full';
 };
 
@@ -1875,6 +1881,17 @@ export interface PosApi {
       userId: number;
       payments: PaymentLine[];
     }, actor?: ActorContext) => Promise<IpcResult<{ invoiceId: number; invoiceNumber: string; collected: number; balance: number; status: string }>>;
+    /** Moves a settled bill, or part of it, back to being owed by its customer. */
+    unsettleInvoice: (payload: {
+      invoiceId: number;
+      amount: number;
+      reason: string;
+      method?: string;
+    }, actor?: ActorContext) => Promise<IpcResult<{
+      invoiceId: number; invoiceNumber: string; movedToUnpaid: number; paidTotal: number;
+      balance: number; status: string; drawerCorrected: number | null;
+      takenBack: Array<{ paymentId: number; method: string; amount: number }>;
+    }>>;
     holdBill: (session: BillContext, actor?: ActorContext) => Promise<IpcResult<OpenBillResult>>;
     addItem: (bill: BillContext, item: {
       productId?: number | null;

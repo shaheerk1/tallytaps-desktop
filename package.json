@@ -27,6 +27,8 @@
     "verify:equity-journal": "node tools/e2e-verify/equity-and-journal-invariants.js",
     "verify:expense-reversal": "node tools/e2e-verify/expense-reversal-invariants.js",
     "verify:money-backdating": "node tools/e2e-verify/money-backdating-invariants.js",
+    "verify:refund-visibility": "node tools/e2e-verify/refund-visibility-invariants.js",
+    "verify:unpaid-bill": "node tools/e2e-verify/unpaid-bill-invariants.js",
     "verify:workstation-isolation": "node tools/e2e-verify/workstation-isolation-invariants.js",
     "verify:ipc-gate": "node tools/e2e-verify/ipc-gate-invariants.js",
     "verify:cloud-archive": "node tools/e2e-verify/cloud-archive-streams.js",

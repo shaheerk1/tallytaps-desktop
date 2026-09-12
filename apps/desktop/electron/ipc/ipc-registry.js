@@ -9,6 +9,7 @@ function registerIpcHandlers(services) {
   const requireSettingsManage = services.ipcAuthorizationService.requirePermission('settings.manage');
   const requireBillingCreate = services.ipcAuthorizationService.requirePermission('billing.create');
   const requireBillingView = services.ipcAuthorizationService.requirePermission('billing.view');
+  const requirePaymentReverse = services.ipcAuthorizationService.requirePermission('billing.payment.reverse');
   const requireRefundView = services.ipcAuthorizationService.requirePermission('refund.view');
   const requireRefundCreate = services.ipcAuthorizationService.requirePermission('refund.create');
   const requireCashView = services.ipcAuthorizationService.requirePermission('cash.shift.view');

@@ -56,7 +56,7 @@ function createPartyRepository({ database, businessDayRepository }) {
 
   function receivableBalanceSql(alias = 'e') {
     return `CASE
-      WHEN ${alias}.entry_type IN ('sale_debit','refund_debit','cheque_dishonour_debit') THEN ${alias}.amount
+      WHEN ${alias}.entry_type IN ('sale_debit','refund_debit','cheque_dishonour_debit','payment_reversal_debit') THEN ${alias}.amount
       WHEN ${alias}.entry_type IN ('collection_credit','return_credit','store_credit') THEN -${alias}.amount
       WHEN ${alias}.entry_type = 'manager_adjustment' THEN ${alias}.amount
       ELSE 0 END`;

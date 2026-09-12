@@ -151,7 +151,7 @@ function createRefundRepository({ database, documentSequenceRepository, business
         const [customers] = await connection.execute(
           `SELECT ca.id, ca.account_number, p.display_name,
                   COALESCE(SUM(CASE
-                    WHEN e.entry_type IN ('sale_debit','refund_debit','cheque_dishonour_debit') THEN e.amount
+                    WHEN e.entry_type IN ('sale_debit','refund_debit','cheque_dishonour_debit','payment_reversal_debit') THEN e.amount
                     WHEN e.entry_type IN ('collection_credit', 'return_credit','store_credit') THEN -e.amount
                     ELSE 0
                   END), 0) AS outstanding_balance

@@ -469,15 +469,15 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
         clauses.push('(invoice_number LIKE ? OR CAST(receipt_no AS CHAR) LIKE ?)');
         params.push(`%${text}%`, `%${text}%`);
       }
-      // A bill counts as fully returned when every one of its lines has been
-      // refunded; anything less is partial, so the operator can still see which
-      // part of the sale stood.
-      if (includeRefunded === false) {
-        clauses.push(`NOT EXISTS (SELECT 1 FROM refunds r WHERE r.source_invoice_id = invoices.id AND r.status = 'completed')`);
-      }
       const maxRows = Math.max(1, Math.min(Number(limit) || 50, 200));
+      // Hiding returned bills hides only the ones that came back whole. A bill
+      // where one line of five was returned is still a sale that stood, so it
+      // stays in the list, marked, with its net value beside the original.
+      const fullyReturned = `v.line_count > 0 AND v.refunded_line_count >= v.line_count
+                             AND v.refunded_total >= v.grand_total - 0.005`;
       const [rows] = await connection.execute(
-        `SELECT id, invoice_number, loc_code, mac_code, receipt_no, txn_date, status, customer_code,
+        `SELECT * FROM (
+           SELECT id, invoice_number, loc_code, mac_code, receipt_no, txn_date, status, customer_code,
                 (SELECT p.display_name FROM customer_accounts ca JOIN parties p ON p.id = ca.party_id
                  WHERE ca.id = invoices.customer_account_id LIMIT 1) AS customer_name,
                 subtotal, bag_charge_total, wage_charge_total, discount_total, grand_total, paid_total, balance, end_time,
@@ -488,10 +488,14 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
                     AND ri.source_invoice_item_id IN (SELECT ii.id FROM invoice_items ii WHERE ii.invoice_id = invoices.id)
                 ) AS refunded_line_count,
                 (SELECT COALESCE(SUM(r.grand_total), 0) FROM refunds r
-                  WHERE r.source_invoice_id = invoices.id AND r.status = 'completed') AS refunded_total
-         FROM invoices
-         ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
-         ORDER BY txn_date DESC, receipt_no DESC LIMIT ${maxRows}`,
+                  WHERE r.source_invoice_id = invoices.id AND r.status = 'completed') AS refunded_total,
+                (SELECT COALESCE(SUM(r.refunded_total), 0) FROM refunds r
+                  WHERE r.source_invoice_id = invoices.id AND r.status = 'completed') AS refunded_cash_total
+           FROM invoices
+           ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
+         ) v
+         ${includeRefunded === false ? `WHERE NOT (${fullyReturned})` : ''}
+         ORDER BY v.txn_date DESC, v.receipt_no DESC LIMIT ${maxRows}`,
         params
       );
       return rows.map((row) => {
@@ -505,13 +509,197 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
           && refundedLines >= lineCount
           && refundedTotal >= grandTotal - 0.005;
         const refundStatus = refundedLines === 0 ? 'none' : (fullyReturned ? 'full' : 'partial');
+        // What the sale is worth after returns, and what the shop actually kept.
+        const refundedCashTotal = toMoney(row.refunded_cash_total);
         return {
           ...row,
           subtotal: toMoney(row.subtotal), bagChargeTotal: toMoney(row.bag_charge_total), wageChargeTotal: toMoney(row.wage_charge_total), discountTotal: toMoney(row.discount_total), grandTotal: toMoney(row.grand_total),
           paidTotal: toMoney(row.paid_total), balance: toMoney(row.balance),
-          lineCount, refundedLineCount: refundedLines, refundedTotal, refundStatus
+          lineCount, refundedLineCount: refundedLines, refundedTotal, refundedCashTotal, refundStatus,
+          netTotal: toMoney(grandTotal - refundedTotal),
+          netCollected: toMoney(toMoney(row.paid_total) - refundedCashTotal)
         };
       });
+    });
+  }
+
+  /**
+   * Move a paid bill, or part of it, back to being owed.
+   *
+   * For money that never really arrived: a card that declined after the receipt
+   * printed, cash that turned out to be short, a customer who says "put it on
+   * my account" once the bill is closed. The sale itself stands -- the goods
+   * went out -- so nothing here touches the items. What changes is who is
+   * holding the money:
+   *
+   *   1. a reversing payment line is written against the tender that failed,
+   *      so the day's takings by method stay right;
+   *   2. cash is taken back out of the drawer it was counted into, which is
+   *      only possible while that shift is still open -- once a shift has been
+   *      closed and counted, its cash figure is evidence and must not move;
+   *   3. the bill's balance rises again and it reads as part paid;
+   *   4. the customer's account carries the debt, so somebody owns it.
+   *
+   * A cheque that bounced is not this: the cheque register records a dishonour,
+   * which already puts the balance back. Money taken from a customer's stored
+   * advance is not this either; that has to go back through the advance.
+   */
+  async function unsettleInvoice({ invoiceId, amount, reason, method = '', userId, origin }) {
+    return database.withConnection(async (connection) => {
+      await connection.beginTransaction();
+      try {
+        const locationCode = String(origin?.locCode || '').trim();
+        const machineCode = String(origin?.macCode || '').trim();
+        const businessDate = String(origin?.txnDate || origin?.businessDate || '').slice(0, 10);
+        if (!locationCode || !machineCode || !businessDate) throw new Error('An active workstation session is required.');
+        const cleanReason = String(reason || '').trim();
+        if (!cleanReason) throw new Error('Write why this bill is going back to unpaid.');
+
+        const [invoices] = await connection.execute(
+          `SELECT id, invoice_number, loc_code, mac_code, txn_date, receipt_no, business_day_id, cash_shift_id,
+                  customer_account_id, status, inv_stat, grand_total, paid_total, balance
+             FROM invoices WHERE id = ? FOR UPDATE`, [invoiceId]
+        );
+        const invoice = invoices[0];
+        if (!invoice) throw new Error('That bill no longer exists.');
+        if (invoice.loc_code !== locationCode) throw new Error('That bill belongs to another location.');
+        if (invoice.inv_stat !== 'active' || !['paid', 'partial'].includes(invoice.status)) {
+          throw new Error('Only a finalized bill can be moved back to unpaid.');
+        }
+        const paidTotal = toMoney(invoice.paid_total);
+        const moved = toMoney(amount);
+        if (moved <= 0) throw new Error('Enter how much of this bill is going back to unpaid.');
+        if (moved - paidTotal > 0.005) {
+          throw new Error(`Only ${paidTotal.toFixed(2)} was ever collected on this bill.`);
+        }
+
+        // Someone has to own the debt.
+        if (!invoice.customer_account_id) {
+          throw new Error('Link a customer to this bill first: an unpaid amount has to belong to somebody. Assign the customer on this bill, then mark it unpaid.');
+        }
+
+        const businessDay = await businessDayRepository.assertOpenWithConnection(connection, {
+          locationCode, businessDate
+        });
+
+        // Which tender is being taken back. The bill's payments are read newest
+        // first, because the last thing taken is usually the thing that failed.
+        const [tenders] = await connection.execute(
+          `SELECT id, method, amount, document_type FROM payments
+            WHERE invoice_id = ? AND status = 'completed' AND amount > 0
+            ORDER BY id DESC`, [invoiceId]
+        );
+        const wanted = String(method || '').trim().toLowerCase();
+        const usable = tenders.filter((tender) => !wanted || String(tender.method).toLowerCase() === wanted);
+        if (!usable.length) {
+          throw new Error(wanted ? `This bill has no ${wanted} payment to take back.` : 'This bill has no payment to take back.');
+        }
+        for (const tender of usable) {
+          const tenderMethod = String(tender.method).toLowerCase();
+          if (tenderMethod === 'cheque') {
+            throw new Error('A cheque that did not clear is recorded in the cheque register as a dishonour, which puts the balance back by itself.');
+          }
+          if (tenderMethod === 'advance') {
+            throw new Error('This bill was settled from the customer advance balance. Put that back through the customer advance screen instead.');
+          }
+        }
+
+        let remaining = moved;
+        const takenBack = [];
+        for (const tender of usable) {
+          if (remaining <= 0.005) break;
+          const take = toMoney(Math.min(remaining, toMoney(tender.amount)));
+          takenBack.push({ paymentId: Number(tender.id), method: String(tender.method).toLowerCase(), amount: take });
+          remaining = toMoney(remaining - take);
+        }
+        if (remaining > 0.005) {
+          throw new Error(`Only ${toMoney(moved - remaining).toFixed(2)} of that tender is on this bill.`);
+        }
+
+        const reversalNo = await documentSequenceRepository.allocateWithConnection(connection, {
+          documentType: 'payment_reversal', locCode: locationCode, macCode: machineCode, txnDate: businessDate
+        });
+        let paymentNo = 0;
+        for (const back of takenBack) {
+          paymentNo += 1;
+          await connection.execute(
+            `INSERT INTO payments
+               (business_day_id, invoice_id, loc_code, mac_code, txn_date, document_type, document_no,
+                receipt_no, payment_no, method, amount, provider_ref, status)
+             VALUES (?, ?, ?, ?, ?, 'payment_reversal', ?, ?, ?, ?, ?, ?, 'completed')`,
+            [businessDay.id, invoiceId, locationCode, machineCode, businessDate, reversalNo,
+              invoice.receipt_no, paymentNo, back.method, -back.amount, `payment:${back.paymentId}`]
+          );
+        }
+
+        // Cash goes back out of the drawer that counted it in.
+        const cashBack = toMoney(takenBack.filter((back) => back.method === 'cash')
+          .reduce((sum, back) => sum + back.amount, 0));
+        let drawerCorrected = null;
+        if (cashBack > 0.005) {
+          if (!invoice.cash_shift_id) throw new Error('That cash was not recorded against any shift, so it cannot be taken back here.');
+          const [shifts] = await connection.execute(
+            `SELECT id, loc_code, mac_code, business_date, shift_no, status FROM cash_shifts WHERE id = ? FOR UPDATE`,
+            [invoice.cash_shift_id]
+          );
+          const shift = shifts[0];
+          if (!shift || shift.status !== 'open') {
+            throw new Error('The shift that took this cash has been closed and counted, so its drawer cannot change now. Record a cash correction in Cash Management instead, or refund the bill.');
+          }
+          const [movementNumbers] = await connection.execute(
+            'SELECT COALESCE(MAX(movement_no), 0) AS max_no FROM cash_movements WHERE cash_shift_id = ?', [shift.id]
+          );
+          await connection.execute(
+            `INSERT INTO cash_movements
+               (cash_shift_id, loc_code, mac_code, business_date, shift_no, movement_no,
+                movement_type, direction, amount, reference_type, reference_id, reason, created_by, metadata)
+             VALUES (?, ?, ?, ?, ?, ?, 'correction', 'out', ?, 'payment_reversal', ?, ?, ?, CAST(? AS JSON))`,
+            [shift.id, shift.loc_code, shift.mac_code, shift.business_date, shift.shift_no,
+              Number(movementNumbers[0].max_no || 0) + 1, cashBack, `${invoiceId}:${reversalNo}`,
+              `${invoice.invoice_number} moved to unpaid: ${cleanReason}`.slice(0, 255), userId,
+              JSON.stringify({ invoiceId: Number(invoiceId), invoiceNumber: invoice.invoice_number, reversalNo })]
+          );
+          drawerCorrected = toMoney(cashBack);
+        }
+
+        const newPaid = toMoney(paidTotal - moved);
+        const newBalance = toMoney(toMoney(invoice.balance) + moved);
+        await connection.execute(
+          `UPDATE invoices SET paid_total = ?, balance = ?, status = 'partial',
+             due_date = COALESCE(due_date, txn_date)
+           WHERE id = ?`,
+          [newPaid, newBalance, invoiceId]
+        );
+
+        const [entryNos] = await connection.execute(
+          `SELECT COALESCE(MAX(entry_no), 0) AS max_no FROM customer_receivable_entries
+            WHERE loc_code = ? AND mac_code = ? AND txn_date = ? AND document_type = 'payment_reversal' AND document_no = ? FOR UPDATE`,
+          [locationCode, machineCode, businessDate, reversalNo]
+        );
+        await connection.execute(
+          `INSERT INTO customer_receivable_entries
+             (business_day_id, customer_account_id, loc_code, mac_code, txn_date, document_type, document_no, entry_no,
+              invoice_id, cash_shift_id, entry_type, amount, reason, created_by, metadata)
+           VALUES (?, ?, ?, ?, ?, 'payment_reversal', ?, ?, ?, ?, 'payment_reversal_debit', ?, ?, ?, CAST(? AS JSON))`,
+          [businessDay.id, invoice.customer_account_id, locationCode, machineCode, businessDate, reversalNo,
+            Number(entryNos[0]?.max_no || 0) + 1, invoiceId, invoice.cash_shift_id || null, moved,
+            cleanReason.slice(0, 255), userId,
+            JSON.stringify({
+              invoiceNumber: invoice.invoice_number, sourceReceiptNo: invoice.receipt_no,
+              takenBack, drawerCorrected
+            })]
+        );
+
+        await connection.commit();
+        return {
+          invoiceId: Number(invoiceId), invoiceNumber: invoice.invoice_number,
+          movedToUnpaid: moved, paidTotal: newPaid, balance: newBalance, status: 'partial',
+          takenBack, drawerCorrected, reversalNo
+        };
+      } catch (error) {
+        await connection.rollback();
+        throw error;
+      }
     });
   }
 
@@ -523,7 +711,7 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
           const [rows] = await connection.execute(
             `SELECT ca.id, ca.account_number, p.display_name,
                     COALESCE(SUM(CASE
-                      WHEN e.entry_type IN ('sale_debit','refund_debit','cheque_dishonour_debit') THEN e.amount
+                      WHEN e.entry_type IN ('sale_debit','refund_debit','cheque_dishonour_debit','payment_reversal_debit') THEN e.amount
                       WHEN e.entry_type IN ('collection_credit', 'return_credit','store_credit') THEN -e.amount
                       ELSE 0
                     END), 0) AS outstanding_balance
@@ -824,6 +1012,7 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
     clearRememberedAllocationLot,
     setLiveItemAllocationPriority,
     collectInvoiceBalance,
+    unsettleInvoice,
     getInvoice,
     searchInvoices,
     getInvoiceArchive,

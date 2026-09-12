@@ -72,3 +72,21 @@ aside, .invoice-detail, .detail-empty { background:var(--ui-warm-surface); box-s
   text-decoration:none; background:var(--ui-danger-soft,#f7e3e0); color:var(--ui-danger,#a63a2a); }
 .refund-tag.partial { background:var(--ui-warning-soft,#f6eeda); color:var(--ui-warning,#8a6014); }
 .refund-tag.detail { font-size:.6rem; margin-left:.6rem; }
+
+/* Net after returns: the list totals what the sales are really worth. */
+.list-summary { display:flex; flex-wrap:wrap; gap:10px; justify-content:space-between; padding:8px 10px; border-bottom:1px solid var(--ui-border); color:var(--ui-ink-muted); font-size:11px; }
+.list-summary b { color:var(--ui-navy); font-variant-numeric:tabular-nums; }
+.list-summary .returned b { color:var(--ui-danger); }
+.invoice-row s { color:var(--ui-ink-muted); }
+
+/* Money that was recorded as taken but never really arrived. */
+.unsettle { margin-top:12px; padding:12px 14px; border:1px solid #e8cba4; border-left:3px solid var(--ui-warning); border-radius:var(--ui-radius); background:#fff8ef; }
+.unsettle-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+.unsettle-head b { color:#8a4a10; font-size:12.5px; }
+.unsettle-head small { display:block; margin-top:2px; color:#9a6636; font-size:11px; line-height:1.45; }
+.unsettle-form { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:8px; margin-top:10px; }
+.unsettle-form label { display:grid; gap:3px; color:var(--ui-ink-muted); font-size:10px; font-weight:800; letter-spacing:.04em; text-transform:uppercase; }
+.unsettle-form label.wide { grid-column:1/-1; }
+.unsettle-form input,.unsettle-form select { min-height:34px; box-sizing:border-box; padding:6px 9px; border:1px solid var(--ui-border-strong); border-radius:var(--ui-radius-sm); }
+.unsettle-note { grid-column:1/-1; margin:0; color:#8a4a10; font-size:11px; line-height:1.45; }
+.unsettle-actions { grid-column:1/-1; display:flex; justify-content:flex-end; gap:8px; }
