@@ -176,11 +176,21 @@ export class InvoiceHistoryComponent implements OnInit {
     if (!window.posApi || !this.invoice || this.unsettling) return;
     if (!this.unsettleReason.trim()) { this.error = 'Write why this bill is going back to unpaid.'; return; }
     this.unsettling = true; this.error = '';
-    const result = await window.posApi.billing.unsettleInvoice({
-      invoiceId: this.invoice.id, amount: Number(this.unsettleAmount),
-      reason: this.unsettleReason.trim(), method: this.unsettleMethod || undefined
-    }, this.actor());
-    this.unsettling = false;
+    // The button stays disabled while this runs, so the flag has to be cleared
+    // even when the call throws. Without the finally a failure left the screen
+    // saying "Working..." for ever, with no way to try again.
+    let result;
+    try {
+      result = await window.posApi.billing.unsettleInvoice({
+        invoiceId: this.invoice.id, amount: Number(this.unsettleAmount),
+        reason: this.unsettleReason.trim(), method: this.unsettleMethod || undefined
+      }, this.actor());
+    } catch (err: any) {
+      this.error = err?.message || 'Could not mark this bill unpaid.';
+      return;
+    } finally {
+      this.unsettling = false;
+    }
     if (!result.success) { this.error = result.error || 'Could not mark this bill unpaid.'; return; }
     const done = result.data;
     this.info = `${done.invoiceNumber}: ${this.money(done.movedToUnpaid)} is now owed by the customer.`

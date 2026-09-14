@@ -674,6 +674,16 @@ function registerIpcHandlers(services) {
     }),
     { authorize: requireReceivablesCollect }
   );
+  wrapIpcHandler(
+    'billing.invoices.unsettle',
+    async (payload) => services.billingEngineService.unsettleInvoice({
+      invoiceId: payload?.invoiceId,
+      amount: payload?.amount,
+      reason: payload?.reason,
+      method: payload?.method
+    }),
+    { authorize: requirePaymentReverse }
+  );
 
   wrapIpcHandler(
     'billing.bill.hold',

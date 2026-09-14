@@ -206,6 +206,7 @@ contextBridge.exposeInMainWorld('posApi', {
     searchInvoices: (filters, actor) => invoke('billing.invoices.search', { filters, actor }),
     getInvoice: (invoiceId, actor) => invoke('billing.invoices.get', { invoiceId, actor }),
     collectInvoiceBalance: (payload, actor) => invoke('billing.invoices.collect', { ...payload, actor }),
+    unsettleInvoice: (payload, actor) => invoke('billing.invoices.unsettle', { ...payload, actor }),
     holdBill: (session, actor) => invoke('billing.bill.hold', { session, actor }),
     addItem: (bill, item, actor) => invoke('billing.bill.addItem', { bill, item, actor }),
     updateItem: (itemId, updates, actor) => invoke('billing.bill.updateItem', { itemId, updates, actor }),
