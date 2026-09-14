@@ -297,8 +297,17 @@ export class InvoiceHistoryComponent implements OnInit {
     return [];
   }
   itemExtras(item: any): Array<{ label: string; value: string }> {
-    return [];
+    // A reprint of a bill with a return has to show it on the line, or the
+    // quantities on the paper no longer match the goods the customer kept.
+    const returned = item?.refunded;
+    if (!returned) return [];
+    const measure = returned.kilos !== undefined && returned.kilos !== null && returned.kilos !== ''
+      ? `${this.formatMeasure(returned.quantity)} qty / ${this.formatMeasure(returned.kilos)} kg`
+      : `${this.formatMeasure(returned.quantity)} qty`;
+    return [{ label: 'Returned', value: `${measure}  -${this.money(returned.merchandiseTotal)}` }];
   }
+  get refunds(): any[] { return this.invoice?.refunds || []; }
+  get refundedTotal(): number { return Number(this.invoice?.refundedTotal || 0); }
   get itemMeasureSummaries(): ItemMeasureSummary[] {
     return summarizeItemMeasures(this.invoice?.items || []);
   }
@@ -370,7 +379,18 @@ export class InvoiceHistoryComponent implements OnInit {
         { label: 'Subtotal', value: this.money(i.subtotal) }, ...(i.discountTotal > 0 ? [{ label: 'Discount', value: `-${this.money(i.discountTotal)}` }] : []),
         ...(Number(i.bag_charge_total || 0) > 0 ? [{ label: 'Bag Charge', value: this.money(i.bag_charge_total) }] : []),
         ...(Number(i.wage_charge_total || 0) > 0 ? [{ label: 'Wage Charge', value: this.money(i.wage_charge_total) }] : []),
-        { label: 'TOTAL', value: this.money(i.grandTotal), bold: true }, ...i.payments.filter((p: any) => p.method !== 'pending').map((p: any) => ({ label: this.paymentLabel(p), value: this.money(p.amount) })), ...(i.balance > 0 ? [{ label: 'Pending Balance', value: this.money(i.balance) }] : [])
+        { label: 'TOTAL', value: this.money(i.grandTotal), bold: true },
+        // Returns sit between the total and the money taken, because that is the
+        // order the amounts happened in and the only way the pending balance on
+        // the paper adds up.
+        ...this.refunds.map((refund: any) => ({
+          label: `Returned ${String(refund.txnDate || '').slice(0, 10)}`,
+          value: `-${this.money(refund.grandTotal)}`
+        })),
+        ...(this.refundedTotal > 0
+          ? [{ label: 'Net After Returns', value: this.money(Number(i.grandTotal) - this.refundedTotal), bold: true }]
+          : []),
+        ...i.payments.filter((p: any) => p.method !== 'pending').map((p: any) => ({ label: this.paymentLabel(p), value: this.money(p.amount) })), ...(i.balance > 0 ? [{ label: 'Pending Balance', value: this.money(i.balance) }] : [])
       ], footerLines: footers
     };
   }

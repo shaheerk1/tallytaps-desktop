@@ -14,6 +14,23 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
     return Number.isFinite(kilos) && kilos > 0 ? Math.round(kilos * 1000) / 1000 : null;
   }
 
+  /**
+   * A business date as plain YYYY-MM-DD.
+   *
+   * A DATE column arrives as a Date at local midnight, and Electron's IPC keeps
+   * it a Date, so a screen that prints it gets "Mon Sep 07". Converting through
+   * toISOString() is worse: east of Greenwich local midnight is the previous day
+   * in UTC, so the printed date would be a day early. The calendar parts are
+   * read locally, which is what the business date already means.
+   */
+  function dateText(value) {
+    if (value == null || value === '') return null;
+    if (typeof value === 'string') return value.slice(0, 10);
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  }
+
   function toStockQuantity(value) {
     const number = Number(value || 0);
     return Math.round((Number.isFinite(number) ? number : 0) * 1000) / 1000;
@@ -723,12 +740,69 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
           return rows[0] || null;
         })
       : null;
+
+    // A reprint has to explain itself. Without the returns against this bill the
+    // paper shows the original lines and total, then a smaller balance, and
+    // nothing accounts for the difference.
+    const refunds = await database.withConnection(async (connection) => {
+      const [headers] = await connection.execute(
+        `SELECT id, refund_number, refund_no, txn_date, reason,
+                merchandise_total, bag_charge_total, wage_charge_total, grand_total
+         FROM refunds WHERE source_invoice_id = ? AND status = 'completed'
+         ORDER BY txn_date, id`,
+        [invoiceId]
+      );
+      if (!headers.length) return [];
+      const [lines] = await connection.query(
+        `SELECT refund_id, source_invoice_item_id, item_code, description,
+                return_quantity, return_kilos, merchandise_total, total
+         FROM refund_items WHERE refund_id IN (?) ORDER BY refund_id, line_no`,
+        [headers.map((row) => row.id)]
+      );
+      return headers.map((header) => ({
+        id: Number(header.id),
+        refundNumber: header.refund_number,
+        refundNo: Number(header.refund_no),
+        txnDate: dateText(header.txn_date),
+        reason: header.reason || null,
+        merchandiseTotal: toMoney(header.merchandise_total),
+        bagChargeTotal: toMoney(header.bag_charge_total),
+        wageChargeTotal: toMoney(header.wage_charge_total),
+        grandTotal: toMoney(header.grand_total),
+        items: lines.filter((line) => Number(line.refund_id) === Number(header.id)).map((line) => ({
+          sourceInvoiceItemId: line.source_invoice_item_id == null ? null : Number(line.source_invoice_item_id),
+          itemCode: line.item_code,
+          description: line.description,
+          returnQuantity: toMoney(line.return_quantity),
+          returnKilos: line.return_kilos == null ? null : toKilos(line.return_kilos),
+          merchandiseTotal: toMoney(line.merchandise_total),
+          total: toMoney(line.total)
+        }))
+      }));
+    });
+    const refundedByItem = new Map();
+    for (const refund of refunds) {
+      for (const line of refund.items) {
+        if (line.sourceInvoiceItemId == null) continue;
+        const running = refundedByItem.get(line.sourceInvoiceItemId)
+          || { quantity: 0, kilos: 0, merchandiseTotal: 0, total: 0 };
+        running.quantity += line.returnQuantity;
+        running.kilos += line.returnKilos || 0;
+        running.merchandiseTotal += line.merchandiseTotal;
+        running.total += line.total;
+        refundedByItem.set(line.sourceInvoiceItemId, running);
+      }
+    }
+
     const parse = (value) => {
       if (value && typeof value === 'object') return value;
       try { return value ? JSON.parse(value) : {}; } catch { return {}; }
     };
     return {
       ...invoice,
+      // Printed on the reprint, so it must be a date and not a Date object's
+      // "Mon Sep 07" rendering.
+      txn_date: dateText(invoice.txn_date) || invoice.txn_date,
       subtotal: toMoney(invoice.subtotal), discountTotal: toMoney(invoice.discount_total), taxTotal: toMoney(invoice.tax_total),
       grandTotal: toMoney(invoice.grand_total), paidTotal: toMoney(invoice.paid_total), balance: toMoney(invoice.balance),
       metadata: parse(invoice.metadata),
@@ -740,10 +814,20 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
         name: customer.display_name,
         outstandingBalance: toMoney(customer.outstanding_balance)
       } : null,
+      refunds,
+      refundedTotal: toMoney(refunds.reduce((sum, refund) => sum + refund.grandTotal, 0)),
+      refundedMerchandiseTotal: toMoney(refunds.reduce((sum, refund) => sum + refund.merchandiseTotal, 0)),
       items: invoice.items.map((item) => {
         const metadata = hydrateLineMetadata(parse(item.metadata), item.kilos);
+        const returned = refundedByItem.get(Number(item.id)) || null;
         return {
           ...item,
+          refunded: returned ? {
+            quantity: toMoney(returned.quantity),
+            kilos: returned.kilos ? toKilos(returned.kilos) : null,
+            merchandiseTotal: toMoney(returned.merchandiseTotal),
+            total: toMoney(returned.total)
+          } : null,
           qty: toMoney(item.quantity),
           kilos: item.kilos == null ? null : toKilos(item.kilos),
           pricingBasis: item.pricing_basis === 'kilos' ? 'kilos' : 'qty',

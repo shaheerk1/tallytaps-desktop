@@ -771,8 +771,41 @@ export type InvoiceArchive = {
     wageChargeTotal?: number;
     total: number;
     metadata: Record<string, unknown>;
+    /** What has come back against this line, or null if nothing has. */
+    refunded?: {
+      quantity: number;
+      kilos: number | null;
+      merchandiseTotal: number;
+      total: number;
+    } | null;
   }>;
   payments: PaymentLine[];
+  /**
+   * Completed returns against this bill, so a reprint can account for the
+   * difference between its original total and what is still owed.
+   */
+  refunds?: Array<{
+    id: number;
+    refundNumber: string;
+    refundNo: number;
+    txnDate: string;
+    reason: string | null;
+    merchandiseTotal: number;
+    bagChargeTotal: number;
+    wageChargeTotal: number;
+    grandTotal: number;
+    items: Array<{
+      sourceInvoiceItemId: number | null;
+      itemCode: string;
+      description: string;
+      returnQuantity: number;
+      returnKilos: number | null;
+      merchandiseTotal: number;
+      total: number;
+    }>;
+  }>;
+  refundedTotal?: number;
+  refundedMerchandiseTotal?: number;
 };
 
 export type OpenBillResult = {
