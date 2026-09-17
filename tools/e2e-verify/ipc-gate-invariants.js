@@ -118,7 +118,12 @@ runVerifier('IPC gate invariants', async (app) => {
   const backAtStore = await login('verify_admin', 'verify-admin-pass', store.id);
   assert(backAtStore.success, `Signing back in to the store failed: ${backAtStore.error}`);
   const storeReceipt = await ok('settings.receipt.get', {});
-  assert(storeReceipt.addressLines[0] !== '7 Retail Road' && (storeReceipt.addressLines[0] || '') === String(sharedReceipt.store_address_1 || '').trim(),
+  // The bill skips blank address lines, so its first line is the first non-blank
+  // shared line. A store whose line 1 is empty prints line 2 there; comparing
+  // with store_address_1 alone failed on real data even though nothing leaked.
+  const sharedAddressLines = [sharedReceipt.store_address_1, sharedReceipt.store_address_2]
+    .map((line) => String(line || '').trim()).filter(Boolean);
+  assert(storeReceipt.addressLines[0] !== '7 Retail Road' && (storeReceipt.addressLines[0] || '') === (sharedAddressLines[0] || ''),
     `The store bill must keep its own (shared) address, got ${storeReceipt.addressLines[0]}.`);
   passed.push('another location’s saved address never appears on this location’s bill');
 

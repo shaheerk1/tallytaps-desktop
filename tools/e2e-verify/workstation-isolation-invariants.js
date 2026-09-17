@@ -154,7 +154,10 @@ async function main() {
         passed.push('the gate replaces the actor and every identity field with the session’s own, keeping filters');
 
         // ── 4. A write lands at the session's location ──────
-        const [[category]] = await connection.execute("SELECT id FROM expense_categories WHERE loc_code IS NULL AND is_active = 1 ORDER BY sort_order LIMIT 1");
+        // An overhead category, because this checks where a write lands, not
+        // expense rules: a lot expense (the first by sort order is lorry wage)
+        // must now name its GRN and would be refused before the check is reached.
+        const [[category]] = await connection.execute("SELECT id FROM expense_categories WHERE loc_code IS NULL AND is_active = 1 AND default_treatment = 'overhead' ORDER BY sort_order LIMIT 1");
         const [safeB] = await connection.execute(
           `INSERT INTO fund_accounts (fund_code, name, fund_kind, loc_code, opening_balance) VALUES (?, 'Retail safe', 'cash_safe', ?, 10000)`,
           [`SAFE-${VB}`, VB]
@@ -255,10 +258,22 @@ async function main() {
         assert(catsAtA.some((row) => row.name === `Store only ${stamp}`), 'Location A must see its own category.');
         assert(!catsAtB.some((row) => row.name === `Store only ${stamp}`), 'Location B must not see A’s category.');
         assert(catsAtB.some((row) => row.isShared), 'Both locations keep the shared categories.');
+        // Editing a shared reason at a location no longer refuses: it gives that
+        // location its own copy in the shared one's place. Isolation now means the
+        // copy is private, the shared row is untouched, and nobody else sees it.
         const sharedCat = catsAtA.find((row) => row.isShared);
-        await expectRejection(requestContext.run(ctxA, () => expenseRepository.saveCategory({ id: sharedCat.id, name: 'Renamed' })),
-          /shared by every location/, 'A location rewriting a shared category');
-        passed.push('expense categories: every location keeps the shared set and adds its own privately');
+        const renamed = await requestContext.run(ctxA, () => expenseRepository.saveCategory({
+          id: sharedCat.id, name: `Renamed ${stamp}`, defaultTreatment: sharedCat.defaultTreatment
+        }));
+        const [[copyRow]] = await connection.execute('SELECT loc_code, category_code FROM expense_categories WHERE id = ?', [renamed.id]);
+        assert(renamed.id !== sharedCat.id && copyRow.loc_code === VA && copyRow.category_code === sharedCat.categoryCode,
+          'Editing a shared category at a location must create that location’s own copy, not change the shared row.');
+        const [[sharedRow]] = await connection.execute('SELECT loc_code, name FROM expense_categories WHERE id = ?', [sharedCat.id]);
+        assert(sharedRow.loc_code === null && sharedRow.name === sharedCat.name, 'The shared category itself must stay unchanged.');
+        const catsAtBAfter = await requestContext.run(ctxB, () => expenseRepository.listCategories());
+        assert(!catsAtBAfter.some((row) => row.name === `Renamed ${stamp}`), 'Another location must not see a location’s own copy.');
+        assert(catsAtBAfter.some((row) => row.id === sharedCat.id && row.name === sharedCat.name), 'Another location keeps the shared original.');
+        passed.push('expense categories: every location keeps the shared set, and an edit there becomes its own private copy');
 
         // ── 11. Reports read one location ──────────────────
         for (const [loc, itemId, code] of [[VA, itemA.insertId, 'STORE-SALE'], [VB, itemB.insertId, 'RETAIL-SALE']]) {
