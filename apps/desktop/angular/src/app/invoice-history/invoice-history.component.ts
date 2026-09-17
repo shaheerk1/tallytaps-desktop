@@ -1,4 +1,7 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnDestroy, OnInit } from '@angular/core';
+import { ActivatedRoute } from '@angular/router';
+import { Subscription } from 'rxjs';
+import { InvoiceArchiveLink, PageLinksService, readInvoiceArchiveLink } from '../services/page-links.service';
 import { SessionService } from '../services/session.service';
 import { PrintingService } from '../services/printing.service';
 import { ItemMeasureSummary, itemMeasureSummaryText, summarizeItemMeasures } from '../services/item-measure-summary';
@@ -7,7 +10,7 @@ import type { FundAccount, InvoiceArchive, InvoiceRefundState, PaymentMode, Prin
 type InvoiceRow = Pick<InvoiceArchive, 'id' | 'invoice_number' | 'loc_code' | 'mac_code' | 'receipt_no' | 'txn_date' | 'status' | 'subtotal' | 'grandTotal' | 'paidTotal' | 'balance' | 'customer_code'> & Partial<InvoiceRefundState>;
 
 @Component({ selector: 'pos-invoice-history', templateUrl: './invoice-history.component.html', styleUrls: ['./invoice-history.component.css'] })
-export class InvoiceHistoryComponent implements OnInit {
+export class InvoiceHistoryComponent implements OnInit, OnDestroy {
   term = ''; customerCode = ''; locCode = ''; macCode = ''; txnDate = '';
   /** Only bills returned in full are hidden by default; a partly returned bill
    *  is still a sale that stood, so it stays, marked, with its net value. */
@@ -21,14 +24,67 @@ export class InvoiceHistoryComponent implements OnInit {
   /** Money that was recorded as taken but never really arrived. */
   unsettleOpen = false; unsettleAmount = 0; unsettleReason = ''; unsettleMethod = ''; unsettling = false;
   private receiptSettings: any = null;
+  private linkSubscription?: Subscription;
 
-  constructor(public session: SessionService, private printing: PrintingService) {}
+  constructor(
+    public session: SessionService,
+    private printing: PrintingService,
+    private route: ActivatedRoute,
+    private pageLinks: PageLinksService
+  ) {}
   private actor() { return this.session.getActor() || undefined; }
 
   async ngOnInit(): Promise<void> {
     const ws = this.session.getWorkstationSession();
     this.locCode = ws?.locationCode || ''; this.macCode = ws?.machineCode || ''; this.txnDate = ws?.billingDate || '';
-    await Promise.all([this.search(), this.loadReceiptContext(), this.loadPaymentModes(), this.loadSettlementFunds()]);
+    // Another screen may have opened the archive at a particular bill; that
+    // link sets the filters, so the default search is skipped.
+    const openedAtBill = Boolean(readInvoiceArchiveLink(this.route.snapshot.queryParamMap));
+    this.linkSubscription = this.pageLinks.onLink(this.route, readInvoiceArchiveLink, (link) => this.showLinkedInvoice(link));
+    await Promise.all([
+      openedAtBill ? Promise.resolve() : this.search(),
+      this.loadReceiptContext(), this.loadPaymentModes(), this.loadSettlementFunds()
+    ]);
+  }
+
+  ngOnDestroy(): void { this.linkSubscription?.unsubscribe(); }
+
+  /**
+   * Shows one bill asked for by another screen: the filters are set to find
+   * that bill and nothing else, the list is searched, and the bill is opened.
+   * A bill returned in full is brought into view too, since it was asked for.
+   */
+  async showLinkedInvoice(link: InvoiceArchiveLink): Promise<void> {
+    this.locCode = link.locCode || this.session.getWorkstationSession()?.locationCode || '';
+    this.macCode = link.macCode || '';
+    this.txnDate = typeof link.txnDate === 'string' ? link.txnDate : '';
+    this.term = link.invoiceNumber || '';
+    this.customerCode = '';
+    this.showRefunded = Boolean(link.showReturned);
+    await this.search();
+    if (!this.rows.some((row) => row.id === link.invoiceId) && !this.showRefunded) {
+      this.showRefunded = true;
+      await this.search();
+    }
+    await this.select({ id: link.invoiceId } as InvoiceRow);
+    void this.pageLinks.consume(this.route);
+  }
+
+  /** A new bill needs the right to create bills, nothing more: it posts only when finalized. */
+  get canCopyBill(): boolean { return this.session.hasPermission('billing.create'); }
+
+  copyToNewBill(): void {
+    if (this.invoice?.id) void this.pageLinks.openBillingCopy({ copyFromInvoiceId: Number(this.invoice.id) });
+  }
+
+  /** Where this bill was copied from, if it was. */
+  get copiedFrom(): { invoiceId: number; invoiceNumber: string } | null {
+    return this.invoice?.metadata?.copiedFrom || null;
+  }
+
+  openCopySource(): void {
+    const source = this.copiedFrom;
+    if (source) void this.pageLinks.openInvoiceArchive({ invoiceId: source.invoiceId, invoiceNumber: source.invoiceNumber, showReturned: true });
   }
 
   async loadSettlementFunds(): Promise<void> {

@@ -126,7 +126,7 @@ async function main() {
         const base = { userId: user.id, origin };
 
         // ── 1. Drawer expense writes both ledgers ───────────
-        const drawerExpense = await service.recordExpense({
+        const drawerExpense = await service.recordExpense({ attachLater: true,
           ...base, expenseCategoryId: lotCategory.id, fundAccountId: drawerFund.insertId,
           amount: 1500, reason: 'Lorry wage for the onion load', payee: 'Driver'
         });
@@ -153,7 +153,7 @@ async function main() {
         assert(money(shiftTotals.expected) === 8500, `Shift expected total should be 8500.00, got ${money(shiftTotals.expected)}.`);
 
         // ── 2. Non-drawer expense uses its own ledger ───────
-        const safeExpense = await service.recordExpense({
+        const safeExpense = await service.recordExpense({ attachLater: true,
           ...base, expenseCategoryId: overheadCategory.id, fundAccountId: safeFund.insertId,
           amount: 2000, reason: 'Shop rent paid from the safe'
         });
@@ -172,7 +172,7 @@ async function main() {
         assert(money(safeView.balance) === 3000, `Safe balance should be 5000 opening - 2000 spent, got ${money(safeView.balance)}.`);
 
         // ── 4. A fund cannot be overdrawn ───────────────────
-        const overdrawn = await expectRejection(service.recordExpense({
+        const overdrawn = await expectRejection(service.recordExpense({ attachLater: true,
           ...base, expenseCategoryId: overheadCategory.id, fundAccountId: safeFund.insertId,
           amount: 99999, reason: 'More than the safe holds'
         }), 'An overdrawing expense');
@@ -201,11 +201,11 @@ async function main() {
         assert(held === 11500, `Total held after the transfer should be 11500.00, got ${held}.`);
 
         // ── 6. Incomplete expenses are refused ──────────────
-        await expectRejection(service.recordExpense({ ...base, fundAccountId: safeFund.insertId, amount: 100, reason: 'No category' }), 'An expense without a category');
-        await expectRejection(service.recordExpense({ ...base, expenseCategoryId: overheadCategory.id, amount: 100, reason: 'No fund' }), 'An expense without a fund');
-        await expectRejection(service.recordExpense({ ...base, expenseCategoryId: overheadCategory.id, fundAccountId: safeFund.insertId, amount: 0, reason: 'Zero' }), 'A zero-amount expense');
-        await expectRejection(service.recordExpense({ ...base, expenseCategoryId: overheadCategory.id, fundAccountId: safeFund.insertId, amount: 100, reason: '   ' }), 'An expense without a reason');
-        await expectRejection(service.recordExpense({ expenseCategoryId: overheadCategory.id, fundAccountId: safeFund.insertId, amount: 100, reason: 'No session', userId: user.id }), 'An expense without a workstation session');
+        await expectRejection(service.recordExpense({ attachLater: true, ...base, fundAccountId: safeFund.insertId, amount: 100, reason: 'No category' }), 'An expense without a category');
+        await expectRejection(service.recordExpense({ attachLater: true, ...base, expenseCategoryId: overheadCategory.id, amount: 100, reason: 'No fund' }), 'An expense without a fund');
+        await expectRejection(service.recordExpense({ attachLater: true, ...base, expenseCategoryId: overheadCategory.id, fundAccountId: safeFund.insertId, amount: 0, reason: 'Zero' }), 'A zero-amount expense');
+        await expectRejection(service.recordExpense({ attachLater: true, ...base, expenseCategoryId: overheadCategory.id, fundAccountId: safeFund.insertId, amount: 100, reason: '   ' }), 'An expense without a reason');
+        await expectRejection(service.recordExpense({ attachLater: true, expenseCategoryId: overheadCategory.id, fundAccountId: safeFund.insertId, amount: 100, reason: 'No session', userId: user.id }), 'An expense without a workstation session');
 
         // ── 7. A replayed expense cannot be written twice ───
         const [[replayed]] = await connection.execute(

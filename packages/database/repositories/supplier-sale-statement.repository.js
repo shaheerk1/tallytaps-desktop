@@ -37,11 +37,12 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
     return money(raw);
   }
 
-  function calculateTotals({ allocations = [], manualLines = [], adjustments = [], commissionRate = 0, commissionRounding = 'cents', commissionOverride = null, commissionOverrideReason = '' }) {
+  function calculateTotals({ allocations = [], manualLines = [], purchaseLines = [], adjustments = [], commissionRate = 0, commissionRounding = 'cents', commissionOverride = null, commissionOverrideReason = '' }) {
     const assistedNet = money(allocations.reduce((sum, row) => sum + number(row.merchandiseAmount ?? row.merchandise_amount), 0));
     const manualNet = money(manualLines.reduce((sum, row) => sum + number(row.merchandiseAmount ?? row.merchandise_amount), 0));
     const refundTotal = money(allocations.reduce((sum, row) => sum + number(row.refundMerchandiseAmount ?? row.refund_merchandise_amount), 0));
-    const merchandiseSubtotal = money(assistedNet + manualNet);
+    const purchaseNet = money(purchaseLines.reduce((sum, row) => sum + number(row.merchandiseAmount ?? row.merchandise_amount), 0));
+    const merchandiseSubtotal = money(assistedNet + manualNet + purchaseNet);
     const adjustmentTotal = money(adjustments.reduce((sum, row) => {
       const amount = number(row.amount);
       return sum + (String(row.adjustmentType ?? row.adjustment_type) === 'credit' ? amount : -amount);
@@ -60,7 +61,7 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
     };
   }
 
-  function groupLines(allocations = [], manualLines = []) {
+  function groupLines(allocations = [], manualLines = [], purchaseLines = []) {
     const grouped = new Map();
     const add = (row, sourceType) => {
       const itemCode = text(row.item_code ?? row.itemCode);
@@ -69,12 +70,15 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
       const unitPrice = money(row.unit_price ?? row.unitPrice);
       const productId = row.product_id ?? row.productId ?? null;
       const key = `${productId || itemCode}|${pricingBasis}|${unitPrice.toFixed(2)}`;
-      const current = grouped.get(key) || { productId, itemCode, description, pricingBasis, unitPrice, quantity: 0, kilos: 0, merchandiseAmount: 0, sourceCount: 0, manualCount: 0, overrideCount: 0 };
+      const current = grouped.get(key) || { productId, itemCode, description, pricingBasis, unitPrice, quantity: 0, kilos: 0, merchandiseAmount: 0, sourceCount: 0, manualCount: 0, purchaseCount: 0, overrideCount: 0 };
       current.quantity = measure(current.quantity + number(row.allocated_quantity ?? row.quantity ?? row.allocatedQuantity));
       current.kilos = measure(current.kilos + number(row.allocated_kilos ?? row.kilos ?? row.allocatedKilos));
       current.merchandiseAmount = money(current.merchandiseAmount + number(row.merchandise_amount ?? row.merchandiseAmount));
       if (sourceType === 'manual') current.manualCount += 1;
-      else {
+      else if (sourceType === 'purchase') {
+        current.purchaseCount += 1;
+        if (text(row.reason)) current.overrideCount += 1;
+      } else {
         current.sourceCount += 1;
         if (String(row.attribution_mode ?? row.attributionMode) !== 'source') current.overrideCount += 1;
       }
@@ -82,6 +86,7 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
     };
     allocations.forEach((row) => add(row, 'source'));
     manualLines.forEach((row) => add(row, 'manual'));
+    purchaseLines.forEach((row) => add(row, 'purchase'));
     return [...grouped.values()].sort((a, b) => a.itemCode.localeCompare(b.itemCode) || a.unitPrice - b.unitPrice);
   }
 
@@ -152,7 +157,7 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
     const params = [currentStatementId, currentStatementId, currentStatementId, currentStatementId];
     if (fromDate) { where.push('i.txn_date >= ?'); params.push(fromDate); }
     if (toDate) { where.push('i.txn_date <= ?'); params.push(toDate); }
-    if (scope === 'supplier' && supplierId) { where.push('COALESCE(attr.supplier_id, source_supplier.id) = ?'); params.push(supplierId); }
+    if (scope === 'supplier' && supplierId) { where.push('COALESCE(attr.supplier_id, lot_supplier.supplier_id, source_supplier.id) = ?'); params.push(supplierId); }
     if (!filters.includeUnavailable) {
       where.push(`((ii.pricing_basis = 'kilos' AND GREATEST(0, COALESCE(ii.kilos, 0) - COALESCE(ref.refunded_kilos, 0) - COALESCE(committed.kilos, 0)) > 0.0005)
         OR (ii.pricing_basis = 'qty' AND GREATEST(0, ii.quantity - COALESCE(ref.refunded_quantity, 0) - COALESCE(committed.quantity, 0)) > 0.0005))`);
@@ -176,9 +181,9 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
               COALESCE(NULLIF(i.customer_code, ''), ii.customer_code) AS customer_code,
               ii.product_id, ii.item_code, ii.description, ii.supplier_code AS source_supplier_code,
               source_supplier.id AS source_supplier_id, attr.id AS attribution_id, attr.reason AS attribution_reason,
-              COALESCE(attr.supplier_id, source_supplier.id) AS effective_supplier_id,
-              COALESCE(effective_supplier.supplier_code, source_supplier.supplier_code, ii.supplier_code) AS effective_supplier_code,
-              COALESCE(effective_supplier.name, source_supplier.name, '') AS effective_supplier_name,
+              COALESCE(attr.supplier_id, lot_supplier.supplier_id, source_supplier.id) AS effective_supplier_id,
+              COALESCE(effective_supplier.supplier_code, lot_supplier_row.supplier_code, source_supplier.supplier_code, ii.supplier_code) AS effective_supplier_code,
+              COALESCE(effective_supplier.name, lot_supplier_row.name, source_supplier.name, '') AS effective_supplier_name,
               ii.pricing_basis, ii.unit_price, ii.quantity AS source_quantity, ii.kilos AS source_kilos,
               ii.merchandise_total AS source_merchandise, ii.bag_charge_total AS source_bag_charge, ii.wage_charge_total AS source_wage_charge,
               COALESCE(ref.refunded_quantity, 0) AS refunded_quantity, COALESCE(ref.refunded_kilos, 0) AS refunded_kilos,
@@ -198,6 +203,17 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
        LEFT JOIN suppliers source_supplier ON source_supplier.supplier_code = ii.supplier_code AND source_supplier.loc_code = ii.loc_code
        LEFT JOIN supplier_invoice_item_attributions attr ON attr.invoice_item_id = ii.id
        LEFT JOIN suppliers effective_supplier ON effective_supplier.id = attr.supplier_id
+       -- Whose goods were actually sold: the lot the line consumed says so, which
+       -- is firmer than the code typed at the counter. Only when every lot behind
+       -- the line came from one supplier; a split line falls back to the code.
+       LEFT JOIN (
+         SELECT lsa.invoice_item_id, MIN(l.supplier_id) AS supplier_id, COUNT(DISTINCT l.supplier_id) AS supplier_count
+         FROM lot_sale_allocations lsa
+         JOIN inventory_lots l ON l.id = lsa.inventory_lot_id
+         WHERE lsa.document_type = 'sale'
+         GROUP BY lsa.invoice_item_id
+       ) lot_supplier ON lot_supplier.invoice_item_id = ii.id AND lot_supplier.supplier_count = 1
+       LEFT JOIN suppliers lot_supplier_row ON lot_supplier_row.id = lot_supplier.supplier_id
        LEFT JOIN (
          SELECT ri.source_invoice_item_id, SUM(ri.return_quantity) AS refunded_quantity,
                 SUM(COALESCE(ri.return_kilos, 0)) AS refunded_kilos, SUM(ri.merchandise_total) AS refunded_merchandise,
@@ -244,27 +260,159 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
     return database.withConnection((connection) => queryCandidates(connection, filters));
   }
 
-  async function listCandidateGrns({ supplierId, fromDate = null, toDate = null, term = '' } = {}) {
+  /**
+   * GRN lines already paid on another owned purchase statement. Reviewed and
+   * finalized statements hold a line; drafts only overlap, so they are counted.
+   */
+  async function purchaseLineUse(connection, lineIds, statementId = null) {
+    if (!lineIds.length) return new Map();
+    const [rows] = await connection.query(
+      `SELECT pl.goods_receipt_line_id,
+              GROUP_CONCAT(DISTINCT CASE WHEN st.status IN ('reviewed','finalized') THEN st.statement_number END ORDER BY st.statement_number SEPARATOR ', ') AS committed_numbers,
+              COUNT(DISTINCT CASE WHEN st.status = 'finalized' THEN st.id END) AS finalized_count,
+              COUNT(DISTINCT CASE WHEN st.status = 'draft' THEN st.id END) AS draft_count
+       FROM supplier_sale_statement_purchase_lines pl JOIN supplier_sale_statements st ON st.id = pl.statement_id
+       WHERE pl.goods_receipt_line_id IN (${lineIds.map(() => '?').join(',')}) AND st.status <> 'void' AND (? IS NULL OR st.id <> ?)
+       GROUP BY pl.goods_receipt_line_id`,
+      [...lineIds, statementId, statementId]
+    );
+    return new Map(rows.map((row) => [Number(row.goods_receipt_line_id), { committedStatementNumbers: row.committed_numbers || '', finalized: Number(row.finalized_count || 0) > 0, draftStatementCount: Number(row.draft_count || 0) }]));
+  }
+
+  async function listCandidateGrns({ supplierId, fromDate = null, toDate = null, term = '', statementId = null, includeIds = [] } = {}) {
     if (!supplierId) return [];
     const where = ["g.status = 'finalized'", 'g.supplier_id = ?']; const params = [supplierId];
-    if (validDate(fromDate)) { where.push('g.business_date >= ?'); params.push(dateOnly(fromDate)); }
-    if (validDate(toDate)) { where.push('g.business_date <= ?'); params.push(dateOnly(toDate)); }
-    if (text(term)) { const like = `%${text(term)}%`; where.push('(g.grn_number LIKE ? OR p.sku LIKE ? OR p.name LIKE ?)'); params.push(like, like, like); }
+    // The date range and search keep the list short as history grows; GRNs
+    // already chosen for this statement stay listed whatever the filter.
+    const filters = []; const filterParams = [];
+    if (validDate(fromDate)) { filters.push('g.business_date >= ?'); filterParams.push(dateOnly(fromDate)); }
+    if (validDate(toDate)) { filters.push('g.business_date <= ?'); filterParams.push(dateOnly(toDate)); }
+    if (text(term)) { const like = `%${text(term)}%`; filters.push('(g.grn_number LIKE ? OR p.sku LIKE ? OR p.name LIKE ?)'); filterParams.push(like, like, like); }
+    const kept = [...new Set((includeIds || []).map(Number).filter((id) => id > 0))];
+    if (filters.length && kept.length) {
+      where.push(`((${filters.join(' AND ')}) OR g.id IN (${kept.map(() => '?').join(',')}))`); params.push(...filterParams, ...kept);
+    } else if (filters.length) {
+      where.push(...filters); params.push(...filterParams);
+    }
     return database.withConnection(async (connection) => {
       const [rows] = await connection.execute(
         `SELECT g.id, g.grn_number, g.business_date, g.vehicle_no, g.external_reference,
-                gl.product_id, p.sku, p.name AS product_name, gl.package_qty, gl.received_kilos
+                COALESCE(JSON_UNQUOTE(JSON_EXTRACT(g.metadata, '$.ownershipModel')), a.ownership_model, 'owned') AS ownership_model,
+                gl.id AS line_id, gl.product_id, p.sku, p.name AS product_name, gl.package_qty, gl.received_kilos, gl.unit_cost
          FROM goods_receipts g JOIN goods_receipt_lines gl ON gl.goods_receipt_id = g.id
          JOIN products p ON p.id = gl.product_id
+         LEFT JOIN supply_agreements a ON a.id = g.agreement_id
          WHERE ${where.join(' AND ')} ORDER BY g.business_date DESC, g.id DESC, gl.line_no`, params
       );
+      const use = await purchaseLineUse(connection, rows.map((row) => Number(row.line_id)), Number(statementId || 0) || null);
       const grouped = new Map();
       for (const row of rows) {
-        if (!grouped.has(Number(row.id))) grouped.set(Number(row.id), { id: Number(row.id), grnNumber: row.grn_number, businessDate: dateOnly(row.business_date), vehicleNo: row.vehicle_no || '', externalReference: row.external_reference || '', lines: [] });
-        grouped.get(Number(row.id)).lines.push({ productId: Number(row.product_id), itemCode: row.sku, description: row.product_name, quantity: measure(row.package_qty), kilos: row.received_kilos == null ? null : measure(row.received_kilos) });
+        if (!grouped.has(Number(row.id))) grouped.set(Number(row.id), { id: Number(row.id), grnNumber: row.grn_number, businessDate: dateOnly(row.business_date), vehicleNo: row.vehicle_no || '', externalReference: row.external_reference || '', ownershipModel: row.ownership_model === 'consignment' ? 'consignment' : 'owned', lines: [] });
+        const lineUse = use.get(Number(row.line_id)) || { committedStatementNumbers: '', draftStatementCount: 0 };
+        grouped.get(Number(row.id)).lines.push({
+          goodsReceiptLineId: Number(row.line_id), productId: Number(row.product_id), itemCode: row.sku, description: row.product_name,
+          quantity: measure(row.package_qty), kilos: row.received_kilos == null ? null : measure(row.received_kilos),
+          unitCost: row.unit_cost == null ? null : money(row.unit_cost), finalized: false, ...lineUse
+        });
       }
-      return [...grouped.values()];
+      // Settled: every line already paid on a finalized purchase statement.
+      return [...grouped.values()].map((grn) => ({ ...grn, settled: grn.lines.length > 0 && grn.lines.every((line) => line.finalized) }));
     });
+  }
+
+  /**
+   * The lot expenses recorded against these GRNs, as deductions a statement can
+   * carry. The amount is what the expense put on those GRNs' lots (after any
+   * cost taken off or moved away); a reversed expense is never offered.
+   */
+  async function queryExpenseDeductions(connection, { grnIds = [], statementId = null, expenseIds = null, locCode = null }) {
+    const ids = [...new Set((grnIds || []).map(Number).filter((id) => id > 0))];
+    if (!ids.length) return [];
+    const where = [`g.id IN (${ids.map(() => '?').join(',')})`, "e.status = 'recorded'"]; const params = [...ids];
+    if (locCode) { where.push('e.loc_code = ?'); params.push(locCode); }
+    if (Array.isArray(expenseIds)) {
+      const only = [...new Set(expenseIds.map(Number).filter((id) => id > 0))];
+      if (!only.length) return [];
+      where.push(`e.id IN (${only.map(() => '?').join(',')})`); params.push(...only);
+    }
+    const [rows] = await connection.query(
+      `SELECT e.id, e.expense_number, e.txn_date, e.reason, e.payee, c.name AS category_name, SUM(a.amount) AS amount,
+              GROUP_CONCAT(DISTINCT g.grn_number ORDER BY g.grn_number SEPARATOR ', ') AS grn_numbers
+       FROM expense_allocations a
+       JOIN expense_entries e ON e.id = a.expense_entry_id
+       JOIN expense_categories c ON c.id = e.expense_category_id
+       JOIN inventory_lots l ON l.id = a.inventory_lot_id
+       JOIN goods_receipt_lines gl ON gl.id = l.goods_receipt_line_id
+       JOIN goods_receipts g ON g.id = gl.goods_receipt_id
+       WHERE ${where.join(' AND ')}
+       GROUP BY e.id, e.expense_number, e.txn_date, e.reason, e.payee, c.name
+       HAVING SUM(a.amount) > 0.005
+       ORDER BY e.txn_date, e.id`, params
+    );
+    if (!rows.length) return [];
+    const expenseIdList = rows.map((row) => Number(row.id));
+    const [uses] = await connection.query(
+      `SELECT adj.expense_entry_id,
+              GROUP_CONCAT(DISTINCT CASE WHEN st.status IN ('reviewed','finalized') THEN st.statement_number END ORDER BY st.statement_number SEPARATOR ', ') AS committed_numbers,
+              COUNT(DISTINCT CASE WHEN st.status = 'draft' THEN st.id END) AS draft_count
+       FROM supplier_sale_statement_adjustments adj JOIN supplier_sale_statements st ON st.id = adj.statement_id
+       WHERE adj.expense_entry_id IN (${expenseIdList.map(() => '?').join(',')}) AND st.status <> 'void' AND (? IS NULL OR st.id <> ?)
+       GROUP BY adj.expense_entry_id`, [...expenseIdList, statementId, statementId]
+    );
+    const useById = new Map(uses.map((row) => [Number(row.expense_entry_id), row]));
+    return rows.map((row) => ({
+      expenseEntryId: Number(row.id), expenseNumber: row.expense_number, date: dateOnly(row.txn_date),
+      categoryName: row.category_name, reason: row.reason, payee: row.payee || null, amount: money(row.amount),
+      grnNumbers: row.grn_numbers || '',
+      committedStatementNumbers: useById.get(Number(row.id))?.committed_numbers || '',
+      draftStatementCount: Number(useById.get(Number(row.id))?.draft_count || 0)
+    }));
+  }
+
+  async function listExpenseDeductions(filters = {}) {
+    const locCode = requestContext.scopedLocation(filters);
+    return database.withConnection((connection) => queryExpenseDeductions(connection, {
+      grnIds: filters.grnIds, statementId: Number(filters.statementId || 0) || null, locCode
+    }));
+  }
+
+  /** Deduction lines for the chosen expenses: each one's amount comes from its allocations, never from the screen. */
+  async function buildExpenseDeductions(connection, statement, grnIds, requested = []) {
+    const wanted = [...new Set((requested || []).map((row) => Number(row?.expenseEntryId ?? row)).filter((id) => id > 0))];
+    if (!wanted.length) return [];
+    await connection.query(`SELECT id FROM expense_entries WHERE id IN (${wanted.map(() => '?').join(',')}) FOR UPDATE`, wanted);
+    const available = await queryExpenseDeductions(connection, { grnIds, statementId: statement.id, expenseIds: wanted, locCode: statement.loc_code });
+    const byId = new Map(available.map((row) => [row.expenseEntryId, row]));
+    return wanted.map((id) => {
+      const row = byId.get(id);
+      if (!row) throw new Error('An attached expense is no longer recorded against the GRNs on this statement. Reload the statement.');
+      if (row.committedStatementNumbers) throw new Error(`${row.expenseNumber} (${row.categoryName}) is already deducted on ${row.committedStatementNumbers}.`);
+      return {
+        adjustmentType: 'deduction', label: row.categoryName, amount: row.amount,
+        note: `${row.expenseNumber} · ${row.reason}`.slice(0, 255), expenseEntryId: id
+      };
+    });
+  }
+
+  async function validateStoredExpenseDeductions(connection, statement) {
+    const [stored] = await connection.execute(
+      'SELECT expense_entry_id, amount, label FROM supplier_sale_statement_adjustments WHERE statement_id = ? AND expense_entry_id IS NOT NULL FOR UPDATE', [statement.id]
+    );
+    if (!stored.length) return;
+    const [links] = await connection.execute('SELECT goods_receipt_id FROM supplier_sale_statement_grns WHERE statement_id = ?', [statement.id]);
+    const available = await queryExpenseDeductions(connection, {
+      grnIds: links.map((row) => Number(row.goods_receipt_id)), statementId: statement.id,
+      expenseIds: stored.map((row) => Number(row.expense_entry_id)), locCode: statement.loc_code
+    });
+    const byId = new Map(available.map((row) => [row.expenseEntryId, row]));
+    for (const row of stored) {
+      const current = byId.get(Number(row.expense_entry_id));
+      if (!current) throw new Error(`The ${row.label} expense on this statement was reversed or moved off these GRNs. Reopen the statement and save it again.`);
+      if (current.committedStatementNumbers) throw new Error(`${current.expenseNumber} is already deducted on ${current.committedStatementNumbers}.`);
+      if (Math.abs(money(current.amount) - money(row.amount)) > 0.005) {
+        throw new Error(`${current.expenseNumber} now puts ${money(current.amount).toFixed(2)} on these GRNs, not ${money(row.amount).toFixed(2)}. Save the statement again to use the new amount.`);
+      }
+    }
   }
 
   async function listStatements(filters = {}) {
@@ -275,6 +423,7 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
     if (scope) { where.push('st.loc_code = ?'); params.push(scope); }
     if (filters.supplierId) { where.push('st.supplier_id = ?'); params.push(filters.supplierId); }
     if (['draft', 'reviewed', 'finalized', 'void'].includes(filters.status)) { where.push('st.status = ?'); params.push(filters.status); }
+    if (['consignment', 'owned_purchase'].includes(filters.statementType)) { where.push('st.statement_type = ?'); params.push(filters.statementType); }
     if (validDate(filters.fromDate)) { where.push('st.txn_date >= ?'); params.push(dateOnly(filters.fromDate)); }
     if (validDate(filters.toDate)) { where.push('st.txn_date <= ?'); params.push(dateOnly(filters.toDate)); }
     if (text(filters.term)) { const like = `%${text(filters.term)}%`; where.push('(st.statement_number LIKE ? OR s.supplier_code LIKE ? OR s.name LIKE ?)'); params.push(like, like, like); }
@@ -285,10 +434,13 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
                 COALESCE(NULLIF(st.supplier_name_snapshot, ''), s.name) AS supplier_name,
                 (SELECT COUNT(*) FROM supplier_sale_statement_allocations a WHERE a.statement_id = st.id) AS source_line_count,
                 (SELECT COUNT(*) FROM supplier_sale_statement_manual_lines ml WHERE ml.statement_id = st.id) AS manual_line_count,
+                (SELECT COUNT(*) FROM supplier_sale_statement_purchase_lines pl WHERE pl.statement_id = st.id) AS purchase_line_count,
                 (SELECT COALESCE(SUM(a.allocated_quantity), 0) FROM supplier_sale_statement_allocations a WHERE a.statement_id = st.id) +
-                (SELECT COALESCE(SUM(ml.quantity), 0) FROM supplier_sale_statement_manual_lines ml WHERE ml.statement_id = st.id) AS quantity_total,
+                (SELECT COALESCE(SUM(ml.quantity), 0) FROM supplier_sale_statement_manual_lines ml WHERE ml.statement_id = st.id) +
+                (SELECT COALESCE(SUM(pl.quantity), 0) FROM supplier_sale_statement_purchase_lines pl WHERE pl.statement_id = st.id) AS quantity_total,
                 (SELECT COALESCE(SUM(a.allocated_kilos), 0) FROM supplier_sale_statement_allocations a WHERE a.statement_id = st.id) +
-                (SELECT COALESCE(SUM(ml.kilos), 0) FROM supplier_sale_statement_manual_lines ml WHERE ml.statement_id = st.id) AS kilos_total
+                (SELECT COALESCE(SUM(ml.kilos), 0) FROM supplier_sale_statement_manual_lines ml WHERE ml.statement_id = st.id) +
+                (SELECT COALESCE(SUM(pl.kilos), 0) FROM supplier_sale_statement_purchase_lines pl WHERE pl.statement_id = st.id) AS kilos_total
          FROM supplier_sale_statements st JOIN suppliers s ON s.id = st.supplier_id
          WHERE ${where.join(' AND ')} ORDER BY st.created_at DESC, st.id DESC LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`,
         params
@@ -307,6 +459,12 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
       const [allocations] = await db.execute('SELECT * FROM supplier_sale_statement_allocations WHERE statement_id = ? ORDER BY line_no', [statementId]);
       const [manualLines] = await db.execute('SELECT * FROM supplier_sale_statement_manual_lines WHERE statement_id = ? ORDER BY line_no', [statementId]);
       const [adjustments] = await db.execute('SELECT * FROM supplier_sale_statement_adjustments WHERE statement_id = ? ORDER BY line_no', [statementId]);
+      const [purchaseRows] = await db.execute(
+        `SELECT pl.*, g.grn_number, g.business_date AS grn_business_date
+         FROM supplier_sale_statement_purchase_lines pl JOIN goods_receipts g ON g.id = pl.goods_receipt_id
+         WHERE pl.statement_id = ? ORDER BY pl.line_no`, [statementId]
+      );
+      const purchaseLines = purchaseRows.map((row) => ({ ...row, grn_business_date: dateOnly(row.grn_business_date) }));
       const [grnRows] = await db.execute(
         `SELECT link.goods_receipt_id, g.grn_number, g.business_date, gl.product_id, p.sku, p.name AS product_name, gl.package_qty, gl.received_kilos
          FROM supplier_sale_statement_grns link JOIN goods_receipts g ON g.id = link.goods_receipt_id
@@ -320,7 +478,8 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
         if (!grnMap.has(id)) grnMap.set(id, { id, grnNumber: row.grn_number, businessDate: dateOnly(row.business_date), lines: [] });
         grnMap.get(id).lines.push({ productId: Number(row.product_id), itemCode: row.sku, description: row.product_name, quantity: measure(row.package_qty), kilos: row.received_kilos == null ? null : measure(row.received_kilos) });
       }
-      const groups = groupLines(allocations, manualLines);
+      const groups = groupLines(allocations, manualLines, purchaseLines);
+      const ownedPurchase = headers[0].statement_type === 'owned_purchase';
       const received = new Map();
       for (const grn of grnMap.values()) for (const line of grn.lines) {
         const current = received.get(line.productId) || { productId: line.productId, itemCode: line.itemCode, description: line.description, receivedQuantity: 0, receivedKilos: 0 };
@@ -331,12 +490,14 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
         const key = group.productId || group.itemCode; const current = sold.get(key) || { productId: group.productId, itemCode: group.itemCode, description: group.description, soldQuantity: 0, soldKilos: 0 };
         current.soldQuantity = measure(current.soldQuantity + group.quantity); current.soldKilos = measure(current.soldKilos + group.kilos); sold.set(key, current);
       }
-      const reconciliation = [...new Set([...received.keys(), ...sold.keys()])].map((key) => {
+      // An owned purchase statement's lines are the GRN lines themselves, each
+      // showing GRN against charged values, so there is nothing sold to compare.
+      const reconciliation = ownedPurchase ? [] : [...new Set([...received.keys(), ...sold.keys()])].map((key) => {
         const r = received.get(key) || {}; const s = sold.get(key) || {};
         return { productId: r.productId || s.productId || null, itemCode: r.itemCode || s.itemCode || '', description: r.description || s.description || '', receivedQuantity: number(r.receivedQuantity), soldQuantity: number(s.soldQuantity), quantityDifference: measure(number(r.receivedQuantity) - number(s.soldQuantity)), receivedKilos: number(r.receivedKilos), soldKilos: number(s.soldKilos), kilosDifference: measure(number(r.receivedKilos) - number(s.soldKilos)) };
       });
       const statement = { ...headers[0], txn_date: dateOnly(headers[0].txn_date), from_date: dateOnly(headers[0].from_date), to_date: dateOnly(headers[0].to_date), metadata: parseJson(headers[0].metadata) };
-      return { statement, allocations, manualLines, adjustments, grns: [...grnMap.values()], groupedLines: groups, reconciliation, events: events.map((row) => ({ ...row, details: parseJson(row.details) })) };
+      return { statement, allocations, manualLines, purchaseLines, adjustments, grns: [...grnMap.values()], groupedLines: groups, reconciliation, events: events.map((row) => ({ ...row, details: parseJson(row.details) })) };
     };
     return connection ? run(connection) : database.withConnection(run);
   }
@@ -424,6 +585,108 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
     });
   }
 
+  /**
+   * The GRN lines an owned purchase statement pays. Each starts from the GRN
+   * (quantities and unit cost) and may be changed, but a change needs a reason.
+   * A line already on a reviewed or finalized owned purchase statement is refused.
+   */
+  async function validateAndBuildPurchaseLines(connection, statement, requested = []) {
+    const unique = new Map();
+    for (const entry of requested || []) {
+      const id = Number(entry.goodsReceiptLineId || entry.goods_receipt_line_id);
+      if (!id) throw new Error('A purchase line is missing its GRN line.');
+      if (unique.has(id)) throw new Error('The same GRN line cannot be added twice to one statement.');
+      unique.set(id, entry);
+    }
+    if (!unique.size) return [];
+    const ids = [...unique.keys()];
+    const [rows] = await connection.query(
+      `SELECT gl.id, gl.goods_receipt_id, gl.product_id, gl.package_qty, gl.received_kilos, gl.unit_cost,
+              g.grn_number, g.supplier_id, g.status, p.sku, p.name
+       FROM goods_receipt_lines gl JOIN goods_receipts g ON g.id = gl.goods_receipt_id JOIN products p ON p.id = gl.product_id
+       WHERE gl.id IN (${ids.map(() => '?').join(',')}) FOR UPDATE`, ids
+    );
+    const byId = new Map(rows.map((row) => [Number(row.id), row]));
+    const use = await purchaseLineUse(connection, ids, statement.id || null);
+    const output = [];
+    let lineNo = 0;
+    for (const [id, entry] of unique) {
+      const grnLine = byId.get(id);
+      if (!grnLine || grnLine.status !== 'finalized') throw new Error('Every purchase line must come from a finalized GRN.');
+      if (Number(grnLine.supplier_id) !== Number(statement.supplier_id)) throw new Error(`${grnLine.grn_number} belongs to another supplier.`);
+      const committed = use.get(id)?.committedStatementNumbers;
+      if (committed) throw new Error(`${grnLine.sku} on ${grnLine.grn_number} is already paid on ${committed}. Reopen or void that statement first.`);
+      const grnQuantity = measure(grnLine.package_qty);
+      const grnKilos = grnLine.received_kilos == null ? null : measure(grnLine.received_kilos);
+      const grnUnitCost = grnLine.unit_cost == null ? null : money(grnLine.unit_cost);
+      const pricingBasis = grnKilos != null ? 'kilos' : 'qty';
+      const quantity = entry.quantity == null || entry.quantity === '' ? grnQuantity : measure(entry.quantity);
+      const kilos = pricingBasis === 'kilos' ? (entry.kilos == null || entry.kilos === '' ? grnKilos : measure(entry.kilos)) : null;
+      const unitPrice = entry.unitPrice == null || entry.unitPrice === '' ? number(grnUnitCost) : money(entry.unitPrice);
+      if (![quantity, unitPrice].every((value) => Number.isFinite(value) && value >= 0) || (kilos != null && !(kilos >= 0))) {
+        throw new Error(`${grnLine.sku} on ${grnLine.grn_number} needs quantities and a rate of zero or more.`);
+      }
+      const controlling = pricingBasis === 'kilos' ? number(kilos) : quantity;
+      if (controlling <= 0) throw new Error(`${grnLine.sku} on ${grnLine.grn_number} needs a positive ${pricingBasis === 'kilos' ? 'measured quantity' : 'unit count'}.`);
+      const expectedAmount = money(controlling * unitPrice);
+      const merchandiseAmount = entry.merchandiseAmount == null || entry.merchandiseAmount === '' ? expectedAmount : money(entry.merchandiseAmount);
+      if (merchandiseAmount < 0) throw new Error(`${grnLine.sku} on ${grnLine.grn_number} has an invalid amount.`);
+      const reason = text(entry.reason);
+      const changed = Math.abs(quantity - grnQuantity) > 0.0005
+        || (pricingBasis === 'kilos' && Math.abs(number(kilos) - number(grnKilos)) > 0.0005)
+        || (grnUnitCost != null && Math.abs(unitPrice - grnUnitCost) > 0.005)
+        || Math.abs(merchandiseAmount - expectedAmount) > 0.005;
+      if (changed && !reason) throw new Error(`Explain why ${grnLine.sku} on ${grnLine.grn_number} differs from its GRN.`);
+      lineNo += 1;
+      output.push({
+        lineNo, goodsReceiptId: Number(grnLine.goods_receipt_id), goodsReceiptLineId: id, productId: Number(grnLine.product_id),
+        itemCode: grnLine.sku, description: grnLine.name, pricingBasis, grnQuantity, grnKilos, grnUnitCost,
+        unitPrice, quantity, kilos, merchandiseAmount, reason: reason || null
+      });
+    }
+    return output;
+  }
+
+  async function validateStoredPurchaseLines(connection, statement) {
+    const [stored] = await connection.execute('SELECT goods_receipt_line_id, item_code FROM supplier_sale_statement_purchase_lines WHERE statement_id = ? FOR UPDATE', [statement.id]);
+    if (!stored.length) return;
+    const use = await purchaseLineUse(connection, stored.map((row) => Number(row.goods_receipt_line_id)), statement.id);
+    for (const row of stored) {
+      const committed = use.get(Number(row.goods_receipt_line_id))?.committedStatementNumbers;
+      if (committed) throw new Error(`${row.item_code} is already paid on ${committed}. Remove it from this statement or reopen that one.`);
+    }
+  }
+
+  /** Labels used before at this location, by type, most used first. */
+  async function listAdjustmentLabels(filters = {}) {
+    const loc = requestContext.scopedLocation(filters);
+    const type = ['credit', 'deduction'].includes(filters.adjustmentType) ? filters.adjustmentType : null;
+    return database.withConnection(async (connection) => {
+      const [rows] = await connection.execute(
+        `SELECT adjustment_type, MIN(label) AS label, COUNT(*) AS uses, MAX(id) AS last_id
+         FROM supplier_sale_statement_adjustments
+         WHERE (? IS NULL OR loc_code = ?) AND (? IS NULL OR adjustment_type = ?)
+         GROUP BY adjustment_type, UPPER(label)
+         ORDER BY uses DESC, last_id DESC LIMIT 200`,
+        [loc, loc, type, type]
+      );
+      return rows.map((row) => ({ adjustmentType: row.adjustment_type, label: row.label, uses: Number(row.uses || 0) }));
+    });
+  }
+
+  /** A label typed in another case keeps the spelling already in use, so reports group it. */
+  async function settleAdjustmentLabels(connection, locCode, adjustments) {
+    for (const row of adjustments) {
+      if (row.expenseEntryId) continue;
+      const [existing] = await connection.execute(
+        `SELECT label FROM supplier_sale_statement_adjustments
+         WHERE loc_code = ? AND adjustment_type = ? AND UPPER(label) = UPPER(?) ORDER BY id ASC LIMIT 1`,
+        [locCode, row.adjustmentType, row.label]
+      );
+      if (existing.length) row.label = existing[0].label;
+    }
+  }
+
   async function saveDraft(payload = {}) {
     const supplierId = Number(payload.supplierId || 0);
     const fromDate = dateOnly(payload.fromDate); const toDate = dateOnly(payload.toDate); const originDate = dateOnly(payload.txnDate);
@@ -433,6 +696,15 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
     if (!Number.isFinite(commissionRate) || commissionRate < 0 || commissionRate > 100) throw new Error('Commission rate must be between 0 and 100.');
     const rounding = ['cents', 'nearest_rupee', 'floor_rupee', 'ceil_rupee', 'manual'].includes(payload.commissionRounding) ? payload.commissionRounding : 'cents';
     const manualLines = normalizeManualLines(payload.manualLines || []); const adjustments = normalizeAdjustments(payload.adjustments || []);
+    const statementType = payload.statementType === 'owned_purchase' ? 'owned_purchase' : 'consignment';
+    const ownedPurchase = statementType === 'owned_purchase';
+    if (ownedPurchase && ((payload.allocations || []).length || manualLines.length)) throw new Error('An owned purchase statement is built from GRN lines only.');
+    if (!ownedPurchase && (payload.purchaseLines || []).length) throw new Error('GRN purchase lines belong on an owned purchase statement.');
+    // Owned goods are bought, not sold on commission.
+    const effectiveRate = ownedPurchase ? 0 : commissionRate;
+    const effectiveRounding = ownedPurchase ? 'cents' : rounding;
+    const effectiveOverride = ownedPurchase ? null : (payload.commissionOverride === '' ? null : payload.commissionOverride ?? null);
+    const effectiveOverrideReason = ownedPurchase ? null : (text(payload.commissionOverrideReason) || null);
     return database.withConnection(async (connection) => {
       await connection.beginTransaction();
       try {
@@ -446,11 +718,12 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
           const [rows] = await connection.execute("SELECT * FROM supplier_sale_statements WHERE id = ? AND status = 'draft' FOR UPDATE", [payload.statementId]);
           if (!rows.length) throw new Error('Only a draft supplier sales statement can be edited.');
           statement = rows[0];
+          if ((statement.statement_type || 'consignment') !== statementType) throw new Error('A saved statement keeps its type. Create a new statement for the other type.');
           await connection.execute(
             `UPDATE supplier_sale_statements SET supplier_id = ?, supplier_code_snapshot = ?, supplier_name_snapshot = ?, from_date = ?, to_date = ?, commission_rate = ?, commission_rounding = ?,
                     commission_override = ?, commission_override_reason = ?, notes = ? WHERE id = ?`,
-            [supplierId, suppliers[0].supplier_code || '', suppliers[0].name, fromDate, toDate, commissionRate, rounding, payload.commissionOverride === '' ? null : payload.commissionOverride ?? null,
-              text(payload.commissionOverrideReason) || null, text(payload.notes) || null, statement.id]
+            [supplierId, suppliers[0].supplier_code || '', suppliers[0].name, fromDate, toDate, effectiveRate, effectiveRounding, effectiveOverride,
+              effectiveOverrideReason, text(payload.notes) || null, statement.id]
           );
           statement = { ...statement, supplier_id: supplierId };
         } else {
@@ -459,17 +732,23 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
           const [result] = await connection.execute(
             `INSERT INTO supplier_sale_statements
                (business_day_id, statement_number, loc_code, mac_code, txn_date, statement_no, supplier_id, supplier_code_snapshot, supplier_name_snapshot, from_date, to_date,
-                commission_rate, commission_rounding, commission_override, commission_override_reason, notes, created_by)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                commission_rate, commission_rounding, commission_override, commission_override_reason, notes, created_by, statement_type, build_mode)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [businessDay.id, statementNumber, text(payload.locCode), text(payload.macCode), originDate, statementNo, supplierId, suppliers[0].supplier_code || '', suppliers[0].name, fromDate, toDate,
-              commissionRate, rounding, payload.commissionOverride === '' ? null : payload.commissionOverride ?? null, text(payload.commissionOverrideReason) || null,
-              text(payload.notes) || null, payload.userId || null]
+              effectiveRate, effectiveRounding, effectiveOverride, effectiveOverrideReason,
+              text(payload.notes) || null, payload.userId || null, statementType, ownedPurchase ? 'purchase' : 'assisted']
           );
           statement = { id: result.insertId, statement_number: statementNumber, loc_code: text(payload.locCode), mac_code: text(payload.macCode), txn_date: originDate, statement_no: statementNo, supplier_id: supplierId };
-          await appendEvent(connection, statement, 'created', payload.userId, null, { mode: 'evaluation_only' });
+          await appendEvent(connection, statement, 'created', payload.userId, null, { mode: 'evaluation_only', statementType });
         }
-        const allocations = await validateAndBuildAllocations(connection, statement, payload.allocations || []);
-        const selectedGrnIds = [...new Set((payload.grnIds || []).map(Number).filter(Number.isFinite))];
+        const allocations = ownedPurchase ? [] : await validateAndBuildAllocations(connection, statement, payload.allocations || []);
+        const purchaseLines = ownedPurchase ? await validateAndBuildPurchaseLines(connection, statement, payload.purchaseLines || []) : [];
+        await settleAdjustmentLabels(connection, statement.loc_code, adjustments);
+        // An owned purchase statement links exactly the GRNs its lines come from.
+        const selectedGrnIds = ownedPurchase
+          ? [...new Set(purchaseLines.map((row) => row.goodsReceiptId))]
+          : [...new Set((payload.grnIds || []).map(Number).filter(Number.isFinite))];
+        adjustments.push(...await buildExpenseDeductions(connection, statement, selectedGrnIds, payload.expenseDeductions || []));
         if (selectedGrnIds.length) {
           const [grns] = await connection.query(`SELECT id FROM goods_receipts WHERE id IN (${selectedGrnIds.map(() => '?').join(',')}) AND supplier_id = ? AND status = 'finalized' FOR UPDATE`, [...selectedGrnIds, supplierId]);
           if (grns.length !== selectedGrnIds.length) throw new Error('Every linked GRN must be an effective finalized GRN for the selected supplier.');
@@ -478,6 +757,18 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
         await connection.execute('DELETE FROM supplier_sale_statement_allocations WHERE statement_id = ?', [statement.id]);
         await connection.execute('DELETE FROM supplier_sale_statement_manual_lines WHERE statement_id = ?', [statement.id]);
         await connection.execute('DELETE FROM supplier_sale_statement_adjustments WHERE statement_id = ?', [statement.id]);
+        await connection.execute('DELETE FROM supplier_sale_statement_purchase_lines WHERE statement_id = ?', [statement.id]);
+        for (const row of purchaseLines) {
+          await connection.execute(
+            `INSERT INTO supplier_sale_statement_purchase_lines
+               (statement_id, loc_code, mac_code, txn_date, statement_no, line_no, goods_receipt_id, goods_receipt_line_id, product_id, item_code, description,
+                pricing_basis, grn_quantity, grn_kilos, grn_unit_cost, unit_price, quantity, kilos, merchandise_amount, reason)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [statement.id, statement.loc_code, statement.mac_code, dateOnly(statement.txn_date), statement.statement_no, row.lineNo, row.goodsReceiptId, row.goodsReceiptLineId,
+              row.productId, row.itemCode, row.description, row.pricingBasis, row.grnQuantity, row.grnKilos, row.grnUnitCost, row.unitPrice, row.quantity, row.kilos,
+              row.merchandiseAmount, row.reason]
+          );
+        }
         let childLine = 0;
         for (const grnId of selectedGrnIds) {
           childLine += 1;
@@ -515,17 +806,17 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
         childLine = 0;
         for (const row of adjustments) {
           childLine += 1;
-          await connection.execute(`INSERT INTO supplier_sale_statement_adjustments (statement_id, loc_code, mac_code, txn_date, statement_no, line_no, adjustment_type, label, amount, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [statement.id, statement.loc_code, statement.mac_code, dateOnly(statement.txn_date), statement.statement_no, childLine, row.adjustmentType, row.label, row.amount, row.note]);
+          await connection.execute(`INSERT INTO supplier_sale_statement_adjustments (statement_id, loc_code, mac_code, txn_date, statement_no, line_no, adjustment_type, label, amount, note, expense_entry_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [statement.id, statement.loc_code, statement.mac_code, dateOnly(statement.txn_date), statement.statement_no, childLine, row.adjustmentType, row.label, row.amount, row.note, row.expenseEntryId || null]);
         }
-        const totals = calculateTotals({ allocations, manualLines, adjustments, commissionRate, commissionRounding: rounding, commissionOverride: payload.commissionOverride, commissionOverrideReason: payload.commissionOverrideReason });
-        const buildMode = allocations.length && manualLines.length ? 'hybrid' : manualLines.length ? 'manual' : 'assisted';
+        const totals = calculateTotals({ allocations, manualLines, purchaseLines, adjustments, commissionRate: effectiveRate, commissionRounding: effectiveRounding, commissionOverride: effectiveOverride, commissionOverrideReason: effectiveOverrideReason });
+        const buildMode = ownedPurchase ? 'purchase' : allocations.length && manualLines.length ? 'hybrid' : manualLines.length ? 'manual' : 'assisted';
         await connection.execute(
           `UPDATE supplier_sale_statements SET build_mode = ?, gross_merchandise_total = ?, refund_merchandise_total = ?, merchandise_subtotal = ?,
                   bag_charge_total = ?, wage_charge_total = ?, commission_base = ?, commission_amount = ?, adjustment_total = ?, net_payable = ? WHERE id = ?`,
           [buildMode, totals.grossMerchandiseTotal, totals.refundMerchandiseTotal, totals.merchandiseSubtotal, totals.bagChargeTotal,
             totals.wageChargeTotal, totals.commissionBase, totals.commissionAmount, totals.adjustmentTotal, totals.netPayable, statement.id]
         );
-        await appendEvent(connection, statement, 'saved', payload.userId, null, { sourceLines: allocations.length, manualLines: manualLines.length, grns: selectedGrnIds.length, totals });
+        await appendEvent(connection, statement, 'saved', payload.userId, null, { sourceLines: allocations.length, manualLines: manualLines.length, purchaseLines: purchaseLines.length, grns: selectedGrnIds.length, totals });
         await connection.commit();
         return getStatement(statement.id);
       } catch (error) { await connection.rollback(); throw error; }
@@ -561,7 +852,15 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
         const [rows] = await connection.execute(`SELECT * FROM supplier_sale_statements WHERE id = ? AND status = ? FOR UPDATE`, [statementId, fromStatus]);
         if (!rows.length) throw new Error(`Only a ${fromStatus} supplier sales statement can be ${eventType}.`);
         const statement = rows[0];
-        if (eventType === 'reviewed' || eventType === 'finalized') await validateStoredAllocations(connection, statement);
+        if (eventType === 'reviewed' || eventType === 'finalized') {
+          await validateStoredAllocations(connection, statement);
+          await validateStoredPurchaseLines(connection, statement);
+          await validateStoredExpenseDeductions(connection, statement);
+          if (statement.statement_type === 'owned_purchase') {
+            const [lines] = await connection.execute('SELECT COUNT(*) AS count FROM supplier_sale_statement_purchase_lines WHERE statement_id = ?', [statement.id]);
+            if (!Number(lines[0].count)) throw new Error('Add at least one GRN line before reviewing an owned purchase statement.');
+          }
+        }
         const stampColumn = eventType === 'reviewed' ? 'reviewed_at' : eventType === 'finalized' ? 'finalized_at' : null;
         const userColumn = eventType === 'reviewed' ? 'reviewed_by' : eventType === 'finalized' ? 'finalized_by' : null;
         const extras = stampColumn ? `, ${stampColumn} = NOW(), ${userColumn} = ?` : '';
@@ -649,7 +948,7 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
   }
 
   return {
-    listStatements, getStatement, listCandidates, listCandidateGrns, saveDraft,
+    listStatements, getStatement, listCandidates, listCandidateGrns, listExpenseDeductions, listAdjustmentLabels, saveDraft,
     reviewStatement, reopenStatement, finalizeStatement, voidStatement, setInvoiceItemAttribution
   };
 }

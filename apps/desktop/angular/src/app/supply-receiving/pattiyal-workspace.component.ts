@@ -2,10 +2,13 @@ import { Component, Input, OnInit } from '@angular/core';
 import { SessionService } from '../services/session.service';
 import { PrintingService } from '../services/printing.service';
 import type {
+  PattiyalAdjustmentLabel,
   PattiyalCandidate,
   PattiyalDetail,
+  PattiyalExpenseDeduction,
   PattiyalDraftInput,
   PrintDocument,
+  PattiyalStatementType,
   ReceiptPrintSettings
 } from '../../../../../../packages/shared/ipc/pos-api';
 
@@ -16,6 +19,7 @@ type CommissionRounding = PattiyalDraftInput['commissionRounding'];
 
 type DraftHeader = {
   statementId: number | null;
+  statementType: PattiyalStatementType;
   supplierId: number | null;
   fromDate: string;
   toDate: string;
@@ -56,6 +60,28 @@ type AdjustmentLine = {
 
 type ParsedPasteLine = ManualLine & { row: number; error: string };
 
+/** One GRN line on an owned purchase statement: the GRN values beside what is charged. */
+type PurchaseLine = {
+  goodsReceiptId: number;
+  goodsReceiptLineId: number;
+  grnNumber: string;
+  grnDate: string;
+  ownershipModel: 'owned' | 'consignment';
+  productId: number | null;
+  itemCode: string;
+  description: string;
+  pricingBasis: 'qty' | 'kilos';
+  grnQuantity: number;
+  grnKilos: number | null;
+  grnUnitCost: number | null;
+  quantity: number;
+  kilos: number | null;
+  unitPrice: number;
+  merchandiseAmount: number;
+  reason: string;
+  draftStatementCount: number;
+};
+
 type GroupedDraftLine = {
   productId: number | null;
   itemCode: string;
@@ -67,6 +93,7 @@ type GroupedDraftLine = {
   merchandiseAmount: number;
   sourceCount: number;
   manualCount: number;
+  purchaseCount: number;
   overrideCount: number;
 };
 
@@ -90,8 +117,8 @@ export class PattiyalWorkspaceComponent implements OnInit {
   registerTotal = 0;
   registerPage = 1;
   registerPageSize = 10;
-  registerFilters: { term: string; supplierId: number | null; status: string; fromDate: string; toDate: string } = {
-    term: '', supplierId: null, status: '', fromDate: '', toDate: ''
+  registerFilters: { term: string; supplierId: number | null; status: string; statementType: string; fromDate: string; toDate: string } = {
+    term: '', supplierId: null, status: '', statementType: '', fromDate: '', toDate: ''
   };
 
   draft: DraftHeader = this.emptyDraft();
@@ -118,8 +145,24 @@ export class PattiyalWorkspaceComponent implements OnInit {
   grnTerm = '';
   selectedGrnIds = new Set<number>();
 
+  purchaseGrnOptions: any[] = [];
+  /** GRN lists on both tabs cover this range; GRNs already chosen always stay listed. */
+  grnFromDate = '';
+  grnToDate = '';
+  showSettledGrns = false;
+  /** Lot expenses recorded against the statement's GRNs, pre-added as deductions. */
+  expenseOffers: PattiyalExpenseDeduction[] = [];
+  includedExpenseIds = new Set<number>();
+  excludedExpenseIds = new Set<number>();
+  leaveOutExpenses = false;
+  /** True while a saved statement is being restored: expenses it did not deduct stay unticked. */
+  private expenseChoicesFromSave = false;
+  purchaseGrnTerm = '';
+  purchaseLines = new Map<number, PurchaseLine>();
+
   adjustments: AdjustmentLine[] = [];
   adjustmentEditor: AdjustmentLine = this.emptyAdjustment();
+  adjustmentLabels: PattiyalAdjustmentLabel[] = [];
 
   reasonAction: ReasonAction = null;
   lifecycleReason = '';
@@ -160,6 +203,7 @@ export class PattiyalWorkspaceComponent implements OnInit {
     const date = this.billingDate ? this.billingDate() : new Date().toISOString().slice(0, 10);
     return {
       statementId: null,
+      statementType: 'consignment',
       supplierId: null,
       fromDate: date,
       toDate: date,
@@ -234,7 +278,7 @@ export class PattiyalWorkspaceComponent implements OnInit {
     return Array.from({ length: Math.min(5, count - start + 1) }, (_value, index) => start + index);
   }
 
-  newDraft(): void {
+  async newDraft(): Promise<void> {
     this.clearStatus();
     this.view = 'editor';
     this.detail = null;
@@ -242,7 +286,8 @@ export class PattiyalWorkspaceComponent implements OnInit {
     this.candidates = [];
     this.candidateTotal = 0;
     this.candidateTotals = {};
-    this.candidateScope = 'supplier';
+    // With no supplier chosen yet there is nothing to suggest, so open on every sale.
+    this.candidateScope = 'all';
     this.candidateTerm = '';
     this.includeUnavailableCandidates = false;
     this.candidatePage = 1;
@@ -256,10 +301,119 @@ export class PattiyalWorkspaceComponent implements OnInit {
     this.grnOptions = [];
     this.grnTerm = '';
     this.selectedGrnIds.clear();
+    this.purchaseGrnOptions = [];
+    this.purchaseGrnTerm = '';
+    this.purchaseLines.clear();
+    this.setDefaultGrnRange();
+    this.showSettledGrns = false;
+    this.resetExpenseOffers();
     this.adjustments = [];
     this.adjustmentEditor = this.emptyAdjustment();
     this.reasonAction = null;
     this.lifecycleReason = '';
+    await Promise.all([this.loadCandidates(), this.loadAdjustmentLabels()]);
+  }
+
+  /** The last 30 days, so a GRN list stays short however much has been received. */
+  private setDefaultGrnRange(): void {
+    const today = this.billingDate();
+    const start = new Date(`${today}T00:00:00`);
+    start.setDate(start.getDate() - 30);
+    this.grnFromDate = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`;
+    this.grnToDate = today;
+  }
+
+  private resetExpenseOffers(): void {
+    this.expenseOffers = [];
+    this.includedExpenseIds.clear();
+    this.excludedExpenseIds.clear();
+    this.leaveOutExpenses = false;
+  }
+
+  async grnDatesChanged(): Promise<void> {
+    await Promise.all([this.loadCandidateGrns(), this.loadPurchaseGrns()]);
+  }
+
+  /** The GRNs this statement is about: the ones compared (consignment) or paid (owned purchase). */
+  get statementGrnIds(): number[] {
+    return this.isOwnedPurchase
+      ? [...new Set(this.purchaseRows.map((row) => row.goodsReceiptId))]
+      : [...this.selectedGrnIds];
+  }
+
+  /**
+   * Offers the lot expenses recorded against the statement's GRNs. A new one is
+   * ticked unless it was unticked before or everything is being left out; one
+   * already deducted on a reviewed statement cannot be ticked.
+   */
+  async loadExpenseOffers(): Promise<void> {
+    const api = this.api();
+    const grnIds = this.statementGrnIds;
+    if (!api || !grnIds.length) {
+      this.expenseOffers = [];
+      this.includedExpenseIds.clear();
+      return;
+    }
+    const result = await api.expenseDeductions({ grnIds, statementId: this.draft.statementId }, this.actor());
+    if (!result.success) {
+      this.setError(result.error || 'Could not load the expenses recorded against these GRNs.');
+      return;
+    }
+    this.expenseOffers = result.data || [];
+    const offered = new Set(this.expenseOffers.map((row) => row.expenseEntryId));
+    for (const id of [...this.includedExpenseIds]) if (!offered.has(id)) this.includedExpenseIds.delete(id);
+    for (const offer of this.expenseOffers) {
+      if (offer.committedStatementNumbers) this.includedExpenseIds.delete(offer.expenseEntryId);
+      else if (this.expenseChoicesFromSave) { if (!this.includedExpenseIds.has(offer.expenseEntryId)) this.excludedExpenseIds.add(offer.expenseEntryId); }
+      else if (!this.leaveOutExpenses && !this.excludedExpenseIds.has(offer.expenseEntryId)) this.includedExpenseIds.add(offer.expenseEntryId);
+    }
+  }
+
+  toggleExpense(offer: PattiyalExpenseDeduction, checked: boolean): void {
+    if (checked) { this.includedExpenseIds.add(offer.expenseEntryId); this.excludedExpenseIds.delete(offer.expenseEntryId); }
+    else { this.includedExpenseIds.delete(offer.expenseEntryId); this.excludedExpenseIds.add(offer.expenseEntryId); }
+  }
+
+  setLeaveOutExpenses(value: boolean): void {
+    this.leaveOutExpenses = value;
+    if (value) { this.includedExpenseIds.clear(); return; }
+    this.excludedExpenseIds.clear();
+    for (const offer of this.expenseOffers) if (!offer.committedStatementNumbers) this.includedExpenseIds.add(offer.expenseEntryId);
+  }
+
+  get expenseDeductionTotal(): number {
+    return this.roundMoney(this.expenseOffers
+      .filter((offer) => this.includedExpenseIds.has(offer.expenseEntryId))
+      .reduce((sum, offer) => sum + Number(offer.amount || 0), 0));
+  }
+
+  get visiblePurchaseGrns(): any[] {
+    return this.showSettledGrns ? this.purchaseGrnOptions : this.purchaseGrnOptions.filter((grn) => !grn.settled || this.purchaseGrnSelected(grn));
+  }
+
+  get hiddenSettledGrnCount(): number {
+    return this.purchaseGrnOptions.length - this.visiblePurchaseGrns.length;
+  }
+
+  get isOwnedPurchase(): boolean {
+    return this.draft.statementType === 'owned_purchase';
+  }
+
+  /**
+   * Switches a statement not saved yet between consignment and owned purchase.
+   * Each keeps its own selections, so switching back loses nothing; only the
+   * open type is saved. A saved statement keeps its type.
+   */
+  async setStatementType(type: PattiyalStatementType): Promise<void> {
+    if (this.draft.statementId || this.draft.statementType === type) return;
+    this.draft.statementType = type;
+    if (type === 'owned_purchase') await this.loadPurchaseGrns();
+    else await Promise.all([this.loadCandidates(), this.loadCandidateGrns()]);
+    await this.loadExpenseOffers();
+  }
+
+  statementTypeLabel(value: unknown): string {
+    return value === 'owned_purchase' ? 'Owned purchase' : 'Consignment';
   }
 
   async backToRegister(): Promise<void> {
@@ -294,6 +448,7 @@ export class PattiyalWorkspaceComponent implements OnInit {
     const statement = detail.statement;
     this.draft = {
       statementId: Number(statement['id']),
+      statementType: statement['statement_type'] === 'owned_purchase' ? 'owned_purchase' : 'consignment',
       supplierId: Number(statement['supplier_id']),
       fromDate: String(statement['from_date'] || '').slice(0, 10),
       toDate: String(statement['to_date'] || '').slice(0, 10),
@@ -314,13 +469,52 @@ export class PattiyalWorkspaceComponent implements OnInit {
       merchandiseAmount: Number(row['merchandise_amount'] || 0),
       reason: String(row['reason'] || '')
     }));
-    this.adjustments = (detail.adjustments || []).map((row) => ({
+    // Expense deductions are offered again from the expenses themselves; only
+    // the rows typed on this statement are kept as its own adjustments.
+    this.adjustments = (detail.adjustments || []).filter((row) => !row['expense_entry_id']).map((row) => ({
       adjustmentType: String(row['adjustment_type']) === 'credit' ? 'credit' : 'deduction',
       label: String(row['label'] || ''),
       amount: Number(row['amount'] || 0),
       note: String(row['note'] || '')
     }));
+    this.resetExpenseOffers();
+    const savedExpenseIds = (detail.adjustments || []).filter((row) => row['expense_entry_id']).map((row) => Number(row['expense_entry_id']));
+    savedExpenseIds.forEach((id) => this.includedExpenseIds.add(id));
+    // A saved statement's choices are kept: expenses it did not deduct stay unticked.
+    this.expenseChoicesFromSave = true;
+    this.showSettledGrns = false;
+    if (String(statement['statement_type']) === 'owned_purchase') {
+      this.grnFromDate = String(statement['from_date'] || '').slice(0, 10);
+      this.grnToDate = String(statement['to_date'] || '').slice(0, 10);
+    } else {
+      this.setDefaultGrnRange();
+    }
     this.selectedGrnIds = new Set((detail.grns || []).map((row) => Number(row['id'])));
+    this.purchaseLines.clear();
+    for (const row of detail.purchaseLines || []) {
+      const lineId = Number(row['goods_receipt_line_id']);
+      this.purchaseLines.set(lineId, {
+        goodsReceiptId: Number(row['goods_receipt_id']),
+        goodsReceiptLineId: lineId,
+        grnNumber: String(row['grn_number'] || ''),
+        grnDate: String(row['grn_business_date'] || '').slice(0, 10),
+        ownershipModel: 'owned',
+        productId: row['product_id'] == null ? null : Number(row['product_id']),
+        itemCode: String(row['item_code'] || ''),
+        description: String(row['description'] || ''),
+        pricingBasis: String(row['pricing_basis']) === 'kilos' ? 'kilos' : 'qty',
+        grnQuantity: Number(row['grn_quantity'] || 0),
+        grnKilos: row['grn_kilos'] == null ? null : Number(row['grn_kilos']),
+        grnUnitCost: row['grn_unit_cost'] == null ? null : Number(row['grn_unit_cost']),
+        quantity: Number(row['quantity'] || 0),
+        kilos: row['kilos'] == null ? null : Number(row['kilos']),
+        unitPrice: Number(row['unit_price'] || 0),
+        merchandiseAmount: Number(row['merchandise_amount'] || 0),
+        reason: String(row['reason'] || ''),
+        draftStatementCount: 0
+      });
+    }
+    this.purchaseGrnTerm = '';
     this.selectedAllocations.clear();
     const ids = (detail.allocations || []).map((row) => Number(row['invoice_item_id'])).filter((id) => id > 0);
     if (ids.length && this.api()) {
@@ -352,7 +546,10 @@ export class PattiyalWorkspaceComponent implements OnInit {
     this.includeUnavailableCandidates = false;
     this.candidatePage = 1;
     this.view = 'editor';
-    await Promise.all([this.loadCandidates(), this.loadCandidateGrns()]);
+    if (this.isOwnedPurchase) await Promise.all([this.loadPurchaseGrns(), this.loadAdjustmentLabels()]);
+    else await Promise.all([this.loadCandidates(), this.loadCandidateGrns(), this.loadAdjustmentLabels()]);
+    await this.loadExpenseOffers();
+    this.expenseChoicesFromSave = false;
   }
 
   private roundingValue(value: unknown): CommissionRounding {
@@ -371,12 +568,15 @@ export class PattiyalWorkspaceComponent implements OnInit {
     if (agreement) this.draft.commissionRate = Number(agreement.commission_rate || 0);
     this.candidatePage = 1;
     this.selectedGrnIds.clear();
-    await Promise.all([this.loadCandidates(), this.loadCandidateGrns()]);
+    // GRN lines belong to one supplier, so a new supplier starts the purchase lines over.
+    this.purchaseLines.clear();
+    this.resetExpenseOffers();
+    await Promise.all([this.loadCandidates(), this.loadCandidateGrns(), this.loadPurchaseGrns()]);
   }
 
   async sourceDatesChanged(): Promise<void> {
     this.candidatePage = 1;
-    await Promise.all([this.loadCandidates(), this.loadCandidateGrns()]);
+    await Promise.all([this.loadCandidates(), this.loadCandidateGrns(), this.loadPurchaseGrns()]);
   }
 
   async applyCandidateSearch(): Promise<void> {
@@ -397,7 +597,9 @@ export class PattiyalWorkspaceComponent implements OnInit {
 
   async loadCandidates(): Promise<void> {
     const api = this.api();
-    if (!api || !this.draft.supplierId) {
+    // Suggestions need a supplier; searching every sale does not, and the date
+    // range keeps that list small.
+    if (!api || (!this.draft.supplierId && this.candidateScope === 'supplier')) {
       this.candidates = [];
       this.candidateTotal = 0;
       this.candidateTotals = {};
@@ -405,7 +607,7 @@ export class PattiyalWorkspaceComponent implements OnInit {
     }
     this.loading = true;
     const result = await api.candidates({
-      supplierId: this.draft.supplierId,
+      supplierId: this.draft.supplierId || null,
       fromDate: this.draft.fromDate,
       toDate: this.draft.toDate,
       scope: this.candidateScope,
@@ -679,7 +881,10 @@ export class PattiyalWorkspaceComponent implements OnInit {
       this.grnOptions = [];
       return;
     }
-    const result = await api.candidateGrns({ supplierId: this.draft.supplierId, term: this.grnTerm }, this.actor());
+    const result = await api.candidateGrns({
+      supplierId: this.draft.supplierId, term: this.grnTerm, fromDate: this.grnFromDate, toDate: this.grnToDate,
+      statementId: this.draft.statementId, includeIds: [...this.selectedGrnIds]
+    }, this.actor());
     if (!result.success) {
       this.setError(result.error || 'Could not load matching GRNs.');
       return;
@@ -691,9 +896,10 @@ export class PattiyalWorkspaceComponent implements OnInit {
     return this.selectedGrnIds.has(Number(id));
   }
 
-  toggleGrn(id: number, checked: boolean): void {
+  async toggleGrn(id: number, checked: boolean): Promise<void> {
     if (checked) this.selectedGrnIds.add(Number(id));
     else this.selectedGrnIds.delete(Number(id));
+    await this.loadExpenseOffers();
   }
 
   grnQuantity(grn: any): number {
@@ -710,8 +916,119 @@ export class PattiyalWorkspaceComponent implements OnInit {
       this.setError('An adjustment needs a label and a positive amount.');
       return;
     }
-    this.adjustments.push({ ...line, amount: this.roundMoney(line.amount) });
-    this.adjustmentEditor = this.emptyAdjustment();
+    // Reuse the wording already in use for this type, so reports group it.
+    const known = this.labelsForType(line.adjustmentType).find((row) => row.label.toUpperCase() === line.label.trim().toUpperCase());
+    this.adjustments.push({ ...line, label: known ? known.label : line.label.trim(), amount: this.roundMoney(line.amount) });
+    this.adjustmentEditor = { ...this.emptyAdjustment(), adjustmentType: line.adjustmentType };
+  }
+
+  async loadAdjustmentLabels(): Promise<void> {
+    const api = this.api();
+    if (!api) return;
+    const result = await api.adjustmentLabels({}, this.actor());
+    this.adjustmentLabels = result.success ? result.data || [] : [];
+  }
+
+  labelsForType(type: 'credit' | 'deduction'): PattiyalAdjustmentLabel[] {
+    return this.adjustmentLabels.filter((row) => row.adjustmentType === type);
+  }
+
+  // ---- owned purchase statements -------------------------------------------
+
+  async loadPurchaseGrns(): Promise<void> {
+    const api = this.api();
+    if (!api || !this.isOwnedPurchase || !this.draft.supplierId) {
+      this.purchaseGrnOptions = [];
+      return;
+    }
+    const result = await api.candidateGrns({
+      supplierId: this.draft.supplierId, fromDate: this.grnFromDate, toDate: this.grnToDate,
+      term: this.purchaseGrnTerm, statementId: this.draft.statementId,
+      includeIds: [...new Set(this.purchaseRows.map((row) => row.goodsReceiptId))]
+    }, this.actor());
+    if (!result.success) {
+      this.setError(result.error || 'Could not load GRNs.');
+      return;
+    }
+    this.purchaseGrnOptions = result.data || [];
+    for (const grn of this.purchaseGrnOptions) {
+      for (const line of grn.lines || []) {
+        const selected = this.purchaseLines.get(Number(line.goodsReceiptLineId));
+        if (selected) { selected.draftStatementCount = Number(line.draftStatementCount || 0); selected.ownershipModel = grn.ownershipModel; }
+      }
+    }
+  }
+
+  purchaseGrnSelected(grn: any): boolean {
+    return (grn.lines || []).some((line: any) => this.purchaseLines.has(Number(line.goodsReceiptLineId)));
+  }
+
+  purchaseGrnFullyPaid(grn: any): boolean {
+    return (grn.lines || []).length > 0 && (grn.lines || []).every((line: any) => Boolean(line.committedStatementNumbers));
+  }
+
+  purchaseGrnPaidOn(grn: any): string {
+    return [...new Set((grn.lines || []).map((line: any) => line.committedStatementNumbers).filter(Boolean))].join(', ');
+  }
+
+  purchaseGrnDraftCount(grn: any): number {
+    return Math.max(0, ...(grn.lines || []).map((line: any) => Number(line.draftStatementCount || 0)));
+  }
+
+  async togglePurchaseGrn(grn: any, checked: boolean): Promise<void> {
+    this.applyPurchaseGrn(grn, checked);
+    await this.loadExpenseOffers();
+  }
+
+  private applyPurchaseGrn(grn: any, checked: boolean): void {
+    for (const line of grn.lines || []) {
+      const lineId = Number(line.goodsReceiptLineId);
+      if (!checked) { this.purchaseLines.delete(lineId); continue; }
+      if (line.committedStatementNumbers || this.purchaseLines.has(lineId)) continue;
+      const pricingBasis: 'qty' | 'kilos' = line.kilos == null ? 'qty' : 'kilos';
+      const unitPrice = Number(line.unitCost || 0);
+      const measure = pricingBasis === 'kilos' ? Number(line.kilos || 0) : Number(line.quantity || 0);
+      this.purchaseLines.set(lineId, {
+        goodsReceiptId: Number(grn.id), goodsReceiptLineId: lineId, grnNumber: grn.grnNumber, grnDate: grn.businessDate,
+        ownershipModel: grn.ownershipModel === 'consignment' ? 'consignment' : 'owned',
+        productId: line.productId ?? null, itemCode: line.itemCode, description: line.description, pricingBasis,
+        grnQuantity: Number(line.quantity || 0), grnKilos: line.kilos == null ? null : Number(line.kilos),
+        grnUnitCost: line.unitCost == null ? null : Number(line.unitCost),
+        quantity: Number(line.quantity || 0), kilos: line.kilos == null ? null : Number(line.kilos),
+        unitPrice, merchandiseAmount: this.roundMoney(measure * unitPrice), reason: '',
+        draftStatementCount: Number(line.draftStatementCount || 0)
+      });
+    }
+  }
+
+  get purchaseRows(): PurchaseLine[] {
+    return [...this.purchaseLines.values()];
+  }
+
+  get purchaseHasConsignmentGrn(): boolean {
+    return this.purchaseRows.some((row) => row.ownershipModel === 'consignment');
+  }
+
+  purchaseLineChanged(line: PurchaseLine): void {
+    line.merchandiseAmount = this.expectedPurchaseAmount(line);
+  }
+
+  expectedPurchaseAmount(line: PurchaseLine): number {
+    const measure = line.pricingBasis === 'kilos' ? Number(line.kilos || 0) : Number(line.quantity || 0);
+    return this.roundMoney(measure * Number(line.unitPrice || 0));
+  }
+
+  /** A line changed from its GRN must say why; the server holds the same rule. */
+  purchaseLineNeedsReason(line: PurchaseLine): boolean {
+    return Math.abs(Number(line.quantity || 0) - line.grnQuantity) > 0.0005
+      || (line.pricingBasis === 'kilos' && Math.abs(Number(line.kilos || 0) - Number(line.grnKilos || 0)) > 0.0005)
+      || (line.grnUnitCost != null && Math.abs(Number(line.unitPrice || 0) - line.grnUnitCost) > 0.005)
+      || Math.abs(Number(line.merchandiseAmount || 0) - this.expectedPurchaseAmount(line)) > 0.005;
+  }
+
+  async removePurchaseLine(lineId: number): Promise<void> {
+    this.purchaseLines.delete(lineId);
+    await this.loadExpenseOffers();
   }
 
   removeAdjustment(index: number): void {
@@ -722,15 +1039,27 @@ export class PattiyalWorkspaceComponent implements OnInit {
     const grouped = new Map<string, GroupedDraftLine>();
     const add = (row: GroupedDraftLine) => {
       const key = `${row.productId || row.itemCode}|${row.pricingBasis}|${row.unitPrice.toFixed(2)}`;
-      const current = grouped.get(key) || { ...row, quantity: 0, kilos: 0, merchandiseAmount: 0, sourceCount: 0, manualCount: 0, overrideCount: 0 };
+      const current = grouped.get(key) || { ...row, quantity: 0, kilos: 0, merchandiseAmount: 0, sourceCount: 0, manualCount: 0, purchaseCount: 0, overrideCount: 0 };
       current.quantity = this.roundMeasure(current.quantity + row.quantity);
       current.kilos = this.roundMeasure(current.kilos + row.kilos);
       current.merchandiseAmount = this.roundMoney(current.merchandiseAmount + row.merchandiseAmount);
       current.sourceCount += row.sourceCount;
       current.manualCount += row.manualCount;
+      current.purchaseCount += row.purchaseCount;
       current.overrideCount += row.overrideCount;
       grouped.set(key, current);
     };
+    if (this.isOwnedPurchase) {
+      for (const row of this.purchaseRows) {
+        add({
+          productId: row.productId, itemCode: row.itemCode, description: row.description, pricingBasis: row.pricingBasis,
+          unitPrice: Number(row.unitPrice || 0), quantity: Number(row.quantity || 0), kilos: Number(row.kilos || 0),
+          merchandiseAmount: Number(row.merchandiseAmount || 0), sourceCount: 0, manualCount: 0, purchaseCount: 1,
+          overrideCount: this.purchaseLineNeedsReason(row) ? 1 : 0
+        });
+      }
+      return [...grouped.values()].sort((a, b) => a.itemCode.localeCompare(b.itemCode) || a.unitPrice - b.unitPrice);
+    }
     for (const row of this.allocationRows) {
       const candidate = row.candidate;
       add({
@@ -744,6 +1073,7 @@ export class PattiyalWorkspaceComponent implements OnInit {
         merchandiseAmount: Number(row.merchandiseAmount || 0),
         sourceCount: 1,
         manualCount: 0,
+        purchaseCount: 0,
         overrideCount: this.isCrossSupplier(candidate) || Boolean(candidate.attributionId) ? 1 : 0
       });
     }
@@ -759,6 +1089,7 @@ export class PattiyalWorkspaceComponent implements OnInit {
         merchandiseAmount: Number(row.merchandiseAmount || 0),
         sourceCount: 0,
         manualCount: 1,
+        purchaseCount: 0,
         overrideCount: 0
       });
     }
@@ -813,6 +1144,7 @@ export class PattiyalWorkspaceComponent implements OnInit {
   }
 
   get commissionAmount(): number {
+    if (this.isOwnedPurchase) return 0;
     if (this.draft.commissionRounding === 'manual') return this.roundMoney(this.draft.commissionOverride || 0);
     const raw = this.merchandiseSubtotal * Math.max(0, Number(this.draft.commissionRate || 0)) / 100;
     if (this.draft.commissionRounding === 'nearest_rupee') return Math.round(raw);
@@ -821,8 +1153,10 @@ export class PattiyalWorkspaceComponent implements OnInit {
     return this.roundMoney(raw);
   }
 
+  /** Typed credits and deductions, less the lot expenses being deducted. */
   get adjustmentTotal(): number {
-    return this.roundMoney(this.adjustments.reduce((sum, row) => sum + (row.adjustmentType === 'credit' ? Number(row.amount) : -Number(row.amount)), 0));
+    const typed = this.adjustments.reduce((sum, row) => sum + (row.adjustmentType === 'credit' ? Number(row.amount) : -Number(row.amount)), 0);
+    return this.roundMoney(typed - this.expenseDeductionTotal);
   }
 
   get netPayable(): number {
@@ -830,12 +1164,23 @@ export class PattiyalWorkspaceComponent implements OnInit {
   }
 
   get draftLineCount(): number {
-    return this.selectedAllocations.size + this.manualLines.length;
+    return this.isOwnedPurchase ? this.purchaseLines.size : this.selectedAllocations.size + this.manualLines.length;
   }
 
   private validateDraft(): string {
     if (!this.draft.supplierId) return 'Select the supplier for this sales statement.';
-    if (!this.draft.fromDate || !this.draft.toDate || this.draft.fromDate > this.draft.toDate) return 'Enter a valid source date range.';
+    if (this.isOwnedPurchase && (!this.grnFromDate || !this.grnToDate || this.grnFromDate > this.grnToDate)) return 'Enter a valid GRN date range.';
+    if (!this.isOwnedPurchase && (!this.draft.fromDate || !this.draft.toDate || this.draft.fromDate > this.draft.toDate)) return 'Enter a valid source date range.';
+    if (this.isOwnedPurchase) {
+      if (!this.draftLineCount) return 'Select at least one GRN to pay on this statement.';
+      for (const row of this.purchaseRows) {
+        const measure = row.pricingBasis === 'kilos' ? Number(row.kilos || 0) : Number(row.quantity || 0);
+        if (measure <= 0) return `${row.itemCode} on ${row.grnNumber} needs a positive ${row.pricingBasis === 'kilos' ? 'measured quantity' : 'unit count'}.`;
+        if (Number(row.unitPrice) < 0 || Number(row.merchandiseAmount) < 0) return `${row.itemCode} on ${row.grnNumber} has an invalid rate or amount.`;
+        if (this.purchaseLineNeedsReason(row) && !row.reason.trim()) return `Explain why ${row.itemCode} on ${row.grnNumber} differs from its GRN.`;
+      }
+      return '';
+    }
     if (!this.draftLineCount) return 'Add at least one assisted or manual sales line.';
     if (Number(this.draft.commissionRate) < 0 || Number(this.draft.commissionRate) > 100) return 'Commission rate must be between 0 and 100.';
     if (this.draft.commissionRounding === 'manual' && (!this.draft.commissionOverrideReason.trim() || Number(this.draft.commissionOverride) < 0)) return 'Manual commission needs a valid amount and reason.';
@@ -852,8 +1197,36 @@ export class PattiyalWorkspaceComponent implements OnInit {
 
   private draftPayload(): PattiyalDraftInput {
     const origin = this.origin();
+    if (this.isOwnedPurchase) {
+      return {
+        statementId: this.draft.statementId,
+        statementType: 'owned_purchase',
+        supplierId: Number(this.draft.supplierId),
+        fromDate: this.grnFromDate,
+        toDate: this.grnToDate,
+        ...origin,
+        userId: this.userId(),
+        commissionRate: 0,
+        commissionRounding: 'cents',
+        notes: this.draft.notes,
+        grnIds: [],
+        allocations: [],
+        manualLines: [],
+        purchaseLines: this.purchaseRows.map((row) => ({
+          goodsReceiptLineId: row.goodsReceiptLineId,
+          quantity: Number(row.quantity || 0),
+          kilos: row.kilos == null ? null : Number(row.kilos),
+          unitPrice: Number(row.unitPrice || 0),
+          merchandiseAmount: Number(row.merchandiseAmount || 0),
+          reason: row.reason
+        })),
+        adjustments: this.adjustments.map((row) => ({ ...row })),
+        expenseDeductions: [...this.includedExpenseIds].map((expenseEntryId) => ({ expenseEntryId }))
+      };
+    }
     return {
       statementId: this.draft.statementId,
+      statementType: 'consignment',
       supplierId: Number(this.draft.supplierId),
       fromDate: this.draft.fromDate,
       toDate: this.draft.toDate,
@@ -874,7 +1247,8 @@ export class PattiyalWorkspaceComponent implements OnInit {
         note: row.note
       })),
       manualLines: this.manualLines.map((row) => ({ ...row, merchandiseAmount: Number(row.merchandiseAmount || 0) })),
-      adjustments: this.adjustments.map((row) => ({ ...row }))
+      adjustments: this.adjustments.map((row) => ({ ...row })),
+        expenseDeductions: [...this.includedExpenseIds].map((expenseEntryId) => ({ expenseEntryId }))
     };
   }
 
@@ -895,6 +1269,7 @@ export class PattiyalWorkspaceComponent implements OnInit {
     }
     this.detail = result.data;
     this.draft.statementId = Number(result.data.statement['id']);
+    await this.loadAdjustmentLabels();
     if (showMessage) this.setInfo(`${result.data.statement['statement_number']} saved as a draft.`);
     return true;
   }
@@ -994,16 +1369,18 @@ export class PattiyalWorkspaceComponent implements OnInit {
     const grouped = this.detail.groupedLines || [];
     const adjustments = this.detail.adjustments || [];
     const commissionRate = this.compactNumber(statement['commission_rate']);
+    const ownedPurchase = statement['statement_type'] === 'owned_purchase';
+    const title = ownedPurchase ? 'Supplier Purchase Statement' : 'Supplier Sales Statement';
     return {
-      documentTitle: 'Supplier Sales Statement',
+      documentTitle: title,
       brand: {
-        name: settings?.storeName || 'Supplier Sales Statement',
+        name: settings?.storeName || title,
         tagline: settings?.tagline || '',
         addressLines: settings?.addressLines || [],
         phone: settings?.phone || ''
       },
       logoDataUrl: settings?.logoDataUrl || '',
-      secondaryHeaderLines: [{ text: 'SUPPLIER SALES STATEMENT', align: 'center', bold: true }],
+      secondaryHeaderLines: [{ text: title.toUpperCase(), align: 'center', bold: true }],
       meta: [
         { label: 'Statement', value: String(statement['statement_number'] || '') },
         { label: 'Supplier', value: `${statement['supplier_code'] || ''} ${statement['supplier_name'] || ''}`.trim() },
@@ -1027,7 +1404,7 @@ export class PattiyalWorkspaceComponent implements OnInit {
         { label: 'TOTAL BAGS / QTY', value: this.compactNumber(this.detailQuantityTotal()) },
         { label: 'TOTAL KG', value: this.compactNumber(this.detailKilosTotal()) },
         { label: 'SUB TOTAL', value: this.money(statement['merchandise_subtotal']) },
-        { label: `COMMISSION (${commissionRate}%)`, value: this.money(statement['commission_amount']) },
+        ...(ownedPurchase ? [] : [{ label: `COMMISSION (${commissionRate}%)`, value: this.money(statement['commission_amount']) }]),
         ...adjustments.map((row) => ({
           label: `${String(row['adjustment_type']) === 'credit' ? '+' : '-'} ${String(row['label'] || 'ADJUSTMENT').toUpperCase()}`,
           value: this.money(row['amount'])

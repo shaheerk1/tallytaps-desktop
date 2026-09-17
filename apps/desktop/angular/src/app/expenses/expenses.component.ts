@@ -6,7 +6,7 @@ import type {
   RecurringExpense, StakeholderEntry, TrialBalance
 } from '../../../../../../packages/shared/ipc/pos-api';
 
-type Tab = 'expenses' | 'lots' | 'partners' | 'accounts';
+type Tab = 'expenses' | 'lots' | 'reasons' | 'partners' | 'accounts';
 
 type ExpenseDraft = {
   expenseCategoryId: number | null;
@@ -18,6 +18,15 @@ type ExpenseDraft = {
   requestId: string;
   paidOn: string;
   paidOnReason: string;
+  /** A lot expense names the GRN it belongs to, and may narrow it to one lot. */
+  goodsReceiptId: number | null;
+  inventoryLotId: number | null;
+};
+
+/** An expense reason being added or changed. */
+type ReasonDraft = {
+  id?: number; name: string; defaultTreatment: 'lot_cost' | 'overhead' | 'supplier_deduction';
+  helpText: string; isActive: boolean; isShared: boolean; isDefault: boolean; sortOrder: number;
 };
 
 type TransferDraft = { fromFundAccountId: number | null; toFundAccountId: number | null; amount: number | null; reason: string; paidOn: string; paidOnReason: string };
@@ -88,6 +97,9 @@ export class ExpensesComponent implements OnInit {
   showReversed = false;
 
   expenseDraft: ExpenseDraft | null = null;
+  /** Every reason, switched-off ones included, for the Expense reasons tab. */
+  allReasons: ExpenseCategory[] = [];
+  reasonDraft: ReasonDraft | null = null;
   /** Undoing a mistake: the whole expense, or only the cost it put on goods. */
   reverseDraft: { expense: ExpenseEntry; reason: string } | null = null;
   detachDraft: { expenseEntryId: number; expenseNumber: string; amount: number; lotId: number | null; lotCode: string | null; reason: string } | null = null;
@@ -169,7 +181,7 @@ export class ExpensesComponent implements OnInit {
   @HostListener('document:keydown.escape') onEscape(): void { this.closeAll(); }
 
   closeAll(): void {
-    this.expenseDraft = null; this.transferDraft = null; this.fundDraft = null; this.ledger = null;
+    this.expenseDraft = null; this.transferDraft = null; this.fundDraft = null; this.ledger = null; this.reasonDraft = null;
     this.recurringDraft = null; this.reverseDraft = null; this.detachDraft = null; this.reopenDraft = null;
     this.attachDraft = null; this.moveCostDraft = null; this.lotDetail = null;
     this.partnerDraft = null; this.partnerMove = null; this.partnerStatement = null; this.closeDraft = null;
@@ -178,6 +190,7 @@ export class ExpensesComponent implements OnInit {
   async selectTab(tab: Tab): Promise<void> {
     this.activeTab = tab; this.closeAll(); this.error = ''; this.info = '';
     if (tab === 'lots') await this.loadLotCosting();
+    if (tab === 'reasons') await this.loadReasons();
     if (tab === 'partners') await this.loadPartners();
     if (tab === 'accounts') await this.loadAccounts();
   }
@@ -439,11 +452,73 @@ export class ExpensesComponent implements OnInit {
   newExpense(): void {
     this.closeAll();
     this.expenseDraft = {
-      expenseCategoryId: this.categories[0]?.id ?? null,
+      // "Other expense" is always there, so an expense never waits for setup.
+      expenseCategoryId: (this.categories.find((row) => row.isDefault) || this.categories[0])?.id ?? null,
       fundAccountId: this.spendableFunds[0]?.id ?? null,
       amount: null, payee: '', reference: '', reason: '', requestId: crypto.randomUUID(),
-      paidOn: this.currentBusinessDate, paidOnReason: ''
+      paidOn: this.currentBusinessDate, paidOnReason: '', goodsReceiptId: null, inventoryLotId: null
     };
+  }
+
+  /** A lot expense cannot be saved until it names its GRN. */
+  get draftNeedsGoods(): boolean {
+    return this.draftCategory?.defaultTreatment === 'lot_cost' && !this.expenseDraft?.goodsReceiptId;
+  }
+
+  // ── Expense reasons ───────────────────────────────────────
+
+  async loadReasons(): Promise<void> {
+    if (!window.posApi) return;
+    const result = await window.posApi.expenses.categories(true, this.actor());
+    if (!result.success) { this.error = result.error || 'Could not load expense reasons.'; return; }
+    this.allReasons = result.data || [];
+  }
+
+  get reasonGroups(): Array<{ title: string; hint: string; treatment: 'lot_cost' | 'overhead'; rows: ExpenseCategory[] }> {
+    return [
+      { title: 'Lot expenses', treatment: 'lot_cost', rows: this.allReasons.filter((row) => row.defaultTreatment === 'lot_cost'),
+        hint: "Named against a GRN. They raise what those goods cost, and the GRN's supplier statement offers them as deductions." },
+      { title: 'Shop expenses', treatment: 'overhead', rows: this.allReasons.filter((row) => row.defaultTreatment !== 'lot_cost'),
+        hint: 'Costs of running the business, never of one delivery.' }
+    ];
+  }
+  trackReasonGroup(_index: number, group: { treatment: string }): string { return group.treatment; }
+  trackReason(_index: number, row: ExpenseCategory): number { return row.id; }
+
+  newReason(treatment: 'lot_cost' | 'overhead'): void {
+    this.closeAll();
+    this.reasonDraft = { name: '', defaultTreatment: treatment, helpText: '', isActive: true, isShared: false, isDefault: false, sortOrder: 100 };
+  }
+
+  editReason(row: ExpenseCategory): void {
+    this.closeAll();
+    this.reasonDraft = {
+      id: row.id, name: row.name, defaultTreatment: row.defaultTreatment, helpText: row.helpText || '',
+      isActive: row.isActive, isShared: Boolean(row.isShared), isDefault: Boolean(row.isDefault), sortOrder: row.sortOrder
+    };
+  }
+
+  async saveReason(): Promise<void> {
+    if (!window.posApi || !this.reasonDraft || this.saving) return;
+    const origin = this.origin();
+    if (!origin) { this.error = 'An active workstation session is required.'; return; }
+    this.saving = true; this.error = '';
+    const draft = this.reasonDraft;
+    const result = await window.posApi.expenses.saveCategory({
+      id: draft.id, name: draft.name.trim(), defaultTreatment: draft.defaultTreatment, helpText: draft.helpText.trim() || null,
+      isActive: draft.isActive, sortOrder: draft.sortOrder, locCode: origin.locCode
+    } as any, this.actor());
+    this.saving = false;
+    if (!result.success) { this.error = result.error || 'Could not save this expense reason.'; return; }
+    this.info = `${result.data.name} saved as a ${result.data.defaultTreatment === 'lot_cost' ? 'lot expense' : 'shop expense'}.`;
+    this.reasonDraft = null;
+    await Promise.all([this.loadReasons(), this.reloadCategories()]);
+  }
+
+  private async reloadCategories(): Promise<void> {
+    if (!window.posApi) return;
+    const result = await window.posApi.expenses.categories(false, this.actor());
+    if (result.success) this.categories = result.data || [];
   }
 
   get draftCategory(): ExpenseCategory | null {
@@ -461,7 +536,7 @@ export class ExpensesComponent implements OnInit {
     const category = this.draftCategory;
     if (!category) return '';
     if (category.defaultTreatment === 'lot_cost') {
-      return 'This kind of cost belongs to received goods. After you record it, attach it to a delivery so it raises what those goods really cost.';
+      return 'A lot expense belongs to received goods. Choose the GRN it was for; it raises what those goods cost, and the supplier statement for that GRN offers it as a deduction.';
     }
     if (category.defaultTreatment === 'supplier_deduction') return 'This kind of cost is normally recovered from a supplier settlement.';
     return 'A general business cost. It affects your profit for the period, not the cost price of any one delivery.';
@@ -509,6 +584,7 @@ export class ExpensesComponent implements OnInit {
       amount: Number(this.expenseDraft.amount),
       payee: this.expenseDraft.payee, reference: this.expenseDraft.reference,
       reason: this.expenseDraft.reason, requestId: this.expenseDraft.requestId, userId: user.id, origin,
+      goodsReceiptId: this.expenseDraft.goodsReceiptId, inventoryLotId: this.expenseDraft.inventoryLotId,
       ...this.datedFields(this.expenseDraft)
     }, this.actor());
     this.saving = false;
@@ -518,8 +594,8 @@ export class ExpensesComponent implements OnInit {
       ? `${saved.expenseNumber} recorded on ${this.formatDate(this.expenseDraft.paidOn)}. ${saved.fundName} now holds ${this.formatMoney(saved.fundBalance)}.`
       : `${saved.expenseNumber} recorded. ${saved.fundName} now holds ${this.formatMoney(saved.fundBalance)}.`;
     if (saved.stakeholderName) this.info += ` The business now owes ${saved.stakeholderName} this amount.`;
-    if (saved.categoryTreatment === 'lot_cost' && this.canAllocate) {
-      this.info += ' Attach it to a delivery so it raises what those goods cost.';
+    if (saved.attached) {
+      this.info += ` Put on ${saved.attached.lotCode || saved.attached.grnNumber}.`;
     }
     this.expenseDraft = null;
     await this.reload();

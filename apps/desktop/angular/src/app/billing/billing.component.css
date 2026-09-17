@@ -897,3 +897,22 @@
 .item-measure-summary-entry b { font-size: .78rem; }
 .item-measure-summary-entry span { font-family: "JetBrains Mono", Consolas, monospace; font-weight: 750; }
 .item-measure-summary + .total-summary { border-radius: 0; }
+
+/* ── Copy a finished bill ─────────────────────────────── */
+.copy-notice { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin:8px 12px 0; padding:9px 12px; border:1px solid #c8dcf0; border-left:3px solid var(--secondary); border-radius:8px; background:#f4f9ff; color:#26476b; font-size:.85rem; }
+.copy-notice.warn { border-color:#e8cba4; border-left-color:#e8890c; background:#fff8ef; color:#8a4a10; }
+.copy-notice.error { border-color:#edc3c3; border-left-color:#c62828; background:#fff5f5; color:#9b1c1c; }
+.copy-notice ul { margin:4px 0 0; padding-left:18px; font-size:.8rem; }
+.copy-notice-close { border:0; background:transparent; color:inherit; font-size:1.2rem; line-height:1; cursor:pointer; }
+.copy-box { width:min(640px, 96vw); }
+.copy-help { margin:0 0 10px; color:#5c6775; font-size:.85rem; line-height:1.45; }
+.copy-list { display:grid; gap:8px; max-height:52vh; overflow:auto; }
+.copy-item { display:flex; align-items:center; justify-content:space-between; gap:12px; cursor:default; }
+.copy-action { flex:none; }
+
+/* ── Supply code and the lot it names ─────────────────── */
+.col-code .code-input { width: 100%; max-width: 110px; text-transform: uppercase; }
+.col-code .line-item-code { display: block; color: #5c6775; font-size: 0.72rem; margin-top: 2px; }
+.line-lot-badge.warn { color: #8a4a10; font-weight: 700; }
+.lot-option-none { background: #fbfcfe; }
+.lot-option-none .lot-option-stock { color: #5c6775; }

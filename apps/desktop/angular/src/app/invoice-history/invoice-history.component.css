@@ -90,3 +90,7 @@ aside, .invoice-detail, .detail-empty { background:var(--ui-warm-surface); box-s
 .unsettle-form input,.unsettle-form select { min-height:34px; box-sizing:border-box; padding:6px 9px; border:1px solid var(--ui-border-strong); border-radius:var(--ui-radius-sm); }
 .unsettle-note { grid-column:1/-1; margin:0; color:#8a4a10; font-size:11px; line-height:1.45; }
 .unsettle-actions { grid-column:1/-1; display:flex; justify-content:flex-end; gap:8px; }
+
+/* A bill started from another one names its source, and opens it. */
+.copy-tag { margin-left:.45rem; padding:1px 7px; border:1px solid var(--ui-border-strong); border-radius:999px; background:var(--ui-primary-soft); color:var(--ui-primary); font-size:.68rem; font-weight:700; vertical-align:middle; cursor:pointer; }
+.copy-tag:hover { border-color:var(--ui-primary); }

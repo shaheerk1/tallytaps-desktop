@@ -10,7 +10,8 @@ function createBillingEngineService({
   paymentModeRepository,
   eventBus,
   cashManagementService,
-  customerAdvanceRepository = null
+  customerAdvanceRepository = null,
+  settingsService = null
 }) {
   if (!liveBillRepository) {
     throw new Error('Billing engine requires liveBillRepository.');
@@ -236,10 +237,99 @@ function createBillingEngineService({
   // ── Item operations ─────────────────────────────────────
 
   /**
+   * Whether this location asks for a supply code on every bill line, and what
+   * a line without one is saved with.
+   *
+   * The default is the location's receipt tagline, by the owner's choice: it
+   * reads as the shop's own supply, and it keeps the supply code filled on every
+   * line so reports and settlements see the same shape of data either way. A
+   * line saved with the default is never matched against lot codes and never
+   * remembered.
+   */
+  async function supplyCodePolicy() {
+    if (!settingsService) return { required: true, defaultCode: '' };
+    const [billingSettings, general] = await Promise.all([
+      settingsService.getSettingsByCode('billing'),
+      settingsService.getSettingsByCode('general')
+    ]);
+    const flag = billingSettings.supply_code_required;
+    const required = !(flag === false || flag === 'false' || flag === '0' || flag === 0);
+    const locCode = String(requestContext.workstation()?.locCode || '').trim().toUpperCase();
+    const defaultCode = String(general.store_tagline || '').trim().toUpperCase().slice(0, 120) || locCode;
+    return { required, defaultCode };
+  }
+
+  /** Remembering a code must never stop a sale. */
+  async function rememberLineSupplyCode({ locCode, productId, userId, businessDate, supplyCode }) {
+    if (!locCode || !Number(productId) || !Number(userId) || !businessDate || !supplyCode) return;
+    try {
+      await liveBillRepository.rememberSupplyCode({
+        locCode, productId: Number(productId), userId: Number(userId), businessDate, supplyCode
+      });
+    } catch (error) {
+      console.warn('Supply code was not remembered:', error.message);
+    }
+  }
+
+  /** The code this cashier used for an item earlier today, to fill in again. */
+  async function rememberedSupplyCode({ productId }) {
+    const ws = requestContext.workstation();
+    const userId = requestContext.resolveUserId({});
+    if (!ws || !userId || !Number(productId)) return { supplyCode: null };
+    const origin = requestContext.resolveOrigin({});
+    const supplyCode = await liveBillRepository.getRememberedSupplyCode({
+      locCode: origin.locCode, productId: Number(productId), userId: Number(userId), businessDate: origin.txnDate
+    });
+    return { supplyCode };
+  }
+
+  async function forgetSupplyCode({ productId }) {
+    const ws = requestContext.workstation();
+    const userId = requestContext.resolveUserId({});
+    if (!ws || !userId || !Number(productId)) return { forgotten: false };
+    await liveBillRepository.forgetSupplyCode({ locCode: ws.locCode, productId: Number(productId), userId: Number(userId) });
+    return { forgotten: true };
+  }
+
+  /**
+   * Which lot a bill line takes its stock from first.
+   *
+   * The code typed at the counter is a lot's short tag (KAR1), so one code
+   * names one lot. A code matching nothing leaves the line unmatched: it takes
+   * no stock at all, and stays visible as an unmatched allocation, instead of
+   * quietly consuming the oldest lot. Picking a lot from the stock list wins
+   * over the typed text, and the screen writes that lot's tag back into the
+   * field so the two always agree.
+   */
+  async function resolveLineAllocation({ productId, locCode, txnDate, supplyCode, lotId, source }) {
+    // Choosing "no lot" on the screen is a decision, not a failed match: it
+    // holds even when the typed code would have found a lot.
+    if (source === 'unmatched') return { lotId: null, source: 'unmatched' };
+    const chosenLotId = Number(lotId) || null;
+    if (chosenLotId) {
+      const valid = await billingRepository.lotIsAvailableForLine({ lotId: chosenLotId, productId, locCode, txnDate });
+      if (valid) return { lotId: valid, source: ['tag', 'automatic', 'remembered'].includes(source) ? source : 'manual' };
+    }
+    const tag = String(supplyCode || '').trim();
+    if (!tag) return { lotId: null, source: 'automatic' };
+    const lot = await billingRepository.findActiveLotByTag({ tag, productId, locCode, txnDate });
+    return lot ? { lotId: lot.id, source: 'tag' } : { lotId: null, source: 'unmatched' };
+  }
+
+  /**
    * Add an item to the current bill. Saves to DB in real-time under the bill's
    * receipt number (invoice_id stays NULL until finalize).
    */
   async function addItem(bill, item) {
+    return addLineToBill(bill, item, {});
+  }
+
+  /**
+   * The one way a line reaches a live bill, whether a cashier typed it or it
+   * was copied from a finished bill. `lineMetadata` is set by trusted code in
+   * this service only; the screen cannot supply it.
+   */
+  async function addLineToBill(bill, item, lineMetadata = {}) {
     if (!bill?.sessionId || !bill?.receiptNo) {
       throw new Error('addItem requires a bill context (sessionId + receiptNo).');
     }
@@ -248,12 +338,20 @@ function createBillingEngineService({
     }
 
     const customerCode = String(bill.customerCode || '').trim().toUpperCase();
-    const supplierCode = String(item.supplierCode || '').trim().toUpperCase();
+    const typedSupplyCode = String(item.supplierCode || '').trim().toUpperCase();
     if (!customerCode) throw new Error('Customer code is required.');
-    if (!supplierCode) throw new Error('Supplier code is required.');
+    // A line without a supply code is saved with the location's default code,
+    // but only where the owner switched the requirement off.
+    const policy = typedSupplyCode ? null : await supplyCodePolicy();
+    if (!typedSupplyCode && policy.required) throw new Error('Supply code is required.');
+    const usesDefaultCode = !typedSupplyCode;
+    const supplierCode = typedSupplyCode || policy.defaultCode;
+    if (!supplierCode) throw new Error('Set a receipt tagline in Settings, or type a supply code: every bill line needs one.');
     const qty = item.qty === undefined || item.qty === null ? 1 : Number(item.qty);
     const product = item.productId ? await catalogRepository.getProduct(item.productId) : null;
-    if (!product) throw new Error('Select an active DDEC item before adding it to the bill.');
+    // Looked up by id, an item is found even after it was switched off; a bill
+    // may only carry what is still sold here, typed or copied.
+    if (!product || Number(product.is_active) === 0) throw new Error('Select an active DDEC item before adding it to the bill.');
     const kilos = Number(item.kilos);
     const pricingBasis = product.pricing_basis === 'kilos' ? 'kilos' : 'qty';
     const requiresKilos = pricingBasis === 'kilos' || Boolean(product.requires_kilos);
@@ -278,7 +376,12 @@ function createBillingEngineService({
     });
 
     const ctx = billContext(bill);
-    return liveBillRepository.addItem({
+    const allocation = await resolveLineAllocation({
+      productId: item.productId, locCode: ctx.locCode, txnDate: ctx.txnDate,
+      // The default code is not a lot code: it must never pick a lot by accident.
+      supplyCode: usesDefaultCode ? '' : supplierCode, lotId: item.allocationPriorityLotId, source: item.allocationPrioritySource
+    });
+    const saved = await liveBillRepository.addItem({
       sessionId: ctx.sessionId,
       receiptNo: ctx.receiptNo,
       locCode: ctx.locCode,
@@ -309,16 +412,22 @@ function createBillingEngineService({
       wageBasis: product.wage_basis || 'none',
       wageChargeTotal: calculated.wageChargeTotal,
       total: calculated.total,
-      metadata: {},
+      metadata: lineMetadata || {},
       priceOverrideSnapshot,
-      allocationPriorityLotId: Number(item.allocationPriorityLotId) || null,
-      allocationPrioritySource: ['automatic', 'remembered', 'manual'].includes(item.allocationPrioritySource)
-        ? item.allocationPrioritySource
-        : null,
-      allocationPrioritySetBy: Number(item.allocationPriorityLotId) && Number.isInteger(Number(ctx.userId)) && Number(ctx.userId) > 0
+      allocationPriorityLotId: allocation.lotId,
+      allocationPrioritySource: allocation.source,
+      allocationPrioritySetBy: allocation.lotId && Number.isInteger(Number(ctx.userId)) && Number(ctx.userId) > 0
         ? Number(ctx.userId)
         : null
     });
+    // What ended up in the field is remembered for this item today. The default
+    // code is not a choice anyone made, and a copied bill is not a new habit.
+    if (!usesDefaultCode && !lineMetadata?.copiedFrom) {
+      await rememberLineSupplyCode({
+        locCode: ctx.locCode, productId: item.productId, userId: ctx.userId, businessDate: ctx.txnDate, supplyCode: supplierCode
+      });
+    }
+    return saved;
   }
 
   /**
@@ -349,13 +458,32 @@ function createBillingEngineService({
     if (qty <= 0 && (!Number.isFinite(kilos) || kilos <= 0)) throw new Error('Enter a positive quantity or kilos before saving the item.');
     const calculated = calculateLineAmounts({ unitPrice, qty, kilos, pricingBasis: existing.pricingBasis, discount, tax, bagChargeRate: existing.bagChargeRate, wageChargeRate: existing.wageChargeRate, wageBasis: existing.wageBasis });
 
-    return liveBillRepository.updateItem({
+    const saved = await liveBillRepository.updateItem({
       itemId, qty, kilos: Number.isFinite(kilos) && kilos > 0 ? kilos : null, unitPrice, discount, tax,
       pricingBasis: existing.pricingBasis, quantityStep: existing.quantityStep, allowZeroQuantity: existing.allowZeroQuantity,
       merchandiseTotal: calculated.merchandiseTotal, bagChargeRate: existing.bagChargeRate, bagChargeTotal: calculated.bagChargeTotal,
       wageChargeRate: existing.wageChargeRate, wageBasis: existing.wageBasis, wageChargeTotal: calculated.wageChargeTotal,
       total: calculated.total, metadata: {}, priceOverrideSnapshot
     });
+    // Changing the supply code on a line moves it to that lot, or to no lot.
+    if (updates.supplyCode !== undefined) {
+      const supplyCode = String(updates.supplyCode || '').trim().toUpperCase();
+      const line = await billingRepository.updateLiveItemSupplyCode({ itemId, supplyCode });
+      const allocation = await resolveLineAllocation({
+        productId: line.productId, locCode: line.locCode, txnDate: line.txnDate, supplyCode
+      });
+      await billingRepository.setLiveItemAllocationPriority({
+        itemId, lotId: allocation.lotId, source: allocation.source, userId: updates.actorId
+      });
+      if (supplyCode) {
+        await rememberLineSupplyCode({
+          locCode: line.locCode, productId: line.productId,
+          userId: requestContext.resolveUserId({ userId: updates.actorId }),
+          businessDate: requestContext.workstation()?.businessDate || line.txnDate, supplyCode
+        });
+      }
+    }
+    return saved;
   }
 
   /**
@@ -666,6 +794,82 @@ function createBillingEngineService({
   }
 
   /**
+   * Starts a new bill from a finished one.
+   *
+   * Every line of the source bill is added to a fresh receipt exactly as a
+   * cashier would add it by hand: the item must still be sold at this location,
+   * and a changed rate still has to pass that item's price rules. Nothing is
+   * posted -- no stock, drawer, supplier or customer effect -- until the new
+   * bill is finalized like any other, and abandoning it leaves nothing behind.
+   * Payments are never copied. The new lines carry a note of the bill they
+   * came from, which finalize writes onto the new invoice.
+   *
+   * Lines that can no longer be sold are left out and named. If none can be,
+   * the new receipt is abandoned at once.
+   */
+  async function copyInvoiceToBill({ invoiceId }) {
+    if (!Number(invoiceId)) throw new Error('Choose the bill to copy.');
+    const ws = requestContext.workstation();
+    const origin = requestContext.resolveOrigin({});
+    const userId = requestContext.resolveUserId({});
+    if (!ws || !userId) throw new Error('Open a workstation session before copying a bill.');
+
+    const source = await billingRepository.getInvoice(Number(invoiceId));
+    if (!source) throw new Error('That bill no longer exists.');
+    if (source.loc_code !== origin.locCode) throw new Error('That bill belongs to another location.');
+    if (source.inv_stat !== 'active' || !['paid', 'partial'].includes(source.status)) {
+      throw new Error('Only a finalized bill can be copied.');
+    }
+    const lines = [...(source.items || [])].sort((a, b) => Number(a.seq_no) - Number(b.seq_no));
+    if (!lines.length) throw new Error('That bill has no lines to copy.');
+
+    const bill = {
+      sessionId: ws.workstationSessionId,
+      locCode: origin.locCode, macCode: origin.macCode, txnDate: origin.txnDate, userId,
+      customerCode: String(source.customer_code || '').trim().toUpperCase(),
+      customerAccountId: source.customer_account_id ? Number(source.customer_account_id) : null
+    };
+    bill.receiptNo = await liveBillRepository.allocateNextReceiptNo(bill);
+    await liveBillRepository.updateSessionCurrentReceipt(bill.sessionId, bill.receiptNo);
+
+    const copiedFrom = { invoiceId: Number(source.id), invoiceNumber: source.invoice_number };
+    const skipped = [];
+    let copied = 0;
+    for (const line of lines) {
+      const kilos = line.kilos ?? line.base_quantity;
+      try {
+        await addLineToBill(bill, {
+          productId: line.product_id,
+          supplierCode: line.supplier_code,
+          itemCode: line.item_code,
+          description: line.description,
+          qty: Number(line.quantity ?? line.handling_quantity ?? 0),
+          kilos: kilos == null ? null : Number(kilos),
+          unitPrice: Number(line.unit_price || 0),
+          discount: Number(line.discount || 0),
+          tax: Number(line.tax || 0)
+        }, { copiedFrom });
+        copied += 1;
+      } catch (error) {
+        skipped.push({ itemCode: line.item_code, description: line.description, reason: error.message });
+      }
+    }
+    if (!copied) {
+      await liveBillRepository.abandonBill(bill);
+      throw new Error(`Nothing on ${source.invoice_number} can be sold now: `
+        + skipped.map((row) => `${row.description} (${row.reason})`).join('; '));
+    }
+
+    const items = await liveBillRepository.getItemsByReceipt(bill);
+    return {
+      sessionId: bill.sessionId, receiptNo: bill.receiptNo,
+      locCode: bill.locCode, macCode: bill.macCode, txnDate: bill.txnDate, userId,
+      customerCode: bill.customerCode, customerAccountId: bill.customerAccountId,
+      items, billHeader: {}, copiedFrom, copied, skipped
+    };
+  }
+
+  /**
    * Moves a settled bill, or part of it, back to being owed. The rules live in
    * billingRepository.unsettleInvoice; this only checks the request makes sense
    * and takes the place and person from the signed-in session.
@@ -704,7 +908,11 @@ function createBillingEngineService({
     searchInvoices,
     getInvoiceArchive,
     collectInvoiceBalance,
-    unsettleInvoice
+    unsettleInvoice,
+    copyInvoiceToBill,
+    supplyCodePolicy,
+    rememberedSupplyCode,
+    forgetSupplyCode
   };
 }
 

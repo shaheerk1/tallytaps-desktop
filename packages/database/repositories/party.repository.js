@@ -156,7 +156,7 @@ function createPartyRepository({ database, businessDayRepository }) {
       [row.party_id]
     );
     const [invoices] = await connection.execute(
-      `SELECT id, invoice_number, customer_code, txn_date, due_date, status, grand_total, paid_total, balance
+      `SELECT id, invoice_number, loc_code, mac_code, receipt_no, customer_code, txn_date, due_date, status, grand_total, paid_total, balance
        FROM invoices WHERE customer_account_id = ? AND balance > 0.005 ORDER BY due_date, txn_date, id`,
       [customerAccountId]
     );

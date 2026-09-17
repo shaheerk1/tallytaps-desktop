@@ -142,7 +142,7 @@ async function main() {
         assert(money(contribution.claim) === 50000, `Claim after contribution should be 50000.00, got ${contribution.claim}.`);
 
         // ── 1. A partner-paid cost: both effects or neither ─
-        const borne = await expenses.recordExpense({
+        const borne = await expenses.recordExpense({ attachLater: true,
           ...base, expenseCategoryId: lotCategory.id, fundAccountId: partner.fundAccountId,
           amount: 2500, reason: 'Three-wheeler hired from his own hand'
         });
@@ -257,7 +257,7 @@ async function main() {
           locCode, periodStart: '2099-05-01', periodEnd: '2099-05-31',
           userId: user.id, notes: 'Season close'
         });
-        const closed = await expectRejection(expenses.recordExpense({
+        const closed = await expectRejection(expenses.recordExpense({ attachLater: true,
           ...base, expenseCategoryId: lotCategory.id, fundAccountId: safeFund.insertId,
           amount: 100, reason: 'Posting into a closed period'
         }), 'A posting into a closed period');
@@ -267,7 +267,7 @@ async function main() {
         await expectRejection(accounting.reopenPeriod({ periodId: periods[0].id, userId: user.id, reason: '' }),
           'Reopening without a reason');
         await accounting.reopenPeriod({ periodId: periods[0].id, userId: user.id, reason: 'One late lorry bill arrived' });
-        const afterReopen = await expenses.recordExpense({
+        const afterReopen = await expenses.recordExpense({ attachLater: true,
           ...base, expenseCategoryId: lotCategory.id, fundAccountId: safeFund.insertId,
           amount: 100, reason: 'The late lorry bill'
         });

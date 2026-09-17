@@ -100,6 +100,10 @@
             <input class="form-input" type="text" [(ngModel)]="form.billing.pdfFolder" [disabled]="!form.billing.autoSavePdf" placeholder="e.g. C:\POS Receipts" />
             <span class="field-hint">The folder is created if needed. Use a local, backed-up location.</span>
           </div>
+          <div class="form-field">
+            <label class="toggle-row"><input type="checkbox" [(ngModel)]="form.billing.supplyCodeRequired" /><span>Ask for a supply code on every bill line</span></label>
+            <span class="field-hint">Turn off for shops that do not track which load a sale came from. Billing then hides the Supply code field; a line taken from a stock lot is saved with that lot's code, and any other line with your receipt tagline ({{ form.general.tagline || 'set one under General' }}) as its supply code.</span>
+          </div>
         </div>
 
         <div class="st-actions">

@@ -1,5 +1,7 @@
 import { Component, OnInit, ViewChild, ElementRef, OnDestroy, AfterViewInit, QueryList, ViewChildren, HostListener } from '@angular/core';
-import { Router } from '@angular/router';
+import { ActivatedRoute, Router } from '@angular/router';
+import { Subscription } from 'rxjs';
+import { PageLinksService, readBillingCopyLink } from '../services/page-links.service';
 import { SessionService } from '../services/session.service';
 import { PrintingService } from '../services/printing.service';
 import { ItemMeasureSummary, itemMeasureSummaryText, summarizeItemMeasures } from '../services/item-measure-summary';
@@ -147,10 +149,15 @@ export class BillingComponent implements OnInit, OnDestroy {
   // never awaited by the cashier's normal item-entry path.
   lotCandidates: InventoryLotCandidate[] = [];
   selectedLot: InventoryLotCandidate | null = null;
-  selectedLotSource: 'automatic' | 'remembered' | 'manual' | null = null;
+  selectedLotSource: 'automatic' | 'remembered' | 'manual' | 'tag' | 'unmatched' | null = null;
   lotPickerOpen = false;
   lotLookupLoading = false;
   lotLookupMessage = '';
+  /** Whether a supply code must be typed (a location setting), and what a line without one is saved with. */
+  supplyCodeRequired = true;
+  defaultSupplyCode = '';
+  /** Set when the cashier typed a code or picked a lot for the line being entered. */
+  supplyCodeTypedThisLine = false;
   private lotLookupToken = 0;
 
   // Billed items (live invoice_items for the current receipt)
@@ -236,6 +243,16 @@ export class BillingComponent implements OnInit, OnDestroy {
   isFinalizing = false;
   numpadKeys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', '⌫'];
 
+  // Copy a finished bill into a new one
+  isCopyPopupVisible = false;
+  copySearchTerm = '';
+  copyCandidates: any[] = [];
+  copySearched = false;
+  isCopySearching = false;
+  isCopying = false;
+  copyNotice: { tone: 'info' | 'warn' | 'error'; text: string; skipped: Array<{ description: string; reason: string }> } | null = null;
+  private linkSubscription?: Subscription;
+
   // Recall bill
   isRecallPopupVisible = false;
   unfinalizedBills: HeldBill[] = [];
@@ -273,19 +290,29 @@ export class BillingComponent implements OnInit, OnDestroy {
   constructor(
     private session: SessionService,
     private router: Router,
-    private printing: PrintingService
+    private printing: PrintingService,
+    private route: ActivatedRoute,
+    private pageLinks: PageLinksService
   ) {}
 
   async ngOnInit(): Promise<void> {
     this.loadSessionInfo();
     await this.loadProducts();
     await this.loadSettings();
+    await this.loadSupplyCodePolicy();
     await this.openOrResumeBill();
     await this.refreshPendingBills();
     this.focusFirstBillInput();
+    // Another screen may ask Billing to start from a finished bill. The link is
+    // consumed first, so a reload or the back button never copies it twice.
+    this.linkSubscription = this.pageLinks.onLink(this.route, readBillingCopyLink, async (link) => {
+      await this.pageLinks.consume(this.route);
+      await this.startCopyOf(link.copyFromInvoiceId);
+    });
   }
 
   ngOnDestroy(): void {
+    this.linkSubscription?.unsubscribe();
     if (this.pendingBillAnimationTimer) clearTimeout(this.pendingBillAnimationTimer);
     if (this.itemPickerSearchTimer) clearTimeout(this.itemPickerSearchTimer);
     if (this.customerSearchTimer) clearTimeout(this.customerSearchTimer);
@@ -989,6 +1016,85 @@ export class BillingComponent implements OnInit, OnDestroy {
 
   onSupplierCodeChange(value: string): void {
     this.supplierCode = String(value || '').toUpperCase();
+    this.supplyCodeTypedThisLine = true;
+    this.applySupplyCode();
+  }
+
+  /**
+   * The supply code is a lot's short tag (KAR1): typing one names that lot.
+   * A code matching no open lot of this item leaves the line with no lot, and
+   * it will take no stock when the bill is finalized -- which is how a
+   * mistyped code stays visible instead of quietly eating the oldest lot.
+   */
+  private applySupplyCode(): void {
+    if (!this.selectedProductId || this.lotLookupLoading) return;
+    const code = this.supplierCode.trim().toUpperCase();
+    const match = code
+      ? this.lotCandidates.find((lot) => String(lot.lot_tag || '').toUpperCase() === code) || null
+      : null;
+    this.selectedLot = match;
+    this.selectedLotSource = match ? 'tag' : (code ? 'unmatched' : null);
+    if (match) { this.lotLookupMessage = ''; return; }
+    this.lotLookupMessage = code
+      ? `${code} is not an open lot for this item — this line will take no stock`
+      : (this.lotCandidates.length ? 'Type a lot code, or pick a lot from the list' : 'No open lot for this item — this line will take no stock');
+  }
+
+  /**
+   * What an item gets when the cashier moved on to it without typing a code.
+   *
+   *   1. the code this cashier used for the item earlier today, if any: it names
+   *      its lot, or leaves the line with no lot, exactly as if it were typed;
+   *   2. otherwise a code carried over from the previous line, if it is a lot
+   *      of this item;
+   *   3. otherwise the oldest open lot (FIFO), with its code written into the
+   *      field so the field and the lot agree.
+   * A code typed or a lot picked for this line always wins, and nothing here
+   * runs for it.
+   */
+  private applySelectionForItem(rememberedCode: string | null): void {
+    if (this.supplyCodeTypedThisLine) { this.applySupplyCode(); return; }
+    if (rememberedCode) {
+      this.supplierCode = String(rememberedCode).toUpperCase();
+      this.applySupplyCode();
+      return;
+    }
+    const carried = this.supplierCode.trim().toUpperCase();
+    if (carried && this.lotCandidates.some((lot) => String(lot.lot_tag || '').toUpperCase() === carried)) {
+      this.applySupplyCode();
+      return;
+    }
+    const oldest = this.lotCandidates[0];
+    if (oldest) {
+      this.selectedLot = oldest;
+      this.selectedLotSource = 'automatic';
+      if (oldest.lot_tag) this.supplierCode = String(oldest.lot_tag).toUpperCase();
+      this.lotLookupMessage = '';
+      return;
+    }
+    this.applySupplyCode();
+  }
+
+  /** Whether this location asks for a supply code, and what it saves without one. */
+  private async loadSupplyCodePolicy(): Promise<void> {
+    if (!window.posApi) return;
+    try {
+      const output = await window.posApi.settings.getBillingOutput(this.actor());
+      if (!output.success) return;
+      this.supplyCodeRequired = output.data.supplyCodeRequired !== false;
+      this.defaultSupplyCode = output.data.defaultSupplyCode || '';
+    } catch {
+      this.supplyCodeRequired = true;
+    }
+  }
+
+  /** Sell without naming a lot, even when this item has open lots. */
+  chooseNoLot(event?: MouseEvent): void {
+    event?.stopPropagation();
+    this.selectedLot = null;
+    this.selectedLotSource = 'unmatched';
+    this.lotPickerOpen = false;
+    this.lotLookupMessage = 'No lot chosen — this line will take no stock';
   }
 
   toggleLotPicker(event: MouseEvent): void {
@@ -1014,8 +1120,11 @@ export class BillingComponent implements OnInit, OnDestroy {
     if (!api || !this.locationCode || !this.billingDate) return;
     this.lotLookupLoading = true;
     this.lotLookupMessage = 'Finding available stock…';
-    void api.lotCandidates({ productId, locCode: this.locationCode, txnDate: this.billingDate, limit: 12 }, this.actor())
-      .then((result) => {
+    const remembered = api.rememberedSupplyCode(productId, this.actor())
+      .then((memory) => (memory.success ? memory.data?.supplyCode || null : null))
+      .catch(() => null);
+    void Promise.all([api.lotCandidates({ productId, locCode: this.locationCode, txnDate: this.billingDate, limit: 12 }, this.actor()), remembered])
+      .then(([result, rememberedCode]) => {
         if (token !== this.lotLookupToken || this.selectedProductId !== productId) return;
         this.lotLookupLoading = false;
         if (!result.success) {
@@ -1023,11 +1132,7 @@ export class BillingComponent implements OnInit, OnDestroy {
           return;
         }
         this.lotCandidates = result.data || [];
-        this.selectedLot = this.lotCandidates[0] || null;
-        this.selectedLotSource = this.selectedLot
-          ? (this.selectedLot.remembered ? 'remembered' : 'automatic')
-          : null;
-        this.lotLookupMessage = this.selectedLot ? '' : 'No active GRN lot — allocation will be recorded as unmatched';
+        this.applySelectionForItem(rememberedCode);
       })
       .catch(() => {
         if (token !== this.lotLookupToken || this.selectedProductId !== productId) return;
@@ -1044,13 +1149,10 @@ export class BillingComponent implements OnInit, OnDestroy {
     this.selectedLotSource = 'manual';
     this.lotPickerOpen = false;
     this.lotLookupMessage = '';
-    void window.posApi?.billing.rememberLot({
-      productId, locCode: this.locationCode, txnDate: this.billingDate, lotId: lot.id
-    }, this.actor()).then((result) => {
-      if (!result.success && this.selectedProductId === productId && this.selectedLot?.id === lot.id) {
-        this.lotLookupMessage = result.error || 'Could not remember this stock lot.';
-      }
-    });
+    // Keep the typed field and the chosen lot saying the same thing.
+    if (lot.lot_tag) this.supplierCode = String(lot.lot_tag).toUpperCase();
+    // Picked on purpose: remembered for this item when the line is added.
+    this.supplyCodeTypedThisLine = true;
   }
 
   useAutomaticLotOrder(event?: MouseEvent): void {
@@ -1058,15 +1160,19 @@ export class BillingComponent implements OnInit, OnDestroy {
     const productId = this.selectedProductId;
     if (!productId) return;
     this.lotPickerOpen = false;
-    void window.posApi?.billing.clearRememberedLot({ productId, locCode: this.locationCode }, this.actor())
+    void window.posApi?.billing.forgetSupplyCode(productId, this.actor())
       .then(() => {
-        if (this.selectedProductId === productId) this.loadLotCandidates(productId);
+        if (this.selectedProductId !== productId) return;
+        this.supplyCodeTypedThisLine = false;
+        this.supplierCode = '';
+        this.loadLotCandidates(productId);
       });
   }
 
-  lotMatchesSupplier(lot: InventoryLotCandidate): boolean {
+  /** Whether this lot is the one the typed code names. */
+  lotMatchesSupplyCode(lot: InventoryLotCandidate): boolean {
     const entered = this.supplierCode.trim().toUpperCase();
-    return Boolean(entered && String(lot.supplier_code || '').trim().toUpperCase() === entered);
+    return Boolean(entered && String(lot.lot_tag || '').trim().toUpperCase() === entered);
   }
 
   get orderedLotCandidates(): InventoryLotCandidate[] {
@@ -1084,7 +1190,8 @@ export class BillingComponent implements OnInit, OnDestroy {
 
   lotPriorityLabel(lot: InventoryLotCandidate): string {
     if (this.selectedLot?.id === lot.id) {
-      if (this.selectedLotSource === 'manual') return 'Selected · Manual';
+      if (this.selectedLotSource === 'tag') return 'Selected · Typed code';
+      if (this.selectedLotSource === 'manual') return 'Selected · Chosen';
       if (this.selectedLotSource === 'remembered') return 'Selected · Remembered';
       return 'Selected · FIFO #1';
     }
@@ -1123,7 +1230,7 @@ export class BillingComponent implements OnInit, OnDestroy {
     if (selected) { void this.chooseCustomerAccount(selected, true); return; }
     void this.persistCustomerCode();
     this.customerAccountMatches = [];
-    this.supplierCodeInput?.nativeElement?.focus();
+    (this.supplierCodeInput?.nativeElement || this.itemCodeInput?.nativeElement)?.focus();
   }
 
   onCustomerCodeBlur(): void {
@@ -1447,7 +1554,7 @@ export class BillingComponent implements OnInit, OnDestroy {
     if (!window.posApi || !this.receiptNo) return;
 
     if (!this.customerCode.trim()) { this.lineError = 'Customer code is required.'; this.customerCodeInput?.nativeElement?.focus(); return; }
-    if (!this.supplierCode.trim()) { this.lineError = 'Supplier code is required.'; this.supplierCodeInput?.nativeElement?.focus(); return; }
+    if (this.supplyCodeRequired && !this.supplierCode.trim()) { this.lineError = 'Supply code is required.'; this.supplierCodeInput?.nativeElement?.focus(); return; }
     if (!this.itemCode.trim() || !this.description || !this.selectedProductId) { this.lineError = 'Item code is required.'; this.itemCodeInput?.nativeElement?.focus(); return; }
     if (!Number.isFinite(Number(this.qty)) || this.qty < 0) { this.lineError = 'Quantity is required.'; this.qtyInput?.nativeElement?.focus(); return; }
 
@@ -1507,6 +1614,23 @@ export class BillingComponent implements OnInit, OnDestroy {
     await this.persistItemAndRefresh(index, item.metadata || {});
   }
 
+  /**
+   * The supply code on a line already added. Saving it moves that line onto the
+   * lot with this tag, or onto no lot when nothing matches; the stock is taken
+   * at finalize exactly as before.
+   */
+  async updateItemSupplyCode(index: number, value: string): Promise<void> {
+    const item = this.billItems[index];
+    const code = String(value || '').trim().toUpperCase();
+    const previous = item.supplierCode;
+    if (code === String(previous || '').toUpperCase()) return;
+    item.supplierCode = code;
+    if (!await this.persistItemAndRefresh(index, item.metadata || {}, code)) {
+      item.supplierCode = previous;
+      this.lineError = 'That supply code could not be saved.';
+    }
+  }
+
   async updateItemKilos(index: number, newKilos: number): Promise<void> {
     if (!Number.isFinite(newKilos) || newKilos <= 0) return;
     const item = this.billItems[index];
@@ -1540,7 +1664,7 @@ export class BillingComponent implements OnInit, OnDestroy {
     await this.persistItemAndRefresh(index, meta);
   }
 
-  private async persistItemAndRefresh(index: number, metadata: Record<string, unknown>): Promise<boolean> {
+  private async persistItemAndRefresh(index: number, metadata: Record<string, unknown>, supplyCode?: string): Promise<boolean> {
     const item = this.billItems[index];
     if (!item.id || !window.posApi) {
       item.metadata = metadata;
@@ -1548,6 +1672,7 @@ export class BillingComponent implements OnInit, OnDestroy {
     }
     try {
       const updated = await window.posApi.billing.updateItem(item.id, {
+        ...(supplyCode === undefined ? {} : { supplyCode }),
         qty: item.qty,
         kilos: item.kilos ?? null,
         unitPrice: item.unitPrice,
@@ -1615,12 +1740,14 @@ export class BillingComponent implements OnInit, OnDestroy {
     this.kilos = null;
     this.value = 0;
     this.selectedProductId = null;
+    this.supplyCodeTypedThisLine = false;
     this.clearLotLookup();
     this.lineFieldValues = {};
     this.lineError = '';
     setTimeout(() => {
+      // With the supply code hidden by the location's setting, the item is next.
       const target = focusSupplier
-        ? this.supplierCodeInput?.nativeElement
+        ? (this.supplierCodeInput?.nativeElement || this.itemCodeInput?.nativeElement)
         : this.customerCodeInput?.nativeElement;
       target?.focus();
       if (focusSupplier) target?.select();
@@ -1756,6 +1883,7 @@ export class BillingComponent implements OnInit, OnDestroy {
   /** Start a fresh bill while preserving any entered live lines as pending. */
   async startNewBill(): Promise<void> {
     if (this.isPaymentPopupVisible || this.isRecallPopupVisible || this.isAbandonConfirmVisible || this.isFinalizing) return;
+    this.copyNotice = null;
     if (this.billItems.length > 0) {
       await this.holdBill();
       return;
@@ -2630,6 +2758,76 @@ export class BillingComponent implements OnInit, OnDestroy {
     this.resetInputs({ keepSupplier: true, focusSupplier: true });
     this.scheduleTotalsRefresh();
     void this.refreshPendingBills();
+  }
+
+  // ── Copy a finished bill ───────────────────────────────
+
+  openCopyPopup(): void {
+    if (this.isPaymentPopupVisible || this.isFinalizing) return;
+    this.copySearchTerm = '';
+    this.copyCandidates = [];
+    this.copySearched = false;
+    this.isCopyPopupVisible = true;
+  }
+
+  hideCopyPopup(): void { this.isCopyPopupVisible = false; }
+
+  dismissCopyNotice(): void { this.copyNotice = null; }
+
+  /** Finished bills at this location, on any day and at any counter. */
+  async searchCopyCandidates(): Promise<void> {
+    if (!window.posApi || this.isCopySearching) return;
+    this.isCopySearching = true;
+    try {
+      const result = await window.posApi.billing.searchInvoices({
+        term: this.copySearchTerm.trim(), locCode: this.locationCode, includeRefunded: true, limit: 25
+      }, this.actor());
+      this.copyCandidates = result.success ? (result.data || []) : [];
+      this.copySearched = true;
+    } finally {
+      this.isCopySearching = false;
+    }
+  }
+
+  /**
+   * Makes a new bill from a finished one and switches to it. The bill being
+   * worked on, if it has lines, stays in Pending Bills exactly as a recall
+   * leaves it. Nothing is recorded until the copy is finalized.
+   */
+  async startCopyOf(invoiceId: number): Promise<void> {
+    if (!window.posApi || this.isCopying || this.isFinalizing) return;
+    this.isCopying = true;
+    this.copyNotice = null;
+    const previousReceiptNo = this.billItems.length > 0 ? this.receiptNo : undefined;
+    try {
+      const result = await window.posApi.billing.copyInvoiceToBill(invoiceId, this.actor());
+      if (!result.success) {
+        this.copyNotice = { tone: 'error', text: result.error || 'Could not copy that bill.', skipped: [] };
+        return;
+      }
+      const data = result.data;
+      this.receiptNo = data.receiptNo;
+      this.billItems = data.items || [];
+      this.customerCode = String(data.customerCode || '').toUpperCase();
+      this.customerAccountId = data.customerAccountId || null;
+      await this.loadLinkedCustomer();
+      this.supplierCode = String(this.billItems[this.billItems.length - 1]?.supplierCode || '').toUpperCase();
+      this.billHeaderValues = data.billHeader || {};
+      this.hideCopyPopup();
+      this.resetInputs({ keepSupplier: true, focusSupplier: true });
+      this.scheduleTotalsRefresh();
+      await this.refreshPendingBills(previousReceiptNo);
+      this.copyNotice = {
+        tone: data.skipped.length ? 'warn' : 'info',
+        text: `Copied from ${data.copiedFrom.invoiceNumber}. Change anything you need, then finalize; nothing is recorded until you do.`
+          + (previousReceiptNo ? ` Your previous bill #${previousReceiptNo} is kept in Pending Bills.` : ''),
+        skipped: data.skipped.map((line) => ({ description: line.description, reason: line.reason }))
+      };
+    } catch (error) {
+      this.copyNotice = { tone: 'error', text: error instanceof Error ? error.message : 'Could not copy that bill.', skipped: [] };
+    } finally {
+      this.isCopying = false;
+    }
   }
 
   exitBilling(): void {

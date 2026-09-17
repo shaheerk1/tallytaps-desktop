@@ -8,6 +8,8 @@ function createSupplierSaleStatementService({ repository }) {
     get: (statementId) => repository.getStatement(statementId),
     candidates: (filters) => repository.listCandidates(filters || {}),
     candidateGrns: (filters) => repository.listCandidateGrns(filters || {}),
+    adjustmentLabels: (filters) => repository.listAdjustmentLabels(filters || {}),
+    expenseDeductions: (filters) => repository.listExpenseDeductions(filters || {}),
     saveDraft: (statement) => repository.saveDraft(statement || {}),
     review: (statementId, userId) => repository.reviewStatement(statementId, userId),
     reopen: (statementId, userId, reason) => repository.reopenStatement(statementId, userId, reason),

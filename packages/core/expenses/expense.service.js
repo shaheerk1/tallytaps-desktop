@@ -55,7 +55,17 @@ function createExpenseService({ expenseRepository }) {
     return expenseRepository.saveCategory(input);
   }
 
+  /**
+   * Records an expense. Anything a screen sends must name a lot expense's GRN.
+   * Only trusted main-process code (no IPC request in flight) may record a lot
+   * expense to attach later, by passing `attachLater`.
+   */
   async function recordExpense(input = {}) {
+    const trustedCaller = !requestContext.current();
+    return recordExpenseWith(input, { requireGoodsLink: !(trustedCaller && input.attachLater) });
+  }
+
+  async function recordExpenseWith(input, { requireGoodsLink }) {
     const origin = requireOrigin(input);
     const entryDate = resolveEntryDate(input, origin);
     const userId = requireUser(input);
@@ -74,7 +84,10 @@ function createExpenseService({ expenseRepository }) {
       payee: text(input.payee),
       reference: text(input.reference),
       reason: text(input.reason),
-      requestId: text(input.requestId)
+      requestId: text(input.requestId),
+      goodsReceiptId: Number(input.goodsReceiptId) || null,
+      inventoryLotId: Number(input.inventoryLotId) || null,
+      requireGoodsLink
     });
   }
 
@@ -112,7 +125,9 @@ function createExpenseService({ expenseRepository }) {
     const template = templates.find((row) => row.id === Number(input.templateId));
     if (!template || !template.isActive) throw new Error('This recurring expense is not active.');
     if (template.nextDueDate > origin.txnDate) throw new Error(`This expense is next due on ${template.nextDueDate}.`);
-    const expense = await recordExpense({
+    // A schedule cannot know which delivery a lot expense belongs to, so its
+    // lot expenses are attached afterwards, as before.
+    const expense = await recordExpenseWith({
       origin, userId,
       expenseCategoryId: template.expenseCategoryId,
       fundAccountId: template.fundAccountId,
@@ -121,7 +136,7 @@ function createExpenseService({ expenseRepository }) {
       reference: template.reference || `Due ${template.nextDueDate}`,
       reason: template.reason,
       requestId: `recurring:${template.id}:${template.nextDueDate}`
-    });
+    }, { requireGoodsLink: false });
     const schedule = await expenseRepository.completeRecurringExpense({
       templateId: template.id, dueDate: template.nextDueDate, expenseEntryId: expense.id, userId
     });

@@ -147,7 +147,8 @@ async function createServiceContainer() {
     paymentModeRepository,
     eventBus,
     cashManagementService,
-    customerAdvanceRepository
+    customerAdvanceRepository,
+    settingsService
   });
   const customerAdvanceService = createCustomerAdvanceService({ repository: customerAdvanceRepository, paymentModes, paymentModeRepository, cashManagementService });
   const refundService = createRefundService({ refundRepository, paymentModes, paymentModeRepository, eventBus, cashManagementService });

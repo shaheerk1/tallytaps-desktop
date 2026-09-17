@@ -1,4 +1,4 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, ElementRef, HostListener, OnInit, ViewChild } from '@angular/core';
 import { SessionService } from '../services/session.service';
 import { PrintingService } from '../services/printing.service';
 import type {
@@ -7,6 +7,7 @@ import type {
   CashMovementHistoryRow,
   CashShift,
   CashShiftReportPrint,
+  ExpenseCategory,
   FundAccount,
   PrintDocument
 } from '../../../../../../packages/shared/ipc/pos-api';
@@ -22,11 +23,25 @@ export class CashManagementComponent implements OnInit {
   shift: CashShift | null = null;
   openingLines = this.blankLines();
   closingLines = this.blankLines();
-  movementType: 'cash_in' | 'cash_out' | 'safe_drop' | 'bank_drop' = 'cash_in';
+  movementDirection: 'in' | 'out' = 'in';
   movementAmount = 0;
   movementReason = '';
-  movementTargetFundId: number | null = null;
   funds: FundAccount[] = [];
+  /**
+   * Cash going out is always an expense: a reason, the amount, what it was for,
+   * and the fund that paid -- this drawer unless someone else's money paid it.
+   */
+  expenseReasons: ExpenseCategory[] = [];
+  outCategoryId: number | null = null;
+  outFundId: number | null = null;
+  outGoodsReceiptId: number | null = null;
+  outLotId: number | null = null;
+  outRequestId = crypto.randomUUID();
+  saving = false;
+  /** The closing count is a day-end task, so it stays folded behind its button until started. */
+  closingCountOpen = false;
+  @ViewChild('movementForm') movementForm?: ElementRef<HTMLElement>;
+  @ViewChild('closingForm') closingForm?: ElementRef<HTMLElement>;
   varianceReason = '';
   reportHistory: CashShiftReportPrint[] = [];
   movementHistory: CashMovementHistoryRow[] = [];
@@ -50,16 +65,23 @@ export class CashManagementComponent implements OnInit {
   constructor(private session: SessionService, private printing: PrintingService) {}
 
   get canCorrectMovements(): boolean { return this.session.hasPermission('cash.movement.correct'); }
-  get canTransferFunds(): boolean { return this.session.hasPermission('funds.transfer'); }
-  get isFundDrop(): boolean { return this.movementType === 'safe_drop' || this.movementType === 'bank_drop'; }
+  get canRecordExpense(): boolean { return this.session.hasPermission('expenses.create') && this.session.hasPermission('funds.view'); }
   get drawerFund(): FundAccount | null {
     if (!this.shift) return null;
     return this.funds.find((fund) => fund.fundKind === 'pos_drawer' && fund.cashDrawerId === this.shift?.drawerId) || null;
   }
-  get dropTargets(): FundAccount[] {
-    const kind = this.movementType === 'bank_drop' ? 'bank' : 'cash_safe';
-    return this.funds.filter((fund) => fund.isActive && fund.fundKind === kind);
+  /** This drawer first, then every other place money can come from. Other tills are counted by their own shifts. */
+  get payingFunds(): FundAccount[] {
+    const drawer = this.drawerFund;
+    return [
+      ...(drawer ? [drawer] : []),
+      ...this.funds.filter((fund) => fund.isActive && fund.fundKind !== 'pos_drawer')
+    ];
   }
+  get outCategory(): ExpenseCategory | null { return this.expenseReasons.find((row) => row.id === this.outCategoryId) || null; }
+  get outFund(): FundAccount | null { return this.funds.find((fund) => fund.id === this.outFundId) || null; }
+  get outFromDrawer(): boolean { return !!this.outFund && this.outFund.id === this.drawerFund?.id; }
+  get outNeedsGoods(): boolean { return this.outCategory?.defaultTreatment === 'lot_cost' && !this.outGoodsReceiptId; }
 
   ngOnInit(): Promise<void> { return this.load(); }
 
@@ -71,14 +93,7 @@ export class CashManagementComponent implements OnInit {
   }
   blankLines(): CashCountLine[] { return DEFAULT_DENOMINATIONS.map((denomination) => ({ denomination, quantity: 0 })); }
   total(lines: CashCountLine[]): number { return lines.reduce((sum, line) => sum + line.denomination * Number(line.quantity || 0), 0); }
-  get movementDirection(): 'in' | 'out' { return this.movementType === 'cash_in' ? 'in' : 'out'; }
-  get movementLabel(): string {
-    return ({ cash_in: 'Other cash coming in', cash_out: 'Other cash going out', safe_drop: 'Cash going to safe', bank_drop: 'Cash going to bank' } as const)[this.movementType];
-  }
-  selectMovement(type: 'cash_in' | 'cash_out' | 'safe_drop' | 'bank_drop'): void {
-    this.movementType = type;
-    this.movementTargetFundId = this.dropTargets[0]?.id || null;
-  }
+
   /**
    * A shift carries its business date straight from a MySQL DATE column, and
    * Electron IPC preserves it as a Date. Stringifying one prints "Wed Sep 02"
@@ -91,10 +106,130 @@ export class CashManagementComponent implements OnInit {
     }
     return String(value || '').slice(0, 10);
   }
-  /** Switching sides keeps whichever outgoing reason was already chosen. */
+  // ── Keyboard flow ─────────────────────────────────────────
+
+  /**
+   * Enter moves to the next field of the form; Enter on the last field, or
+   * Ctrl+Enter anywhere, runs the form's action; Esc clears the movement form.
+   * Fields take part by carrying `data-flow`, in page order.
+   */
+  onFlowKeydown(event: KeyboardEvent, action: () => void): void {
+    const target = event.target as HTMLElement;
+    if (event.key === 'Escape' && action === this.recordFromKeyboard) {
+      event.preventDefault();
+      this.clearMovementForm();
+      return;
+    }
+    if (event.key !== 'Enter' || target.hasAttribute('data-flow-stay') || target.tagName === 'TEXTAREA') return;
+    if (target.tagName === 'BUTTON' && !target.hasAttribute('data-flow')) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.ctrlKey || event.metaKey || target.tagName === 'BUTTON') { action(); return; }
+    const container = event.currentTarget as HTMLElement;
+    const fields = Array.from(container.querySelectorAll<HTMLElement>('[data-flow]'))
+      .filter((field) => !(field as HTMLInputElement).disabled && field.offsetParent !== null);
+    const next = fields.find((field) => target.compareDocumentPosition(field) & Node.DOCUMENT_POSITION_FOLLOWING);
+    if (!next || next.tagName === 'BUTTON') { action(); return; }
+    next.focus();
+    if (next instanceof HTMLInputElement) next.select();
+  }
+
+  readonly recordFromKeyboard = (): void => { if (!this.saving) void this.addMovement(); };
+  readonly submitCountFromKeyboard = (): void => { void this.blindClose(); };
+  readonly openShiftFromKeyboard = (): void => { if (!this.loading) void this.openShift(); };
+
+  /** Alt+I and Alt+O switch direction from anywhere on the page. */
+  @HostListener('document:keydown', ['$event'])
+  onPageKeydown(event: KeyboardEvent): void {
+    if (!event.altKey || event.ctrlKey || this.shift?.status !== 'open') return;
+    const key = event.key.toLowerCase();
+    if (key === 'i' || key === 'o') {
+      event.preventDefault();
+      this.chooseDirection(key === 'i' ? 'in' : 'out');
+    }
+  }
+
+  onDirectionKeydown(event: KeyboardEvent): void {
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+      event.preventDefault();
+      this.chooseDirection(this.movementDirection === 'in' ? 'out' : 'in');
+    }
+  }
+
+  chooseDirection(direction: 'in' | 'out'): void {
+    this.selectDirection(direction);
+    this.focusMovementStart();
+  }
+
+  /** The first field of the form, ready for the next entry. */
+  focusMovementStart(): void {
+    setTimeout(() => {
+      const start = this.movementForm?.nativeElement.querySelector<HTMLElement>('[data-flow-start]');
+      start?.focus();
+      if (start instanceof HTMLInputElement) start.select();
+    });
+  }
+
+  clearMovementForm(): void {
+    this.movementAmount = 0;
+    this.movementReason = '';
+    if (this.movementDirection === 'out') this.resetOutgoing();
+    this.focusMovementStart();
+  }
+
+  openClosingCount(): void {
+    this.closingCountOpen = true;
+    setTimeout(() => this.closingForm?.nativeElement.querySelector<HTMLInputElement>('input')?.focus());
+  }
+
+  // ── Labels ────────────────────────────────────────────────
+
+  statusLabel(status: string): string {
+    const labels: Record<string, string> = { open: 'Shift open', blind_closed: 'Counted, awaiting close', closed: 'Shift closed' };
+    return labels[status] || status;
+  }
+
+  movementTypeLabel(type: string): string {
+    const labels: Record<string, string> = {
+      opening_float: 'Opening float', sale_cash: 'Sale', cash_in: 'Cash in', cash_out: 'Cash out',
+      expense_cash: 'Expense', refund_cash: 'Refund', customer_advance_cash: 'Customer advance',
+      receivable_collection: 'Debt collected', correction: 'Correction', safe_drop: 'To safe', bank_drop: 'To bank',
+      fund_transfer_out: 'Moved out', fund_transfer_in: 'Moved in', supplier_payment: 'Supplier payment'
+    };
+    const plain = String(type || '').replace(/_/g, ' ');
+    return labels[type] || (plain.charAt(0).toUpperCase() + plain.slice(1));
+  }
+
+  referenceLabel(type: string | null | undefined): string {
+    return String(type || '').replace(/_/g, ' ');
+  }
+
+  /** Cash taken in during the shift, not counting the opening float. */
+  get shiftCashIn(): number {
+    return (this.shift?.movements || []).filter((row) => row.direction === 'in' && row.movement_type !== 'opening_float')
+      .reduce((sum, row) => sum + Number(row.amount || 0), 0);
+  }
+
+  get shiftCashOut(): number {
+    return (this.shift?.movements || []).filter((row) => row.direction === 'out').reduce((sum, row) => sum + Number(row.amount || 0), 0);
+  }
+
   selectDirection(direction: 'in' | 'out'): void {
-    if (direction === 'in') { this.movementType = 'cash_in'; return; }
-    if (this.movementType === 'cash_in') this.movementType = 'cash_out';
+    this.movementDirection = direction;
+    if (direction === 'out') this.resetOutgoing(false);
+  }
+
+  /** The drawer pays by default, and "Other expense" is the reason until one is chosen. */
+  private resetOutgoing(clearAmount = true): void {
+    if (clearAmount) { this.movementAmount = 0; this.movementReason = ''; }
+    if (!this.outCategoryId || !this.outCategory) this.outCategoryId = (this.expenseReasons.find((row) => row.isDefault) || this.expenseReasons[0])?.id ?? null;
+    if (!this.outFundId || !this.payingFunds.some((fund) => fund.id === this.outFundId)) this.outFundId = this.drawerFund?.id ?? null;
+    if (clearAmount) { this.outGoodsReceiptId = null; this.outLotId = null; }
+    this.outRequestId = crypto.randomUUID();
+  }
+
+  onOutCategoryChanged(): void {
+    if (this.outCategory?.defaultTreatment !== 'lot_cost') { this.outGoodsReceiptId = null; this.outLotId = null; }
   }
 
   /**
@@ -134,13 +269,17 @@ export class CashManagementComponent implements OnInit {
   }
 
   private async loadFunds(): Promise<void> {
-    if (!window.posApi || !this.canTransferFunds) { this.funds = []; return; }
+    if (!window.posApi || !this.canRecordExpense) { this.funds = []; return; }
+    if (!this.expenseReasons.length) {
+      const reasons = await window.posApi.expenses.categories(false, this.actor());
+      if (reasons.success) this.expenseReasons = reasons.data || [];
+    }
     const locCode = this.session.getWorkstationSession()?.locationCode || '';
     if (!locCode) return;
     const result = await window.posApi.funds.list(locCode, false, this.actor());
     if (!result.success) { this.funds = []; return; }
     this.funds = result.data || [];
-    if (this.isFundDrop) this.movementTargetFundId = this.dropTargets[0]?.id || null;
+    if (this.movementDirection === 'out') this.resetOutgoing(false);
   }
 
   async loadMovementHistory(): Promise<void> {
@@ -180,6 +319,7 @@ export class CashManagementComponent implements OnInit {
       }, this.actor());
       if (!result.success) { this.error = result.error || 'Could not open the cash shift.'; return; }
       this.shift = result.data; this.info = 'Cash shift opened and opening float recorded.';
+      await this.loadFunds();
       await this.loadHistory();
     } finally { this.loading = false; }
   }
@@ -190,41 +330,52 @@ export class CashManagementComponent implements OnInit {
       this.error = 'Enter an amount and reason before recording this cash movement.'; return;
     }
     this.error = '';
-    if (this.isFundDrop) {
-      const workstation = this.session.getWorkstationSession();
-      const fromFund = this.drawerFund;
-      const toFund = this.dropTargets.find((fund) => fund.id === this.movementTargetFundId);
-      if (!this.canTransferFunds) {
-        this.error = 'You need permission to transfer drawer cash into a safe or bank account.'; return;
-      }
-      if (!workstation || !fromFund || !toFund) {
-        this.error = `Choose the ${this.movementType === 'bank_drop' ? 'bank account' : 'cash safe'} receiving this money.`; return;
-      }
-      const transfer = await window.posApi.funds.transfer({
-        fromFundAccountId: fromFund.id,
-        toFundAccountId: toFund.id,
-        amount: this.movementAmount,
-        reason: this.movementReason,
-        userId: this.context().userId,
-        origin: { locCode: workstation.locationCode, macCode: workstation.machineCode, txnDate: workstation.billingDate }
-      }, this.actor());
-      if (!transfer.success) { this.error = transfer.error || 'Could not transfer this drawer cash.'; return; }
-      const refreshed = await window.posApi.cash.activeShift(this.context().sessionId, this.actor());
-      if (refreshed.success) this.shift = refreshed.data;
-      this.movementAmount = 0; this.movementReason = '';
-      this.info = `${this.movementLabel} recorded into ${toFund.name}.`;
-      await this.loadFunds();
-      await this.loadHistory();
-      await this.loadMovementHistory();
-      return;
-    }
+    if (this.movementDirection === 'out') { await this.recordOutgoing(); return; }
     const result = await window.posApi.cash.addMovement({
-      shiftId: this.shift.id, type: this.movementType, amount: this.movementAmount,
+      shiftId: this.shift.id, type: 'cash_in', amount: this.movementAmount,
       reason: this.movementReason, userId: this.context().userId
     }, this.actor());
     if (!result.success) { this.error = result.error || 'Could not record the cash movement.'; return; }
     this.shift = result.data; this.movementAmount = 0; this.movementReason = '';
-    this.info = `${this.movementLabel} recorded successfully.`;
+    this.info = 'Cash coming in recorded.';
+    this.focusMovementStart();
+    await this.loadHistory();
+    await this.loadMovementHistory();
+  }
+
+  /** Records money going out as an expense, paid from the chosen fund. */
+  private async recordOutgoing(): Promise<void> {
+    const workstation = this.session.getWorkstationSession();
+    if (!window.posApi || !workstation || this.saving) return;
+    if (!this.canRecordExpense) { this.error = 'Your role cannot record expenses. Ask a manager to record this cash going out.'; return; }
+    if (!this.outCategory) { this.error = 'Choose what this money was for.'; return; }
+    if (!this.outFund) { this.error = 'Choose which fund paid.'; return; }
+    if (this.outNeedsGoods) { this.error = `${this.outCategory.name} is a lot expense. Choose the GRN it was for.`; return; }
+    this.saving = true;
+    const result = await window.posApi.expenses.create({
+      expenseCategoryId: this.outCategory.id,
+      fundAccountId: this.outFund.id,
+      amount: Number(this.movementAmount),
+      reason: this.movementReason.trim(),
+      requestId: this.outRequestId,
+      goodsReceiptId: this.outGoodsReceiptId,
+      inventoryLotId: this.outLotId,
+      userId: this.context().userId,
+      origin: { locCode: workstation.locationCode, macCode: workstation.machineCode, txnDate: workstation.billingDate }
+    }, this.actor());
+    this.saving = false;
+    if (!result.success) { this.error = result.error || 'Could not record this expense.'; return; }
+    const saved = result.data;
+    this.info = this.outFromDrawer
+      ? `${saved.expenseNumber}: ${saved.categoryName} paid from the drawer.`
+      : `${saved.expenseNumber}: ${saved.categoryName} paid from ${saved.fundName}. The drawer is unchanged.`;
+    if (saved.stakeholderName) this.info += ` The business now owes ${saved.stakeholderName} this amount.`;
+    if (saved.attached) this.info += ` Put on ${saved.attached.lotCode || saved.attached.grnNumber}.`;
+    const refreshed = await window.posApi!.cash.activeShift(this.context().sessionId, this.actor());
+    if (refreshed.success) this.shift = refreshed.data;
+    this.resetOutgoing();
+    this.focusMovementStart();
+    await this.loadFunds();
     await this.loadHistory();
     await this.loadMovementHistory();
   }
@@ -288,7 +439,7 @@ export class CashManagementComponent implements OnInit {
     this.error = '';
     const result = await window.posApi.cash.blindClose({ shiftId: this.shift.id, userId: this.context().userId, closingLines: this.closingLines }, this.actor());
     if (!result.success) { this.error = result.error || 'Could not submit the closing count.'; return; }
-    this.shift = result.data; this.info = 'Closing count submitted for manager reconciliation.';
+    this.shift = result.data; this.closingCountOpen = false; this.info = 'Closing count submitted for manager reconciliation.';
     await this.loadHistory();
   }
 

@@ -1,0 +1,12 @@
+.goods-picker { display:grid; gap:10px; padding:12px; border:1px solid var(--ui-border); border-radius:10px; background:var(--ui-surface-muted); }
+.picker-search { display:flex; gap:8px; }
+.picker-search input { flex:1; min-width:0; }
+.picker-search button { min-height:40px; padding:6px 14px; border:1px solid var(--ui-border-strong); border-radius:8px; background:var(--ui-surface); color:var(--ui-navy); font-size:13px; font-weight:700; cursor:pointer; }
+.picker-search button:hover:not(:disabled) { border-color:var(--ui-primary); color:var(--ui-primary); }
+.goods-picker label { display:grid; gap:6px; color:var(--ui-navy); font-size:12px; font-weight:700; }
+.goods-picker small { color:var(--ui-ink-muted); font-size:12px; font-weight:500; }
+.goods-picker .picker-error { color:#c0262d; }
+.goods-picker input, .goods-picker select { box-sizing:border-box; width:100%; min-height:40px; padding:8px 12px; border:1px solid var(--ui-border-strong); border-radius:8px; background:var(--ui-surface); color:var(--ui-ink); font-size:14px; }
+.goods-picker input:focus, .goods-picker select:focus { border-color:var(--ui-primary); outline:none; box-shadow:var(--ui-focus); }
+.goods-picker select { appearance:none; padding-right:38px; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5' fill='none' stroke='%2364748b' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); background-position:right 13px center; background-repeat:no-repeat; cursor:pointer; }
+.goods-picker select option { padding:6px 8px; font-size:15px; }

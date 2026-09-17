@@ -29,6 +29,12 @@ function createLotCostingService({ lotCostingRepository }) {
     return lotCostingRepository.listLots(input);
   }
 
+  async function listCostTargets(input = {}) {
+    const locCode = text(requestContext.scopedLocation(input) || input.locCode);
+    if (!locCode) throw new Error('A location is required to list GRNs.');
+    return lotCostingRepository.listCostTargets({ ...input, locCode });
+  }
+
   async function allocateExpense(input = {}) {
     const origin = requireOrigin(input);
     if (!Number(input.userId)) throw new Error('A signed-in user is required.');
@@ -100,7 +106,7 @@ function createLotCostingService({ lotCostingRepository }) {
     return lotCostingRepository.reconcileLandedCost(input);
   }
 
-  return { listLots, allocateExpense, reallocate, detachExpense, getProfitability, getLotCostDetail, reconcile };
+  return { listLots, listCostTargets, allocateExpense, reallocate, detachExpense, getProfitability, getLotCostDetail, reconcile };
 }
 
 module.exports = { createLotCostingService };

@@ -319,9 +319,13 @@ function registerIpcHandlers(services) {
     'settings.billingOutput.get',
     async () => {
       const billing = await services.settingsService.getSettingsByCode('billing');
+      const supplyCodes = await services.billingEngineService.supplyCodePolicy();
       return {
         autoSavePdf: billing.auto_save_pdf === true || billing.auto_save_pdf === 'true',
-        pdfFolder: String(billing.pdf_folder || '').trim()
+        pdfFolder: String(billing.pdf_folder || '').trim(),
+        // Whether Billing asks for a supply code, and what it saves when it does not.
+        supplyCodeRequired: supplyCodes.required,
+        defaultSupplyCode: supplyCodes.defaultCode
       };
     },
     { authorize: requireBillingCreate }
@@ -542,6 +546,8 @@ function registerIpcHandlers(services) {
   // ── Lot costing ─────────────────────────────────────────────
   // Attaching a cost to the goods it belongs to is receiving work, so it
   // follows the receiving permissions rather than the cashier's.
+  // Recording a lot expense names its GRN, so anyone who may record an expense may pick one.
+  wrapIpcHandler('expenses.goodsTargets', async (payload) => services.lotCostingService.listCostTargets(payload?.filters || {}), { authorize: requireExpensesCreate });
   wrapIpcHandler('lotCosting.lots.list', async (payload) => services.lotCostingService.listLots(payload?.filters || {}), { authorize: requireLotCostingView });
   wrapIpcHandler('lotCosting.profitability', async (payload) => services.lotCostingService.getProfitability(payload?.filters || {}), { authorize: requireLotCostingView });
   wrapIpcHandler('lotCosting.lot.detail', async (payload) => services.lotCostingService.getLotCostDetail(payload || {}), { authorize: requireLotCostingView });
@@ -597,20 +603,17 @@ function registerIpcHandlers(services) {
   wrapIpcHandler('supply.goodsReceipts.get', async (payload) => services.catalogService.getGoodsReceipt(payload?.goodsReceiptId), { authorize: requireReceivingView });
   wrapIpcHandler('inventory.adjust', async (payload) => services.catalogService.adjustStock(payload?.adjustment || {}), { authorize: requireInventoryAdjust });
   wrapIpcHandler('supply.agreements.list', async (payload) => services.catalogService.listSupplyAgreements(payload?.supplierId || null), { authorize: requireSuppliersView });
-  wrapIpcHandler('supply.agreements.create', async (payload) => services.catalogService.createSupplyAgreement(payload?.agreement || {}), { authorize: requireSuppliersManage });
-  wrapIpcHandler('supply.suppliers.account', async (payload) => services.catalogService.getSupplierAccount(payload?.supplierId), { authorize: requireSettlementsView });
-  wrapIpcHandler('supply.settlements.create', async (payload) => services.catalogService.createSupplierSettlement(payload?.settlement || {}), { authorize: requireSettlementsManage });
-  wrapIpcHandler('supply.settlements.approve', async (payload) => services.catalogService.approveSupplierSettlement(payload?.settlementId, payload?.userId), { authorize: requireSettlementsManage });
-  wrapIpcHandler('supply.settlements.pay', async (payload) => services.catalogService.recordSupplierPayment(payload?.payment || {}), { authorize: requireSettlementsManage });
-  wrapIpcHandler('supply.settlements.list', async (payload) => services.catalogService.listSupplierSettlements(payload?.supplierId || null), { authorize: requireSettlementsView });
-  wrapIpcHandler('supply.settlements.get', async (payload) => services.catalogService.getSupplierSettlement(payload?.settlementId), { authorize: requireSettlementsView });
-  wrapIpcHandler('supply.charges.listTypes', async () => services.catalogService.listSupplierChargeTypes(), { authorize: requireSettlementsView });
-  wrapIpcHandler('supply.charges.add', async (payload) => services.catalogService.addSupplierCharge(payload?.charge || {}), { authorize: requireSettlementsManage });
   wrapIpcHandler('inventory.lots.list', async (payload) => services.catalogService.listInventoryLots(payload?.productId || null, payload?.locCode || null), { authorize: requireReceivingView });
   wrapIpcHandler('inventory.summary.list', async (payload) => services.catalogService.listInventorySummary(payload?.locCode), { authorize: requireReceivingView });
   wrapIpcHandler('inventory.counts.finalize', async (payload) => services.catalogService.finalizeStockCount(payload?.count || {}), { authorize: requireInventoryAdjust });
   wrapIpcHandler('inventory.issues.list', async (payload) => services.inventoryIssueService.listIssues(payload?.filters || {}), { authorize: requireReceivingView });
   wrapIpcHandler('inventory.issues.record', async (payload) => services.inventoryIssueService.recordIssue({ ...(payload?.issue || {}), userId: payload?.actor?.id || null }), { authorize: requireInventoryIssue });
+  // The short code a cashier types to reach this lot. The lot's own identity
+  // never changes, so bills already allocated to it are untouched.
+  wrapIpcHandler('inventory.lots.retag', async (payload) => services.catalogService.setLotTag({
+    lotId: payload?.lotId, tag: payload?.tag, locCode: payload?.locCode
+  }), { authorize: requireReceivingManage });
+
   wrapIpcHandler('inventory.allocations.exceptions', async (payload) => services.catalogService.listAllocationExceptions(payload?.locCode), { authorize: requireReceivingView });
   wrapIpcHandler('inventory.allocations.list', async (payload) => services.catalogService.listRecentLotAllocations(payload?.locCode, payload?.limit), { authorize: requireReceivingView });
   wrapIpcHandler('inventory.allocations.resolve', async (payload) => services.catalogService.allocateException({ ...(payload?.allocation || {}), userId: payload?.actor?.id || null }), { authorize: requireInventoryAdjust });
@@ -619,6 +622,8 @@ function registerIpcHandlers(services) {
   wrapIpcHandler('supply.pattiyals.get', async (payload) => services.supplierSaleStatementService.get(payload?.statementId), { authorize: requireSettlementsView });
   wrapIpcHandler('supply.pattiyals.candidates.sales', async (payload) => services.supplierSaleStatementService.candidates(payload?.filters || {}), { authorize: requireSettlementsView });
   wrapIpcHandler('supply.pattiyals.candidates.grns', async (payload) => services.supplierSaleStatementService.candidateGrns(payload?.filters || {}), { authorize: requireSettlementsView });
+  wrapIpcHandler('supply.pattiyals.expenseDeductions', async (payload) => services.supplierSaleStatementService.expenseDeductions(payload?.filters || {}), { authorize: requireSettlementsView });
+  wrapIpcHandler('supply.pattiyals.adjustmentLabels', async (payload) => services.supplierSaleStatementService.adjustmentLabels(payload?.filters || {}), { authorize: requireSettlementsView });
   wrapIpcHandler('supply.pattiyals.drafts.save', async (payload) => services.supplierSaleStatementService.saveDraft(payload?.statement || {}), { authorize: requireSettlementsManage });
   wrapIpcHandler('supply.pattiyals.review', async (payload) => services.supplierSaleStatementService.review(payload?.statementId, payload?.userId), { authorize: requireSettlementsManage });
   wrapIpcHandler('supply.pattiyals.reopen', async (payload) => services.supplierSaleStatementService.reopen(payload?.statementId, payload?.userId, payload?.reason), { authorize: requireSettlementsManage });
@@ -683,6 +688,14 @@ function registerIpcHandlers(services) {
       method: payload?.method
     }),
     { authorize: requirePaymentReverse }
+  );
+
+  // Starts a new, editable bill from a finished one. Creating a bill is the
+  // only authority it needs: nothing is posted until that bill is finalized.
+  wrapIpcHandler(
+    'billing.invoices.copyToBill',
+    async (payload) => services.billingEngineService.copyInvoiceToBill({ invoiceId: payload?.invoiceId }),
+    { authorize: requireBillingCreate }
   );
 
   wrapIpcHandler(
@@ -834,6 +847,12 @@ function registerIpcHandlers(services) {
   wrapIpcHandler('billing.lots.clearRemembered', async (payload) => {
     return services.billingEngineService.clearRememberedAllocationLot({ ...(payload?.options || {}), userId: payload?.actor?.id || null });
   }, { authorize: requireBillingCreate });
+
+  // The supply code a cashier used for an item earlier today, to fill in again.
+  wrapIpcHandler('billing.supplyCodes.remembered', async (payload) =>
+    services.billingEngineService.rememberedSupplyCode({ productId: payload?.productId }), { authorize: requireBillingCreate });
+  wrapIpcHandler('billing.supplyCodes.forget', async (payload) =>
+    services.billingEngineService.forgetSupplyCode({ productId: payload?.productId }), { authorize: requireBillingCreate });
 
   wrapIpcHandler('billing.bill.setItemLotPriority', async (payload) => {
     return services.billingEngineService.setLiveItemAllocationPriority({ ...(payload?.options || {}), userId: payload?.actor?.id || null });

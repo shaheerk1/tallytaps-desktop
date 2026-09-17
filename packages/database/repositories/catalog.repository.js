@@ -483,9 +483,39 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
     });
   }
 
-  async function saveGoodsReceiptDraft({ goodsReceiptId = null, id = null, supplierId, agreementId = null, businessDate, locCode, macCode, vehicleNo = null, externalReference = null, documentType = 'receipt', correctsGoodsReceiptId = null, correctionReason = null, userId = null, lines = [] }) {
-    if (!supplierId || !businessDate || !String(locCode || '').trim() || !String(macCode || '').trim()) throw new Error('Supplier, business date, location, and machine are required to save a GRN draft.');
+  /** How a GRN holds its goods. Kept on the GRN itself; supply agreements are no longer required. */
+  function receiptOwnership(receipt, agreement = null) {
+    let metadata = receipt?.metadata || {};
+    if (typeof metadata === 'string') { try { metadata = JSON.parse(metadata); } catch { metadata = {}; } }
+    if (['owned', 'consignment'].includes(metadata?.ownershipModel)) return metadata.ownershipModel;
+    return agreement?.ownership_model || 'owned';
+  }
+
+  /**
+   * The supplier typed on a GRN: an active supplier of this location whose code
+   * or name matches is reused, otherwise one is added with just that name.
+   */
+  async function resolveReceiptSupplier(connection, { supplierId, supplierName, locCode }) {
+    if (supplierId) return supplierId;
+    const typed = String(supplierName || '').trim();
+    if (!typed) return null;
+    const [matches] = await connection.execute(
+      `SELECT id FROM suppliers WHERE loc_code = ? AND is_active = 1 AND (UPPER(supplier_code) = UPPER(?) OR UPPER(name) = UPPER(?))
+       ORDER BY UPPER(COALESCE(supplier_code, '')) = UPPER(?) DESC, id ASC LIMIT 1`,
+      [locCode, typed, typed, typed]
+    );
+    if (matches.length) return matches[0].id;
+    const [created] = await connection.execute(
+      `INSERT INTO suppliers (loc_code, supplier_code, name, metadata) VALUES (?, NULL, ?, CAST(? AS JSON))`,
+      [locCode, typed, JSON.stringify({ createdFrom: 'goods_receipt' })]
+    );
+    return created.insertId;
+  }
+
+  async function saveGoodsReceiptDraft({ goodsReceiptId = null, id = null, supplierId = null, supplierName = null, agreementId = null, ownershipModel = null, businessDate, locCode, macCode, vehicleNo = null, externalReference = null, documentType = 'receipt', correctsGoodsReceiptId = null, correctionReason = null, userId = null, lines = [] }) {
+    if ((!supplierId && !String(supplierName || '').trim()) || !businessDate || !String(locCode || '').trim() || !String(macCode || '').trim()) throw new Error('Supplier, business date, location, and machine are required to save a GRN draft.');
     if (!['receipt', 'correction'].includes(documentType)) throw new Error('Invalid GRN document type.');
+    if (ownershipModel != null && !['owned', 'consignment'].includes(ownershipModel)) throw new Error('Choose owned purchase or consignment.');
     const normalizedLines = normalizeDraftReceiptLines(lines);
     return database.withConnection(async (connection) => {
       await connection.beginTransaction();
@@ -494,6 +524,7 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
         const businessDay = await businessDayRepository.assertOpenWithConnection(connection, {
           locationCode: String(locCode).trim(), businessDate
         });
+        supplierId = await resolveReceiptSupplier(connection, { supplierId, supplierName, locCode: String(locCode).trim() });
         let draftId = goodsReceiptId || id;
         let grnNumber = null;
         if (draftId) {
@@ -506,9 +537,11 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
           }
           grnNumber = draft.grn_number;
           await connection.execute(
-            `UPDATE goods_receipts SET supplier_id = ?, agreement_id = ?, business_date = ?, vehicle_no = ?, external_reference = ?, correction_reason = ?
+            `UPDATE goods_receipts SET supplier_id = ?, agreement_id = ?, business_date = ?, vehicle_no = ?, external_reference = ?, correction_reason = ?,
+                    metadata = JSON_SET(COALESCE(metadata, JSON_OBJECT()), '$.ownershipModel', ?)
              WHERE id = ?`,
-            [supplierId, agreementId || null, draft.business_date, vehicleNo || null, externalReference || null, correctionReason || null, draftId]
+            [supplierId, agreementId || null, draft.business_date, vehicleNo || null, externalReference || null, correctionReason || null,
+              ownershipModel || receiptOwnership(draft), draftId]
           );
           await connection.execute('DELETE FROM goods_receipt_lines WHERE goods_receipt_id = ?', [draftId]);
         } else {
@@ -520,11 +553,12 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
           const [created] = await connection.execute(
             `INSERT INTO goods_receipts
                (business_day_id, grn_number, loc_code, mac_code, grn_no, document_type, supplier_id, agreement_id,
-                corrects_goods_receipt_id, business_date, status, vehicle_no, external_reference, correction_reason, created_by)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)`,
+                corrects_goods_receipt_id, business_date, status, vehicle_no, external_reference, correction_reason, created_by, metadata)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, CAST(? AS JSON))`,
             [businessDay.id, grnNumber, String(locCode).trim(), String(macCode).trim(), grnNo, documentType, supplierId,
               agreementId || null, correctsGoodsReceiptId || null, businessDate, vehicleNo || null,
-              externalReference || null, correctionReason || null, userId || null]
+              externalReference || null, correctionReason || null, userId || null,
+              JSON.stringify({ ownershipModel: ownershipModel || 'owned' })]
           );
           draftId = created.insertId;
         }
@@ -659,14 +693,15 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
           [receipt.id]
         );
         if (!lines.length) throw new Error('Add at least one product line before finalizing the GRN.');
+        // Older GRNs may still name an agreement; it only supplies ownership and
+        // commission when the GRN itself does not say.
         let agreement = null;
         if (receipt.agreement_id) {
-          const [agreements] = await connection.execute('SELECT * FROM supply_agreements WHERE id = ? AND supplier_id = ? AND is_active = 1', [receipt.agreement_id, receipt.supplier_id]);
+          const [agreements] = await connection.execute('SELECT * FROM supply_agreements WHERE id = ? AND supplier_id = ?', [receipt.agreement_id, receipt.supplier_id]);
           agreement = agreements[0] || null;
-          if (!agreement) throw new Error('Supply agreement is not active for this supplier.');
         }
         if (receipt.document_type === 'correction') await reverseOriginalGoodsReceiptForCorrection(connection, receipt.corrects_goods_receipt_id, receipt, userId);
-        const ownership = agreement?.ownership_model || 'owned';
+        const ownership = receiptOwnership(receipt, agreement);
         const postingEventNo = receipt.document_type === 'correction' ? 2 : 1;
         for (const line of lines) {
           const handlingQuantity = Number(line.handling_quantity ?? line.package_qty ?? 0);
@@ -689,14 +724,16 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
           const supplierLotPrefix = String(suppliers[0].supplier_code || 'SUP').trim().toUpperCase().replace(/[^A-Z0-9_-]+/g, '-');
           const locationLotPrefix = String(receipt.loc_code).trim().toUpperCase().replace(/[^A-Z0-9_-]+/g, '-');
           const lotCode = `${supplierLotPrefix}-${locationLotPrefix}-${businessDateText(receipt.business_date).replace(/-/g, '')}-${receipt.grn_no}-${line.line_no}`;
+          // The short handle the counter types; the lot code above stays its identity.
+          const lotTag = await nextLotTag(connection, { locCode: receipt.loc_code, productId: line.product_id });
           const [lot] = await connection.execute(
             `INSERT INTO inventory_lots
-               (goods_receipt_line_id, lot_code, loc_code, mac_code, txn_date, grn_no, line_no, supplier_id, product_id,
+               (goods_receipt_line_id, lot_code, lot_tag, loc_code, mac_code, txn_date, grn_no, line_no, supplier_id, product_id,
                 ownership_model, received_quantity, remaining_quantity, received_handling_quantity, remaining_handling_quantity,
                 received_kilos, remaining_kilos, received_base_quantity, remaining_base_quantity,
                 handling_uom_snapshot, base_uom_snapshot, conversion_mode, expected_base_per_handling, actual_base_per_handling, ratio_tolerance_percent, terms_snapshot)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON))`,
-            [line.id, lotCode, receipt.loc_code, receipt.mac_code, receipt.business_date, receipt.grn_no, line.line_no,
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON))`,
+            [line.id, lotCode, lotTag, receipt.loc_code, receipt.mac_code, receipt.business_date, receipt.grn_no, line.line_no,
               receipt.supplier_id, line.product_id, ownership,
               handlingQuantity, handlingQuantity, handlingQuantity, handlingQuantity,
               baseQuantity, baseQuantity, baseQuantity, baseQuantity,
@@ -794,10 +831,11 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
         const [created] = await connection.execute(
           `INSERT INTO goods_receipts
              (business_day_id, grn_number, loc_code, mac_code, grn_no, document_type, supplier_id, agreement_id,
-              corrects_goods_receipt_id, business_date, status, vehicle_no, external_reference, correction_reason, created_by)
-           VALUES (?, ?, ?, ?, ?, 'correction', ?, ?, ?, ?, 'draft', ?, ?, ?, ?)`,
+              corrects_goods_receipt_id, business_date, status, vehicle_no, external_reference, correction_reason, created_by, metadata)
+           VALUES (?, ?, ?, ?, ?, 'correction', ?, ?, ?, ?, 'draft', ?, ?, ?, ?, CAST(? AS JSON))`,
           [businessDay.id, grnNumber, locCode, macCode, grnNo, original.supplier_id, original.agreement_id,
-            original.id, correctionDate, original.vehicle_no, original.external_reference, String(reason).trim(), userId || null]
+            original.id, correctionDate, original.vehicle_no, original.external_reference, String(reason).trim(), userId || null,
+            JSON.stringify({ ownershipModel: await originalReceiptOwnership(connection, original) })]
         );
         const [lines] = await connection.execute('SELECT * FROM goods_receipt_lines WHERE goods_receipt_id = ? ORDER BY line_no, id', [original.id]);
         for (const line of lines) await connection.execute(
@@ -813,6 +851,12 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
         return { id: created.insertId, grnNumber };
       } catch (error) { await connection.rollback(); throw error; }
     });
+  }
+
+  async function originalReceiptOwnership(connection, original) {
+    if (!original.agreement_id) return receiptOwnership(original);
+    const [agreements] = await connection.execute('SELECT ownership_model FROM supply_agreements WHERE id = ?', [original.agreement_id]);
+    return receiptOwnership(original, agreements[0] || null);
   }
 
   async function listGoodsReceipts({ page = 1, pageSize = 20, term = '', supplierId = null, status = null, fromDate = null, toDate = null, scope = 'posted' } = {}) {
@@ -847,12 +891,13 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
     return database.withConnection(async (connection) => {
       const [receipts] = await connection.execute(
         `SELECT gr.*, s.supplier_code, s.name AS supplier_name, s.phone, s.mobile, s.address,
-                a.ownership_model, a.settlement_basis, a.commission_rate
+                a.ownership_model AS agreement_ownership_model, a.settlement_basis, a.commission_rate
          FROM goods_receipts gr JOIN suppliers s ON s.id = gr.supplier_id
          LEFT JOIN supply_agreements a ON a.id = gr.agreement_id WHERE gr.id = ?`,
         [goodsReceiptId]
       );
       if (!receipts.length) throw new Error('Goods receipt was not found.');
+      receipts[0].ownership_model = receiptOwnership(receipts[0], { ownership_model: receipts[0].agreement_ownership_model });
       const [lines] = await connection.execute(
         `SELECT grl.*, p.sku, p.name AS product_name, l.id AS inventory_lot_id
          FROM goods_receipt_lines grl JOIN products p ON p.id = grl.product_id
@@ -1173,6 +1218,60 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
       await connection.commit();
       return { id: result.insertId, amount: amountForSupplier, treatment: type.treatment };
       } catch (error) { await connection.rollback(); throw error; }
+    });
+  }
+
+  /**
+   * The short handle a cashier types to point at this lot: the item's own code
+   * plus the next free number, e.g. KAR1, KAR2. Only lots still holding stock
+   * hold a tag (see migration 113), so a sold-out lot releases its number.
+   */
+  async function nextLotTag(connection, { locCode, productId }) {
+    const [products] = await connection.execute('SELECT sku FROM products WHERE id = ? LIMIT 1', [productId]);
+    const prefix = String(products[0]?.sku || 'LOT').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12) || 'LOT';
+    for (let number = 1; number <= 999; number += 1) {
+      const tag = `${prefix}${number}`;
+      const [taken] = await connection.execute(
+        'SELECT id FROM inventory_lots WHERE loc_code = ? AND active_lot_tag = ? LIMIT 1', [locCode, tag]
+      );
+      if (!taken.length) return tag;
+    }
+    return `${prefix}${Date.now() % 10000}`;
+  }
+
+  /** What a tag may look like, so it stays typable at the counter. */
+  function normalizeLotTag(value) {
+    const tag = String(value || '').trim().toUpperCase().replace(/\s+/g, '');
+    if (!tag) throw new Error('Write a short code for this lot, such as KAR1.');
+    if (tag.length > 24) throw new Error('A lot code can be at most 24 characters.');
+    if (!/^[A-Z0-9][A-Z0-9_-]*$/.test(tag)) throw new Error('A lot code may use letters, numbers, dashes and underscores only.');
+    return tag;
+  }
+
+  /**
+   * Renames a lot's short tag. The lot's own `lot_code` never changes, so bills
+   * already allocated to it keep pointing at the same lot.
+   */
+  async function setLotTag({ lotId, tag, locCode }) {
+    return database.withConnection(async (connection) => {
+      const normalized = normalizeLotTag(tag);
+      const [lots] = await connection.execute(
+        `SELECT id, loc_code, lot_code, remaining_handling_quantity, remaining_base_quantity
+         FROM inventory_lots WHERE id = ? LIMIT 1`, [Number(lotId)]
+      );
+      const lot = lots[0];
+      if (!lot) throw new Error('That stock lot no longer exists.');
+      if (String(lot.loc_code) !== String(locCode || '').trim()) throw new Error('That stock lot belongs to another location.');
+      const stillHoldsStock = Number(lot.remaining_handling_quantity || 0) > 0.0005
+        || Number(lot.remaining_base_quantity || 0) > 0.0005;
+      if (!stillHoldsStock) throw new Error('That lot is finished, so its code is free for another lot and cannot be changed.');
+      const [clash] = await connection.execute(
+        'SELECT id FROM inventory_lots WHERE loc_code = ? AND active_lot_tag = ? AND id <> ? LIMIT 1',
+        [lot.loc_code, normalized, Number(lotId)]
+      );
+      if (clash.length) throw new Error(`${normalized} is already used by another lot that still has stock here.`);
+      await connection.execute('UPDATE inventory_lots SET lot_tag = ? WHERE id = ?', [normalized, Number(lotId)]);
+      return { lotId: Number(lotId), lotTag: normalized, lotCode: lot.lot_code };
     });
   }
 
@@ -1620,6 +1719,7 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
     ,listSupplierChargeTypes
     ,addSupplierCharge
     ,listInventoryLots
+    ,setLotTag
     ,listInventorySummary
     ,finalizeStockCount
     ,listAllocationExceptions

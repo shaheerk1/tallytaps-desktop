@@ -53,6 +53,7 @@ function createCatalogService({ catalogRepository, partyRepository = null, issue
     ,listSupplierChargeTypes: catalogRepository.listSupplierChargeTypes
     ,addSupplierCharge: catalogRepository.addSupplierCharge
     ,listInventoryLots: catalogRepository.listInventoryLots
+    ,setLotTag: (payload) => catalogRepository.setLotTag(payload || {})
     ,listInventorySummary: catalogRepository.listInventorySummary
     ,finalizeStockCount: catalogRepository.finalizeStockCount
     ,listAllocationExceptions: catalogRepository.listAllocationExceptions

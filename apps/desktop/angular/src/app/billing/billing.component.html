@@ -23,6 +23,18 @@
     </div>
   </header>
 
+  <!-- A bill started from a finished one says where it came from, and what was left out. -->
+  <div class="copy-notice" *ngIf="copyNotice && (copyNotice.tone === 'error' || billItems.length)"
+    [class.warn]="copyNotice.tone === 'warn'" [class.error]="copyNotice.tone === 'error'">
+    <div>
+      <strong>{{ copyNotice.text }}</strong>
+      <ul *ngIf="copyNotice.skipped.length">
+        <li *ngFor="let line of copyNotice.skipped">Left out: {{ line.description }} ({{ line.reason }})</li>
+      </ul>
+    </div>
+    <button type="button" class="copy-notice-close" (click)="dismissCopyNotice()" title="Dismiss">&times;</button>
+  </div>
+
   <!-- Input Row -->
   <div class="input-section">
     <div class="plugin-bill-header-fields" *ngIf="billHeaderFields.length > 0">
@@ -67,23 +79,27 @@
             (click)="toggleLotPicker($event)">
             <ng-container *ngIf="selectedLot; else lotPickerStatus">
               <span class="lot-trigger-main">
-                <strong>{{ selectedLot.supplier_code || selectedLot.supplier_name }} · {{ selectedLot.grn_number }}/L{{ selectedLot.line_no }}</strong>
+                <strong>{{ selectedLot.lot_tag || selectedLot.supplier_code || selectedLot.supplier_name }} · {{ selectedLot.grn_number }}/L{{ selectedLot.line_no }}</strong>
                 <em>{{ selectedLot.txn_date | date:'dd MMM yyyy' }}</em>
               </span>
               <span class="lot-trigger-stock">Rem {{ selectedLot.remaining_handling_quantity | number:'1.0-3' }}/{{ selectedLot.received_handling_quantity | number:'1.0-3' }} {{ selectedLot.handling_uom_snapshot }}<ng-container *ngIf="selectedLot.remaining_base_quantity != null"> · {{ selectedLot.remaining_base_quantity | number:'1.0-3' }}/{{ selectedLot.received_base_quantity | number:'1.0-3' }} {{ selectedLot.base_uom_snapshot }}</ng-container></span>
-              <span class="lot-trigger-tag">{{ selectedLotSource === 'manual' ? 'Manual' : selectedLotSource === 'remembered' ? 'Remembered' : 'FIFO #1' }}</span>
+              <span class="lot-trigger-tag">{{ selectedLotSource === 'tag' ? 'Typed code' : selectedLotSource === 'manual' ? 'Chosen' : selectedLotSource === 'remembered' ? 'Remembered' : 'FIFO #1' }}</span>
               <span class="lot-trigger-chevron">▾</span>
             </ng-container>
             <ng-template #lotPickerStatus><span class="lot-trigger-placeholder">{{ selectedProductId ? (lotLookupMessage || 'Automatic allocation at finalization') : 'Select an item to view stock lots' }}</span></ng-template>
           </button>
           <div class="lot-priority-dropdown" *ngIf="lotPickerOpen" (click)="$event.stopPropagation()">
-            <div class="lot-dropdown-head"><strong>Choose the stock lot to consume first</strong><span>Any remainder continues through FIFO automatically.</span></div>
+            <div class="lot-dropdown-head"><strong>Choose the stock lot to consume first</strong><span>Choosing one writes its code into Supply code. Any remainder continues through FIFO automatically.</span></div>
+            <button type="button" tabindex="-1" class="lot-option lot-option-none" [class.selected]="!selectedLot && selectedLotSource === 'unmatched'" (click)="chooseNoLot($event)">
+              <span class="lot-option-primary"><strong>No lot</strong><b>Sell without naming a lot</b></span>
+              <span class="lot-option-stock"><span>This line takes no stock from any lot, and is listed as an unmatched allocation to sort out later.</span></span>
+            </button>
             <button type="button" tabindex="-1" class="lot-option" *ngFor="let lot of orderedLotCandidates"
               [class.selected]="selectedLot?.id === lot.id" (click)="chooseLotCandidate(lot, $event)">
-              <span class="lot-option-primary"><strong>{{ lot.supplier_code || lot.supplier_name }}</strong><b>{{ lot.grn_number }} · Line {{ lot.line_no }}</b><em>{{ lot.txn_date | date:'dd MMM yyyy' }}</em></span>
+              <span class="lot-option-primary"><strong>{{ lot.lot_tag || lot.supplier_code || lot.supplier_name }}</strong><b>{{ lot.grn_number }} · Line {{ lot.line_no }}</b><em>{{ lot.txn_date | date:'dd MMM yyyy' }}</em></span>
               <span class="lot-option-stock"><span>Unit Count <b>{{ lot.remaining_handling_quantity | number:'1.0-3' }}</b> / {{ lot.received_handling_quantity | number:'1.0-3' }} {{ lot.handling_uom_snapshot }}</span><span *ngIf="lot.remaining_base_quantity != null">Measured Qty <b>{{ lot.remaining_base_quantity | number:'1.0-3' }}</b> / {{ lot.received_base_quantity | number:'1.0-3' }} {{ lot.base_uom_snapshot }}</span></span>
-              <span class="lot-option-meta"><small>{{ lot.lot_code }}</small><small *ngIf="lot.actual_base_per_handling">{{ lot.actual_base_per_handling | number:'1.0-3' }} {{ lot.base_uom_snapshot }}/{{ lot.handling_uom_snapshot }}</small><small *ngIf="lot.external_reference">Ref {{ lot.external_reference }}</small></span>
-              <span class="lot-option-tags"><i class="lot-tag primary">{{ lotPriorityLabel(lot) }}</i><i class="lot-tag" *ngIf="lotMatchesSupplier(lot)">Supplier match</i><i class="lot-tag warning" *ngIf="!lotCoversCurrentLine(lot)">Partial coverage</i><i class="lot-tag" *ngIf="lotCoversCurrentLine(lot)">Full coverage</i></span>
+              <span class="lot-option-meta"><small>{{ lot.supplier_code || lot.supplier_name }}</small><small>{{ lot.lot_code }}</small><small *ngIf="lot.actual_base_per_handling">{{ lot.actual_base_per_handling | number:'1.0-3' }} {{ lot.base_uom_snapshot }}/{{ lot.handling_uom_snapshot }}</small><small *ngIf="lot.external_reference">Ref {{ lot.external_reference }}</small></span>
+              <span class="lot-option-tags"><i class="lot-tag primary">{{ lotPriorityLabel(lot) }}</i><i class="lot-tag" *ngIf="lotMatchesSupplyCode(lot)">Typed code</i><i class="lot-tag warning" *ngIf="!lotCoversCurrentLine(lot)">Partial coverage</i><i class="lot-tag" *ngIf="lotCoversCurrentLine(lot)">Full coverage</i></span>
             </button>
             <button type="button" tabindex="-1" class="lot-auto-action" *ngIf="selectedLotSource === 'manual' || selectedLotSource === 'remembered'" (click)="useAutomaticLotOrder($event)">Return this product to automatic FIFO</button>
           </div>
@@ -93,9 +109,9 @@
     </div>
     <div class="input-row">
     <div class="input-grid">
-      <div class="field-col">
-        <label>Supplier *</label>
-        <input #supplierCodeInput type="text" class="field-input" [ngModel]="supplierCode" (ngModelChange)="onSupplierCodeChange($event)" (keydown)="onSupplierCodeKeyDown($event)" placeholder="Supplier code" autocomplete="off" />
+      <div class="field-col" *ngIf="supplyCodeRequired">
+        <label>Supply code *</label>
+        <input #supplierCodeInput type="text" class="field-input" [ngModel]="supplierCode" (ngModelChange)="onSupplierCodeChange($event)" (keydown)="onSupplierCodeKeyDown($event)" placeholder="Lot code, e.g. KAR1" autocomplete="off" />
       </div>
       <div class="field-col">
         <label>Item</label>
@@ -248,8 +264,12 @@
 
       <div class="items-body">
         <div class="item-row" *ngFor="let item of billItems; let i = index" [style.grid-template-columns]="itemsGridTemplate">
-          <span class="col-code">{{ item.supplierCode ? item.supplierCode + '~' : '' }}{{ item.itemCode }}</span>
-          <span class="col-desc">{{ item.description }}<small class="line-lot-badge" *ngIf="item.allocationPriorityLotCode">Stock first: {{ item.allocationPriorityLotCode }} · {{ item.allocationPrioritySource || 'automatic' }}</small><small class="line-lot-badge muted" *ngIf="!item.allocationPriorityLotCode">Stock: automatic at finalize</small></span>
+          <span class="col-code">
+            <input type="text" class="qty-input code-input" [value]="item.supplierCode || ''"
+              (change)="updateItemSupplyCode(i, $any($event.target).value)" title="Supply code: the lot this line takes stock from" />
+            <small class="line-item-code">{{ item.itemCode }}</small>
+          </span>
+          <span class="col-desc">{{ item.description }}<small class="line-lot-badge" *ngIf="item.allocationPriorityLotCode">Lot {{ item.allocationPriorityLotTag || item.allocationPriorityLotCode }}<ng-container *ngIf="item.allocationPrioritySource === 'tag'"> · typed</ng-container></small><small class="line-lot-badge warn" *ngIf="!item.allocationPriorityLotCode && item.allocationPrioritySource === 'unmatched'">No lot · takes no stock</small><small class="line-lot-badge muted" *ngIf="!item.allocationPriorityLotCode && item.allocationPrioritySource !== 'unmatched'">Stock: automatic at finalize</small></span>
           <span class="col-rate"><input *ngIf="canOverrideLinePrice(item); else lockedRate" type="number" class="qty-input" [value]="item.unitPrice" min="0" step="0.01" (change)="updateItemPrice(i, +$any($event.target).value)" /><ng-template #lockedRate>{{ item.unitPrice | number:'1.2-2' }}</ng-template></span>
           <span class="col-qty">
             <input
@@ -308,6 +328,9 @@
       </button>
       <button class="btn-action" (click)="loadRecallBills()">
         Recall Bill
+      </button>
+      <button class="btn-action" (click)="openCopyPopup()" [disabled]="isFinalizing || isCopying" title="Start a new bill from a finished one">
+        Copy a Bill
       </button>
       <button class="btn-action btn-cancel" (click)="exitBilling()">
         Exit Billing
@@ -814,6 +837,48 @@
       <span>Esc closes</span>
     </footer>
   </section>
+</div>
+
+<!-- Copy a finished bill -->
+<div class="modal-overlay" *ngIf="isCopyPopupVisible" (click)="hideCopyPopup()">
+  <div class="modal-box recall-box copy-box" (click)="$event.stopPropagation()">
+    <div class="recall-header">
+      <h3>Copy a Finished Bill</h3>
+      <button class="recall-close" (click)="hideCopyPopup()" title="Close">&times;</button>
+    </div>
+    <p class="copy-help">
+      Everything on the bill you choose (items, quantities, weights, rates and the customer) becomes a new bill you can change before
+      finalizing. Payments are not copied, and nothing is recorded until you finalize. A bill you are already working on stays in Pending Bills.
+    </p>
+    <div class="recall-search">
+      <input type="text" [(ngModel)]="copySearchTerm" (keyup.enter)="searchCopyCandidates()"
+        placeholder="Invoice or receipt number" class="recall-search-input" autocomplete="off" />
+      <button class="btn-action" (click)="searchCopyCandidates()" [disabled]="isCopySearching">Search</button>
+    </div>
+    <div *ngIf="isCopySearching" class="loading-text">Searching finished bills...</div>
+    <div class="copy-list" *ngIf="!isCopySearching">
+      <div class="recall-item copy-item" *ngFor="let bill of copyCandidates">
+        <div>
+          <div class="recall-item-top">
+            <span class="recall-receipt">{{ bill.invoice_number }}</span>
+            <span class="recall-date">{{ bill.txn_date | date:'dd-MM-yy' }}</span>
+          </div>
+          <div class="recall-customer" *ngIf="bill.customer_code">{{ bill.customer_code }}</div>
+          <div class="recall-item-stats">
+            <span>Receipt #{{ bill.receipt_no }}</span>
+            <span class="recall-net">Total {{ bill.grandTotal | number:'1.2-2' }}</span>
+            <span *ngIf="bill.refundStatus === 'full'">Returned</span>
+            <span *ngIf="bill.refundStatus === 'partial'">Part returned</span>
+          </div>
+        </div>
+        <button class="btn-action copy-action" (click)="startCopyOf(bill.id)" [disabled]="isCopying">
+          {{ isCopying ? 'Copying...' : 'Copy to new bill' }}
+        </button>
+      </div>
+      <div class="recall-empty" *ngIf="copySearched && !copyCandidates.length">No finished bills match. Try the invoice or receipt number.</div>
+      <div class="recall-empty" *ngIf="!copySearched">Search by invoice or receipt number, or leave it empty for the latest bills.</div>
+    </div>
+  </div>
 </div>
 
 <!-- Recall Bill Popup -->

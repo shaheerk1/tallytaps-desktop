@@ -247,6 +247,46 @@ function createLotCostingRepository({ database, documentSequenceRepository, busi
     });
   }
 
+  /**
+   * GRNs an expense can be recorded against, newest first, each with its lots.
+   * Kept small by a date range and a search, so it suits a quick cash-out form.
+   */
+  async function listCostTargets(filters = {}) {
+    return database.withConnection(async (connection) => {
+      const clauses = ["g.loc_code = ?", "g.status IN ('finalized','corrected')"];
+      const params = [text(filters.locCode)];
+      if (filters.fromDate) { clauses.push('g.business_date >= ?'); params.push(dateOnly(filters.fromDate)); }
+      if (filters.toDate) { clauses.push('g.business_date <= ?'); params.push(dateOnly(filters.toDate)); }
+      if (Number(filters.goodsReceiptId)) { clauses.push('g.id = ?'); params.push(Number(filters.goodsReceiptId)); }
+      if (text(filters.term)) {
+        const like = `%${text(filters.term)}%`;
+        clauses.push('(g.grn_number LIKE ? OR s.name LIKE ? OR s.supplier_code LIKE ? OR l.lot_code LIKE ? OR l.lot_tag LIKE ? OR p.name LIKE ?)');
+        params.push(like, like, like, like, like, like);
+      }
+      const [rows] = await connection.query(
+        `SELECT g.id AS goods_receipt_id, g.grn_number, g.business_date, s.name AS supplier_name, s.supplier_code,
+                l.id AS lot_id, l.lot_code, l.lot_tag, p.name AS product_name
+         FROM goods_receipts g
+         JOIN suppliers s ON s.id = g.supplier_id
+         JOIN goods_receipt_lines gl ON gl.goods_receipt_id = g.id
+         JOIN inventory_lots l ON l.goods_receipt_line_id = gl.id
+         JOIN products p ON p.id = l.product_id
+         WHERE ${clauses.join(' AND ')}
+         ORDER BY g.business_date DESC, g.id DESC, l.line_no`, params
+      );
+      const grns = new Map();
+      for (const row of rows) {
+        const id = Number(row.goods_receipt_id);
+        if (!grns.has(id)) {
+          if (grns.size >= Math.min(200, Math.max(1, Number(filters.limit || 60)))) continue;
+          grns.set(id, { id, grnNumber: row.grn_number, date: dateOnly(row.business_date), supplierName: row.supplier_name, supplierCode: row.supplier_code || null, lots: [] });
+        }
+        grns.get(id).lots.push({ id: Number(row.lot_id), lotCode: row.lot_code, lotTag: row.lot_tag || null, productName: row.product_name });
+      }
+      return [...grns.values()];
+    });
+  }
+
   async function loadLotsForAllocation(connection, { goodsReceiptId, lotId, locCode, basis }) {
     const params = [];
     let where = 'l.loc_code = ?';
@@ -275,90 +315,96 @@ function createLotCostingRepository({ database, documentSequenceRepository, busi
    * whole delivery. The expense itself is never edited; allocation rows are
    * written and the projections are rebuilt from them.
    */
-  async function allocateExpense(input) {
+  async function allocateExpenseWithConnection(connection, input, { day: knownDay = null } = {}) {
     const origin = { locCode: text(input.locCode), macCode: text(input.macCode), txnDate: dateOnly(input.txnDate) };
+    const [expenses] = await connection.execute(
+      `SELECT e.*, c.name AS category_name, e.treatment_snapshot AS default_treatment, c.id AS category_id
+       FROM expense_entries e JOIN expense_categories c ON c.id = e.expense_category_id
+       WHERE e.id = ? FOR UPDATE`, [Number(input.expenseEntryId)]
+    );
+    const expense = expenses[0];
+    if (!expense) throw new Error('This expense no longer exists.');
+    if (expense.status !== 'recorded') throw new Error('A voided expense cannot be attached to goods.');
+    if (expense.loc_code !== origin.locCode) throw new Error('This expense belongs to another location.');
+    if (expense.default_treatment !== 'lot_cost') throw new Error('Only a goods-related cost can be attached to a stock lot.');
+
+    const basis = text(input.basis) || (input.inventoryLotId ? 'direct' : 'base_quantity');
+    if (!BASES.includes(basis)) throw new Error('Choose how the cost should be divided.');
+    const reason = text(input.reason) || expense.reason;
+
+    const already = money(expense.allocated_total);
+    const remaining = money(money(expense.amount) - already);
+    const requested = input.amount == null ? remaining : money(input.amount);
+    if (requested <= 0) throw new Error('There is nothing left of this expense to attach.');
+    if (requested > remaining + 0.005) {
+      throw new Error(`Only ${remaining.toFixed(2)} of this expense is still unattached.`);
+    }
+
+    // Recording an expense attaches it inside its own save, on its own day.
+    const day = knownDay || await businessDayRepository.assertOpenWithConnection(connection, {
+      locationCode: origin.locCode, businessDate: origin.txnDate
+    });
+    const lots = await loadLotsForAllocation(connection, {
+      goodsReceiptId: input.goodsReceiptId, lotId: input.inventoryLotId, locCode: origin.locCode, basis
+    });
+    const target = input.inventoryLotId ? 'lot' : 'goods_receipt';
+    const goodsReceiptId = input.inventoryLotId ? Number(lots[0].goods_receipt_id) : Number(input.goodsReceiptId);
+
+    const shares = lots.length === 1
+      ? [requested]
+      : splitAmount(requested, lots.map((lot) => lotWeight(lot, basis)));
+
+    const [existing] = await connection.execute(
+      `SELECT COALESCE(MAX(entry_no), 0) AS max_no FROM expense_allocations
+       WHERE loc_code = ? AND mac_code = ? AND txn_date = ? AND document_type = 'expense' AND document_no = ?`,
+      [origin.locCode, origin.macCode, origin.txnDate, expense.expense_no]
+    );
+    let entryNo = Number(existing[0]?.max_no || 0);
+    const written = [];
+
+    for (let i = 0; i < lots.length; i += 1) {
+      const lot = lots[i];
+      const share = money(shares[i]);
+      if (share === 0) continue;
+      entryNo += 1;
+      const weight = lotWeight(lot, basis);
+      const [result] = await connection.execute(
+        `INSERT INTO expense_allocations
+           (expense_entry_id, inventory_lot_id, business_day_id, loc_code, mac_code, txn_date,
+            document_type, document_no, entry_no, basis, basis_value, amount, reason, created_by, metadata)
+         VALUES (?, ?, ?, ?, ?, ?, 'expense', ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON))`,
+        [expense.id, lot.id, day.id, origin.locCode, origin.macCode, origin.txnDate,
+          expense.expense_no, entryNo, basis, basis === 'equal' ? null : weight, share, reason, input.userId,
+          JSON.stringify({ expenseNumber: expense.expense_number, lotCode: lot.lot_code, basis })]
+      );
+      await journalRepository.postWithConnection(connection, {
+        businessDayId: day.id, ...origin,
+        documentType: 'expense_allocation', documentNo: expense.expense_no,
+        sourceType: 'expense_allocation', sourceId: String(result.insertId),
+        posting: require('../../core/accounting/posting-rules').allocationPosting({
+          allocation: { amount: share, reason },
+          category: { id: expense.category_id, name: expense.category_name, defaultTreatment: expense.default_treatment },
+          lot: { id: Number(lot.id), lotCode: lot.lot_code, ownershipModel: lot.ownership_model }
+        }),
+        userId: input.userId,
+        metadata: { expenseNumber: expense.expense_number, lotCode: lot.lot_code }
+      });
+      written.push({ lotId: Number(lot.id), lotCode: lot.lot_code, amount: share });
+    }
+
+    await recomputeLotCostsWithConnection(connection, lots.map((lot) => lot.id));
+    await recognizeSoldCostWithConnection(connection, {
+      lotIds: lots.map((lot) => lot.id), day, origin, userId: input.userId
+    });
+    const allocated = await refreshExpenseProjection(connection, expense.id, target, goodsReceiptId);
+    return { expense, basis, written, allocated };
+  }
+
+  async function allocateExpense(input) {
     return database.withConnection(async (connection) => {
       await connection.beginTransaction();
       try {
-        const [expenses] = await connection.execute(
-          `SELECT e.*, c.name AS category_name, e.treatment_snapshot AS default_treatment, c.id AS category_id
-           FROM expense_entries e JOIN expense_categories c ON c.id = e.expense_category_id
-           WHERE e.id = ? FOR UPDATE`, [Number(input.expenseEntryId)]
-        );
-        const expense = expenses[0];
-        if (!expense) throw new Error('This expense no longer exists.');
-        if (expense.status !== 'recorded') throw new Error('A voided expense cannot be attached to goods.');
-        if (expense.loc_code !== origin.locCode) throw new Error('This expense belongs to another location.');
-        if (expense.default_treatment !== 'lot_cost') throw new Error('Only a goods-related cost can be attached to a stock lot.');
-
-        const basis = text(input.basis) || (input.inventoryLotId ? 'direct' : 'base_quantity');
-        if (!BASES.includes(basis)) throw new Error('Choose how the cost should be divided.');
-        const reason = text(input.reason) || expense.reason;
-
-        const already = money(expense.allocated_total);
-        const remaining = money(money(expense.amount) - already);
-        const requested = input.amount == null ? remaining : money(input.amount);
-        if (requested <= 0) throw new Error('There is nothing left of this expense to attach.');
-        if (requested > remaining + 0.005) {
-          throw new Error(`Only ${remaining.toFixed(2)} of this expense is still unattached.`);
-        }
-
-        const day = await businessDayRepository.assertOpenWithConnection(connection, {
-          locationCode: origin.locCode, businessDate: origin.txnDate
-        });
-        const lots = await loadLotsForAllocation(connection, {
-          goodsReceiptId: input.goodsReceiptId, lotId: input.inventoryLotId, locCode: origin.locCode, basis
-        });
-        const target = input.inventoryLotId ? 'lot' : 'goods_receipt';
-        const goodsReceiptId = input.inventoryLotId ? Number(lots[0].goods_receipt_id) : Number(input.goodsReceiptId);
-
-        const shares = lots.length === 1
-          ? [requested]
-          : splitAmount(requested, lots.map((lot) => lotWeight(lot, basis)));
-
-        const [existing] = await connection.execute(
-          `SELECT COALESCE(MAX(entry_no), 0) AS max_no FROM expense_allocations
-           WHERE loc_code = ? AND mac_code = ? AND txn_date = ? AND document_type = 'expense' AND document_no = ?`,
-          [origin.locCode, origin.macCode, origin.txnDate, expense.expense_no]
-        );
-        let entryNo = Number(existing[0]?.max_no || 0);
-        const written = [];
-
-        for (let i = 0; i < lots.length; i += 1) {
-          const lot = lots[i];
-          const share = money(shares[i]);
-          if (share === 0) continue;
-          entryNo += 1;
-          const weight = lotWeight(lot, basis);
-          const [result] = await connection.execute(
-            `INSERT INTO expense_allocations
-               (expense_entry_id, inventory_lot_id, business_day_id, loc_code, mac_code, txn_date,
-                document_type, document_no, entry_no, basis, basis_value, amount, reason, created_by, metadata)
-             VALUES (?, ?, ?, ?, ?, ?, 'expense', ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON))`,
-            [expense.id, lot.id, day.id, origin.locCode, origin.macCode, origin.txnDate,
-              expense.expense_no, entryNo, basis, basis === 'equal' ? null : weight, share, reason, input.userId,
-              JSON.stringify({ expenseNumber: expense.expense_number, lotCode: lot.lot_code, basis })]
-          );
-          await journalRepository.postWithConnection(connection, {
-            businessDayId: day.id, ...origin,
-            documentType: 'expense_allocation', documentNo: expense.expense_no,
-            sourceType: 'expense_allocation', sourceId: String(result.insertId),
-            posting: require('../../core/accounting/posting-rules').allocationPosting({
-              allocation: { amount: share, reason },
-              category: { id: expense.category_id, name: expense.category_name, defaultTreatment: expense.default_treatment },
-              lot: { id: Number(lot.id), lotCode: lot.lot_code, ownershipModel: lot.ownership_model }
-            }),
-            userId: input.userId,
-            metadata: { expenseNumber: expense.expense_number, lotCode: lot.lot_code }
-          });
-          written.push({ lotId: Number(lot.id), lotCode: lot.lot_code, amount: share });
-        }
-
-        await recomputeLotCostsWithConnection(connection, lots.map((lot) => lot.id));
-        await recognizeSoldCostWithConnection(connection, {
-          lotIds: lots.map((lot) => lot.id), day, origin, userId: input.userId
-        });
-        const allocated = await refreshExpenseProjection(connection, expense.id, target, goodsReceiptId);
+        const { expense, basis, written, allocated } = await allocateExpenseWithConnection(connection, input);
         await connection.commit();
 
         const [updated] = await connection.query(
@@ -770,7 +816,9 @@ function createLotCostingRepository({ database, documentSequenceRepository, busi
 
   return {
     listLots,
+    listCostTargets,
     allocateExpense,
+    allocateExpenseWithConnection,
     reallocate,
     detachExpense,
     detachExpenseWithConnection,

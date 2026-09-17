@@ -20,6 +20,15 @@ function createCashManagementRepository({ database, documentSequenceRepository, 
       [workstationId]
     );
     if (rows.length === 0) throw new Error('No active cash drawer is configured for this workstation.');
+    // Every till is also a fund, so an expense can be paid from it.
+    await connection.execute(
+      `INSERT IGNORE INTO fund_accounts (fund_code, name, fund_kind, cash_drawer_id, loc_code, currency_code, is_active, sort_order)
+       SELECT CONCAT('DRAWER-', w.location_code, '-', w.machine_code), CONCAT(d.name, ' (', w.machine_code, ')'),
+              'pos_drawer', d.id, w.location_code, d.currency_code, 1, 10
+       FROM cash_drawers d JOIN pos_workstations w ON w.id = d.workstation_id
+       WHERE d.id = ? AND NOT EXISTS (SELECT 1 FROM fund_accounts f WHERE f.cash_drawer_id = d.id)`,
+      [rows[0].id]
+    );
     return rows[0];
   }
 

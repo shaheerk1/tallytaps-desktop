@@ -116,6 +116,7 @@ function createLiveBillRepository({ database, documentSequenceRepository, busine
                 quantity AS qty, kilos, handling_uom_snapshot AS handlingUom, base_uom_snapshot AS baseUom,
                 allocation_priority_lot_id AS allocationPriorityLotId, allocation_priority_source AS allocationPrioritySource,
                 (SELECT lot_code FROM inventory_lots WHERE id = invoice_items.allocation_priority_lot_id) AS allocationPriorityLotCode,
+                (SELECT lot_tag FROM inventory_lots WHERE id = invoice_items.allocation_priority_lot_id) AS allocationPriorityLotTag,
                 requires_kilos AS requiresKilos, pricing_basis AS pricingBasis, quantity_step AS quantityStep, allow_zero_quantity AS allowZeroQuantity, unit_price AS unitPrice, discount, tax,
                 merchandise_total AS merchandiseTotal, bag_charge_rate AS bagChargeRate, bag_charge_total AS bagChargeTotal,
                 wage_charge_rate AS wageChargeRate, wage_basis AS wageBasis, wage_charge_total AS wageChargeTotal, total,
@@ -166,9 +167,11 @@ function createLiveBillRepository({ database, documentSequenceRepository, busine
       const normalizedAllocationLotId = Number.isInteger(Number(allocationPriorityLotId)) && Number(allocationPriorityLotId) > 0
         ? Number(allocationPriorityLotId)
         : null;
-      const normalizedAllocationSource = normalizedAllocationLotId && ['automatic', 'remembered', 'manual'].includes(allocationPrioritySource)
-        ? allocationPrioritySource
-        : null;
+      // `unmatched` says the typed code named no lot, so the line must take no
+      // stock at all; it is the one source that is kept without a lot.
+      const normalizedAllocationSource = normalizedAllocationLotId
+        ? (['automatic', 'remembered', 'manual', 'tag'].includes(allocationPrioritySource) ? allocationPrioritySource : null)
+        : (allocationPrioritySource === 'unmatched' ? 'unmatched' : null);
       const normalizedAllocationUserId = normalizedAllocationLotId && Number.isInteger(Number(allocationPrioritySetBy)) && Number(allocationPrioritySetBy) > 0
         ? Number(allocationPrioritySetBy)
         : null;
@@ -233,6 +236,7 @@ function createLiveBillRepository({ database, documentSequenceRepository, busine
                 quantity AS qty, kilos, handling_uom_snapshot AS handlingUom, base_uom_snapshot AS baseUom,
                 allocation_priority_lot_id AS allocationPriorityLotId, allocation_priority_source AS allocationPrioritySource,
                 (SELECT lot_code FROM inventory_lots WHERE id = invoice_items.allocation_priority_lot_id) AS allocationPriorityLotCode,
+                (SELECT lot_tag FROM inventory_lots WHERE id = invoice_items.allocation_priority_lot_id) AS allocationPriorityLotTag,
                 requires_kilos AS requiresKilos, pricing_basis AS pricingBasis, quantity_step AS quantityStep, allow_zero_quantity AS allowZeroQuantity, unit_price AS unitPrice, discount, tax,
                 merchandise_total AS merchandiseTotal, bag_charge_rate AS bagChargeRate, bag_charge_total AS bagChargeTotal,
                 wage_charge_rate AS wageChargeRate, wage_basis AS wageBasis, wage_charge_total AS wageChargeTotal, total,
@@ -374,6 +378,34 @@ function createLiveBillRepository({ database, documentSequenceRepository, busine
     });
   }
 
+  /** The supply code this cashier used for an item on this business day. */
+  async function getRememberedSupplyCode({ locCode, productId, userId, businessDate }) {
+    return database.withConnection(async (connection) => {
+      const [rows] = await connection.execute(
+        `SELECT supply_code FROM supply_code_memory
+         WHERE loc_code = ? AND product_id = ? AND user_id = ? AND business_date = ? LIMIT 1`,
+        [locCode, productId, userId, businessDate]
+      );
+      return rows[0]?.supply_code || null;
+    });
+  }
+
+  async function rememberSupplyCode({ locCode, productId, userId, businessDate, supplyCode }) {
+    return database.withConnection((connection) => connection.execute(
+      `INSERT INTO supply_code_memory (loc_code, product_id, user_id, supply_code, business_date)
+       VALUES (?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE supply_code = VALUES(supply_code), business_date = VALUES(business_date)`,
+      [locCode, productId, userId, String(supplyCode).slice(0, 120), businessDate]
+    ));
+  }
+
+  async function forgetSupplyCode({ locCode, productId, userId }) {
+    return database.withConnection((connection) => connection.execute(
+      'DELETE FROM supply_code_memory WHERE loc_code = ? AND product_id = ? AND user_id = ?',
+      [locCode, productId, userId]
+    ));
+  }
+
   return {
     allocateNextReceiptNo,
     updateSessionCurrentReceipt,
@@ -389,7 +421,10 @@ function createLiveBillRepository({ database, documentSequenceRepository, busine
     updateBillCustomer,
     removeItem,
     listHeldBills,
-    abandonBill
+    abandonBill,
+    getRememberedSupplyCode,
+    rememberSupplyCode,
+    forgetSupplyCode
   };
 }
 

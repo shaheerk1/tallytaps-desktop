@@ -41,6 +41,7 @@ type SettingsForm = {
     receiptPrefix: string;
     autoSavePdf: boolean;
     pdfFolder: string;
+    supplyCodeRequired: boolean;
   };
   receipt: {
     language: ReceiptLanguage;
@@ -104,7 +105,8 @@ export class SettingsComponent implements OnInit {
       defaultTaxRate: 0,
       receiptPrefix: '',
       autoSavePdf: false,
-      pdfFolder: ''
+      pdfFolder: '',
+      supplyCodeRequired: true
     },
     receipt: {
       language: 'en-LK',
@@ -407,6 +409,7 @@ export class SettingsComponent implements OnInit {
       this.form.billing.receiptPrefix = String(billing['receipt_prefix'] ?? '');
       this.form.billing.autoSavePdf = billing['auto_save_pdf'] === true || billing['auto_save_pdf'] === 'true';
       this.form.billing.pdfFolder = String(billing['pdf_folder'] ?? '');
+      this.form.billing.supplyCodeRequired = !['false', '0'].includes(String(billing['supply_code_required'] ?? 'true'));
 
       this.form.receipt.header1 = String(workstation['bill_header_1'] ?? '');
       this.form.receipt.language = ['en-LK', 'si-LK', 'ta-LK'].includes(String(workstation['receipt_language']))
@@ -454,7 +457,8 @@ export class SettingsComponent implements OnInit {
         default_tax_rate: String(b.defaultTaxRate),
         receipt_prefix: b.receiptPrefix,
         auto_save_pdf: b.autoSavePdf,
-        pdf_folder: b.pdfFolder.trim()
+        pdf_folder: b.pdfFolder.trim(),
+        supply_code_required: b.supplyCodeRequired ? 'true' : 'false'
       });
       if (!ok) throw new Error('Failed to save billing settings.');
     });

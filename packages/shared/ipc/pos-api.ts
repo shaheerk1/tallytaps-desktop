@@ -698,7 +698,10 @@ export type BillItem = {
   baseUom?: string | null;
   allocationPriorityLotId?: number | null;
   allocationPriorityLotCode?: string | null;
-  allocationPrioritySource?: 'automatic' | 'remembered' | 'manual' | null;
+  /** The short tag of that lot, as typed or chosen at the counter. */
+  allocationPriorityLotTag?: string | null;
+  /** 'tag' = the typed supply code named this lot; 'unmatched' = no lot, so the line takes no stock. */
+  allocationPrioritySource?: 'automatic' | 'remembered' | 'manual' | 'tag' | 'unmatched' | null;
   requiresKilos?: number | boolean;
   pricingBasis?: 'qty' | 'kilos';
   quantityStep?: number;
@@ -900,6 +903,11 @@ export type ExpenseCategory = {
   helpText: string | null;
   isActive: boolean;
   sortOrder: number;
+  locationCode?: string | null;
+  /** Offered at every location; changing it here gives this location its own copy. */
+  isShared?: boolean;
+  /** The fallback reason that is always available. */
+  isDefault?: boolean;
 };
 
 export type ExpenseEntry = {
@@ -1182,6 +1190,8 @@ export type PosLocation = {
 export type InventoryLotCandidate = {
   id: number;
   lot_code: string;
+  /** The short handle typed at the counter: KAR1, BO1102. */
+  lot_tag?: string | null;
   txn_date: string;
   grn_no: number;
   line_no: number;
@@ -1577,8 +1587,25 @@ export type PattiyalCandidate = {
   draftQuantity: number; draftKilos: number; draftMerchandise: number; draftStatementCount: number;
 };
 
+/** A GRN a lot expense can be recorded against, with its lots. */
+export type ExpenseGoodsTarget = {
+  id: number; grnNumber: string; date: string; supplierName: string; supplierCode: string | null;
+  lots: Array<{ id: number; lotCode: string; lotTag: string | null; productName: string }>;
+};
+
+export type PattiyalStatementType = 'consignment' | 'owned_purchase';
+/** A lot expense recorded against a statement's GRNs, offered as a deduction. */
+export type PattiyalExpenseDeduction = {
+  expenseEntryId: number; expenseNumber: string; date: string; categoryName: string; reason: string; payee: string | null;
+  amount: number; grnNumbers: string; committedStatementNumbers: string; draftStatementCount: number;
+};
+export type PattiyalAdjustmentLabel = { adjustmentType: 'credit' | 'deduction'; label: string; uses: number };
+export type PattiyalPurchaseLineInput = {
+  goodsReceiptLineId: number; quantity?: number | null; kilos?: number | null; unitPrice?: number | null; merchandiseAmount?: number | null; reason?: string;
+};
+
 export type PattiyalDraftInput = {
-  statementId?: number | null; supplierId: number; fromDate: string; toDate: string;
+  statementId?: number | null; statementType?: PattiyalStatementType; supplierId: number; fromDate: string; toDate: string;
   locCode: string; macCode: string; txnDate: string; userId?: number | null;
   commissionRate: number; commissionRounding: 'cents' | 'nearest_rupee' | 'floor_rupee' | 'ceil_rupee' | 'manual';
   commissionOverride?: number | null; commissionOverrideReason?: string; notes?: string;
@@ -1586,12 +1613,16 @@ export type PattiyalDraftInput = {
   allocations: Array<{ invoiceItemId: number; allocatedQuantity: number; allocatedKilos?: number | null; merchandiseAmount?: number; bagChargeAmount?: number; wageChargeAmount?: number; attributionReason?: string; note?: string }>;
   manualLines: Array<{ productId?: number | null; itemCode: string; description: string; pricingBasis: 'qty' | 'kilos'; unitPrice: number; quantity: number; kilos?: number | null; merchandiseAmount?: number; reason: string }>;
   adjustments: Array<{ adjustmentType: 'deduction' | 'credit'; label: string; amount: number; note?: string }>;
+  purchaseLines?: PattiyalPurchaseLineInput[];
+  /** Lot expenses to deduct; the amounts are taken from the expenses themselves. */
+  expenseDeductions?: Array<{ expenseEntryId: number }>;
 };
 
 export type PattiyalDetail = {
   statement: Record<string, any>;
   allocations: Array<Record<string, any>>;
   manualLines: Array<Record<string, any>>;
+  purchaseLines: Array<Record<string, any>>;
   adjustments: Array<Record<string, any>>;
   grns: Array<Record<string, any>>;
   groupedLines: Array<Record<string, any>>;
@@ -1760,7 +1791,7 @@ export interface PosApi {
     get: (code: string, key: string, actor?: ActorContext | null) => Promise<IpcResult<unknown>>;
     getByCode: (code: string, actor?: ActorContext | null) => Promise<IpcResult<Record<string, unknown>>>;
     getReceipt: () => Promise<IpcResult<ReceiptPrintSettings>>;
-    getBillingOutput: (actor?: ActorContext | null) => Promise<IpcResult<{ autoSavePdf: boolean; pdfFolder: string }>>;
+    getBillingOutput: (actor?: ActorContext | null) => Promise<IpcResult<{ autoSavePdf: boolean; pdfFolder: string; supplyCodeRequired: boolean; defaultSupplyCode: string }>>;
     set: (code: string, key: string, value: unknown, actor?: ActorContext | null) => Promise<IpcResult<unknown>>;
     setBulk: (code: string, settings: Record<string, unknown>, actor?: ActorContext | null) => Promise<IpcResult<void>>;
     delete: (code: string, key: string, actor?: ActorContext | null) => Promise<IpcResult<boolean>>;
@@ -1838,13 +1869,14 @@ export interface PosApi {
     saveCategory: (category: Partial<ExpenseCategory>, actor?: ActorContext | null) => Promise<IpcResult<ExpenseCategory>>;
     list: (filters: { locCode: string; fromDate?: string; toDate?: string; categoryId?: number; fundAccountId?: number; term?: string; unallocatedOnly?: boolean; includeReversed?: boolean; limit?: number }, actor?: ActorContext | null) => Promise<IpcResult<ExpenseRegister>>;
     reverse: (reversal: { expenseEntryId: number; reason: string; userId: number; origin: { locCode: string; macCode: string; txnDate: string } }, actor?: ActorContext | null) => Promise<IpcResult<{ expenseNumber: string; reversalNumber: string; amount: number; returnedTo: string | null; stakeholderName: string | null; detachedFromLots: string[]; recurringDueAgain: boolean }>>;
-    create: (expense: { expenseCategoryId: number; fundAccountId: number; amount: number; reason: string; payee?: string; reference?: string; requestId?: string; paidOn?: string; paidOnReason?: string; userId: number; origin: { locCode: string; macCode: string; txnDate: string } }, actor?: ActorContext | null) => Promise<IpcResult<{ id: number; expenseNumber: string; amount: number; categoryName: string; categoryTreatment: ExpenseTreatment; fundName: string; fundBalance: number; stakeholderName: string | null; stakeholderEntryNumber: string | null; replayed?: boolean }>>;
+    create: (expense: { expenseCategoryId: number; fundAccountId: number; amount: number; reason: string; payee?: string; reference?: string; requestId?: string; paidOn?: string; paidOnReason?: string; goodsReceiptId?: number | null; inventoryLotId?: number | null; userId: number; origin: { locCode: string; macCode: string; txnDate: string } }, actor?: ActorContext | null) => Promise<IpcResult<{ id: number; expenseNumber: string; amount: number; categoryName: string; categoryTreatment: ExpenseTreatment; fundName: string; fundBalance: number; stakeholderName: string | null; stakeholderEntryNumber: string | null; replayed?: boolean; attached?: { goodsReceiptId: number; grnNumber: string; lotCode: string | null; allocatedTotal: number } | null }>>;
     listRecurring: (locCode: string, includeInactive?: boolean, actor?: ActorContext | null) => Promise<IpcResult<RecurringExpense[]>>;
     saveRecurring: (template: Omit<Partial<RecurringExpense>, 'expenseCategoryId' | 'fundAccountId' | 'amount'> & { locCode: string; userId: number; expenseCategoryId: number | null; fundAccountId: number | null; amount: number | null }, actor?: ActorContext | null) => Promise<IpcResult<RecurringExpense>>;
     recordRecurring: (payload: { templateId: number; userId: number; origin: { locCode: string; macCode: string; txnDate: string } }, actor?: ActorContext | null) => Promise<IpcResult<{ expense: { id: number; expenseNumber: string }; schedule: { templateId: number; nextDueDate: string } }>>;
   };
   lotCosting: {
     lots: (filters: { locCode: string; term?: string; goodsReceiptId?: number; supplierId?: number; fromDate?: string; toDate?: string; limit?: number }, actor?: ActorContext | null) => Promise<IpcResult<CostedLot[]>>;
+    goodsTargets: (filters: { locCode?: string; term?: string; fromDate?: string; toDate?: string; goodsReceiptId?: number; limit?: number }, actor?: ActorContext | null) => Promise<IpcResult<ExpenseGoodsTarget[]>>;
     profitability: (filters: { locCode: string; fromDate?: string; toDate?: string; supplierId?: number; goodsReceiptId?: number; ownershipModel?: string; term?: string; limit?: number }, actor?: ActorContext | null) => Promise<IpcResult<LotProfitability>>;
     lotDetail: (query: { inventoryLotId: number; locCode: string }, actor?: ActorContext | null) => Promise<IpcResult<{ lot: CostedLot; allocations: LotCostAllocation[] }>>;
     reconcile: (locCode: string, actor?: ActorContext | null) => Promise<IpcResult<{ checked: number; drifted: number; lots: Array<{ id: number; lotCode: string; storedLandedCost: number; expectedLandedCost: number }> }>>;
@@ -1880,6 +1912,8 @@ export interface PosApi {
     get: (statementId: number, actor?: ActorContext | null) => Promise<IpcResult<PattiyalDetail | null>>;
     candidates: (filters: Record<string, unknown>, actor?: ActorContext | null) => Promise<IpcResult<{ rows: PattiyalCandidate[]; total: number; page: number; pageSize: number; totals: Record<string, number> }>>;
     candidateGrns: (filters: Record<string, unknown>, actor?: ActorContext | null) => Promise<IpcResult<Array<Record<string, any>>>>;
+    adjustmentLabels: (filters: { adjustmentType?: 'credit' | 'deduction' }, actor?: ActorContext | null) => Promise<IpcResult<PattiyalAdjustmentLabel[]>>;
+    expenseDeductions: (filters: { grnIds: number[]; statementId?: number | null }, actor?: ActorContext | null) => Promise<IpcResult<PattiyalExpenseDeduction[]>>;
     saveDraft: (statement: PattiyalDraftInput, actor?: ActorContext | null) => Promise<IpcResult<PattiyalDetail>>;
     review: (statementId: number, userId: number | null, actor?: ActorContext | null) => Promise<IpcResult<PattiyalDetail>>;
     reopen: (statementId: number, userId: number | null, reason: string, actor?: ActorContext | null) => Promise<IpcResult<PattiyalDetail>>;
@@ -1925,6 +1959,15 @@ export interface PosApi {
       balance: number; status: string; drawerCorrected: number | null;
       takenBack: Array<{ paymentId: number; method: string; amount: number }>;
     }>>;
+    /** Starts a new, editable bill from a finished one; nothing posts until it is finalized. */
+    copyInvoiceToBill: (invoiceId: number, actor?: ActorContext) => Promise<IpcResult<OpenBillResult & {
+      copiedFrom: { invoiceId: number; invoiceNumber: string };
+      copied: number;
+      skipped: Array<{ itemCode: string; description: string; reason: string }>;
+    }>>;
+    /** The supply code this cashier used for an item earlier today, if any. */
+    rememberedSupplyCode: (productId: number, actor?: ActorContext) => Promise<IpcResult<{ supplyCode: string | null }>>;
+    forgetSupplyCode: (productId: number, actor?: ActorContext) => Promise<IpcResult<{ forgotten: boolean }>>;
     holdBill: (session: BillContext, actor?: ActorContext) => Promise<IpcResult<OpenBillResult>>;
     addItem: (bill: BillContext, item: {
       productId?: number | null;
@@ -1938,10 +1981,12 @@ export interface PosApi {
       tax?: number;
       metadata?: Record<string, unknown>;
       allocationPriorityLotId?: number | null;
-      allocationPrioritySource?: 'automatic' | 'remembered' | 'manual' | null;
+      allocationPrioritySource?: 'automatic' | 'remembered' | 'manual' | 'tag' | 'unmatched' | null;
     }, actor?: ActorContext) => Promise<IpcResult<BillItem>>;
     updateCustomer: (bill: { locCode: string; macCode: string; txnDate: string; receiptNo: number; customerCode: string; customerAccountId?: number | null }, actor?: ActorContext) => Promise<IpcResult<{ customerCode: string; customerAccountId?: number | null }>>;
     updateItem: (itemId: number, updates: {
+      /** Re-points the line at the lot with this tag, or at no lot when it matches none. */
+      supplyCode?: string;
       qty: number;
       kilos?: number | null;
       unitPrice: number;

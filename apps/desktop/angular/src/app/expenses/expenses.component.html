@@ -20,6 +20,7 @@
   <nav class="tabs">
     <button [class.active]="activeTab === 'expenses'" (click)="selectTab('expenses')">Expenses</button>
     <button *ngIf="canSeeLots" [class.active]="activeTab === 'lots'" (click)="selectTab('lots')">Cost of goods</button>
+    <button *ngIf="canManageFunds" [class.active]="activeTab === 'reasons'" (click)="selectTab('reasons')">Expense reasons</button>
     <button *ngIf="canSeePartners" [class.active]="activeTab === 'partners'" (click)="selectTab('partners')">Partners</button>
     <button *ngIf="canSeeAccounts" [class.active]="activeTab === 'accounts'" (click)="selectTab('accounts')">Accounts</button>
   </nav>
@@ -28,7 +29,7 @@
   <p class="alert success" *ngIf="info">{{ info }}</p>
 
   <!-- Date range drives every tab. -->
-  <div class="toolbar">
+  <div class="toolbar" *ngIf="activeTab !== 'reasons'">
     <label class="search-field">
       <span>Search</span>
       <input type="search" [(ngModel)]="term" (keyup.enter)="reload()" placeholder="Reason, payee, voucher, lot or supplier" />
@@ -265,6 +266,29 @@
     </section>
   </ng-container>
 
+  <!-- ════════ EXPENSE REASONS ════════ -->
+  <ng-container *ngIf="activeTab === 'reasons'">
+    <div class="section-head">
+      <h2>Expense reasons</h2>
+      <p>The choices under "What was this for?" when money goes out. A lot expense belongs to received goods and always names its GRN. A shop expense is a cost of running the business. Other expense is always there for anything that fits nowhere else.</p>
+    </div>
+    <div class="reason-columns">
+      <section class="register reason-list" *ngFor="let group of reasonGroups; trackBy: trackReasonGroup">
+        <header class="reason-head">
+          <div><h3>{{ group.title }}</h3><p>{{ group.hint }}</p></div>
+          <button class="secondary" (click)="newReason(group.treatment)">Add reason</button>
+        </header>
+        <button class="reason-row" *ngFor="let row of group.rows; trackBy: trackReason" [class.inactive]="!row.isActive" (click)="editReason(row)">
+          <span><strong>{{ row.name }}</strong><small *ngIf="row.helpText">{{ row.helpText }}</small></span>
+          <em *ngIf="row.isDefault">Always available</em>
+          <em *ngIf="!row.isDefault && row.defaultTreatment === 'supplier_deduction'">Supplier deduction</em>
+          <em class="muted" *ngIf="!row.isActive">Switched off</em>
+        </button>
+        <p class="empty inline" *ngIf="!group.rows.length">No reasons yet.</p>
+      </section>
+    </div>
+  </ng-container>
+
   <!-- ════════ PARTNERS ════════ -->
   <ng-container *ngIf="activeTab === 'partners'">
     <div class="section-head">
@@ -433,6 +457,9 @@
         <small *ngIf="draftCategory?.helpText">{{ draftCategory?.helpText }}</small>
       </label>
       <p class="guidance wide" *ngIf="draftTreatmentHint">{{ draftTreatmentHint }}</p>
+      <div class="wide" *ngIf="draftCategory?.defaultTreatment === 'lot_cost'">
+        <pos-expense-goods-picker [(goodsReceiptId)]="expenseDraft.goodsReceiptId" [(inventoryLotId)]="expenseDraft.inventoryLotId"></pos-expense-goods-picker>
+      </div>
       <label><span>Amount</span><input type="number" min="0" step="0.01" [(ngModel)]="expenseDraft.amount" placeholder="0.00" /></label>
       <label>
         <span>Paid from</span>
@@ -473,7 +500,7 @@
     <div class="drawer-actions">
       <button class="secondary" (click)="closeAll()">Cancel</button>
       <button class="primary" (click)="saveExpense()"
-        [disabled]="saving || !expenseDraft.amount || !expenseDraft.reason || !expenseDraft.fundAccountId || draftShortfall">
+        [disabled]="saving || !expenseDraft.amount || !expenseDraft.reason || !expenseDraft.fundAccountId || draftShortfall || draftNeedsGoods">
         {{ saving ? 'Recording…' : 'Record expense' }}
       </button>
     </div>
@@ -904,6 +931,39 @@
         [disabled]="saving || !transferDraft.amount || !transferDraft.reason || !transferDraft.fromFundAccountId || !transferDraft.toFundAccountId || transferDraft.fromFundAccountId === transferDraft.toFundAccountId || transferShortfall">
         {{ saving ? 'Moving…' : 'Move money' }}
       </button>
+    </div>
+  </section>
+</div>
+
+<!-- ── Add or edit an expense reason ─────────────────────── -->
+<div class="workspace-overlay" *ngIf="reasonDraft" (click)="closeAll()">
+  <section class="workspace-drawer" (click)="$event.stopPropagation()">
+    <button class="drawer-close" (click)="closeAll()" title="Close">×</button>
+    <div class="panel-head">
+      <div><p class="eyebrow">EXPENSE REASON</p><h2>{{ reasonDraft.id ? 'Edit reason' : 'Add a reason' }}</h2>
+        <p>Name it the way people say it, so the same cost is always recorded under the same reason.</p></div>
+    </div>
+    <div class="form-grid">
+      <label class="wide"><span>Name</span><input type="text" [(ngModel)]="reasonDraft.name" placeholder="Crate hire, Night watchman" /></label>
+      <div class="wide reason-kind" role="radiogroup" aria-label="Kind of expense">
+        <button type="button" [class.selected]="reasonDraft.defaultTreatment === 'lot_cost'" (click)="reasonDraft.defaultTreatment = 'lot_cost'" [disabled]="reasonDraft.isDefault">
+          <b>Lot expense</b><span>Paid for received goods. Always names its GRN.</span>
+        </button>
+        <button type="button" [class.selected]="reasonDraft.defaultTreatment !== 'lot_cost'" (click)="reasonDraft.defaultTreatment = 'overhead'" [disabled]="reasonDraft.isDefault">
+          <b>Shop expense</b><span>A cost of running the business.</span>
+        </button>
+      </div>
+      <label class="wide"><span>Hint (optional)</span><input type="text" [(ngModel)]="reasonDraft.helpText" placeholder="Shown under the choice when recording" /></label>
+      <label class="check inline" *ngIf="reasonDraft.id">
+        <input type="checkbox" [(ngModel)]="reasonDraft.isActive" [disabled]="reasonDraft.isDefault" /><span>Offered when recording</span>
+      </label>
+      <p class="guidance wide" *ngIf="reasonDraft.isDefault">Other expense is always offered, so something that fits no reason can still be recorded.</p>
+      <p class="guidance wide" *ngIf="reasonDraft.isShared">This reason comes with the app. Changing it here changes it for this shop only.</p>
+      <p class="guidance wide" *ngIf="reasonDraft.id && !reasonDraft.isDefault">Expenses already recorded keep the reason and kind they were saved with.</p>
+    </div>
+    <div class="drawer-actions">
+      <button class="secondary" (click)="closeAll()">Cancel</button>
+      <button class="primary" (click)="saveReason()" [disabled]="saving || !reasonDraft.name.trim()">{{ saving ? 'Saving…' : 'Save reason' }}</button>
     </div>
   </section>
 </div>

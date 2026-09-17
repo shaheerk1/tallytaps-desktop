@@ -114,20 +114,12 @@ contextBridge.exposeInMainWorld('posApi', {
     ,getGoodsReceipt: (goodsReceiptId, actor) => invoke('supply.goodsReceipts.get', { goodsReceiptId, actor })
     ,adjustStock: (adjustment, actor) => invoke('inventory.adjust', { adjustment, actor })
     ,listSupplyAgreements: (supplierId, actor) => invoke('supply.agreements.list', { supplierId, actor })
-    ,createSupplyAgreement: (agreement, actor) => invoke('supply.agreements.create', { agreement, actor })
-    ,getSupplierAccount: (supplierId, actor) => invoke('supply.suppliers.account', { supplierId, actor })
-    ,createSupplierSettlement: (settlement, actor) => invoke('supply.settlements.create', { settlement, actor })
-    ,approveSupplierSettlement: (settlementId, userId, actor) => invoke('supply.settlements.approve', { settlementId, userId, actor })
-    ,recordSupplierPayment: (payment, actor) => invoke('supply.settlements.pay', { payment, actor })
-    ,listSupplierSettlements: (supplierId, actor) => invoke('supply.settlements.list', { supplierId, actor })
-    ,getSupplierSettlement: (settlementId, actor) => invoke('supply.settlements.get', { settlementId, actor })
-    ,listSupplierChargeTypes: (actor) => invoke('supply.charges.listTypes', { actor })
-    ,addSupplierCharge: (charge, actor) => invoke('supply.charges.add', { charge, actor })
     ,listInventoryLots: (productId, locCode, actor) => invoke('inventory.lots.list', { productId, locCode, actor })
     ,listInventorySummary: (locCode, actor) => invoke('inventory.summary.list', { locCode, actor })
     ,finalizeStockCount: (count, actor) => invoke('inventory.counts.finalize', { count, actor })
     ,listInventoryIssues: (filters, actor) => invoke('inventory.issues.list', { filters, actor })
     ,recordInventoryIssue: (issue, actor) => invoke('inventory.issues.record', { issue, actor })
+    ,setLotTag: (lotId, tag, locCode, actor) => invoke('inventory.lots.retag', { lotId, tag, locCode, actor })
     ,listAllocationExceptions: (locCode, actor) => invoke('inventory.allocations.exceptions', { locCode, actor })
     ,listRecentLotAllocations: (locCode, limit, actor) => invoke('inventory.allocations.list', { locCode, limit, actor })
     ,allocateException: (allocation, actor) => invoke('inventory.allocations.resolve', { allocation, actor })
@@ -157,6 +149,7 @@ contextBridge.exposeInMainWorld('posApi', {
   },
   lotCosting: {
     lots: (filters, actor) => invoke('lotCosting.lots.list', { filters, actor }),
+    goodsTargets: (filters, actor) => invoke('expenses.goodsTargets', { filters, actor }),
     profitability: (filters, actor) => invoke('lotCosting.profitability', { filters, actor }),
     lotDetail: (query, actor) => invoke('lotCosting.lot.detail', { ...query, actor }),
     reconcile: (locCode, actor) => invoke('lotCosting.reconcile', { locCode, actor }),
@@ -192,6 +185,8 @@ contextBridge.exposeInMainWorld('posApi', {
     get: (statementId, actor) => invoke('supply.pattiyals.get', { statementId, actor }),
     candidates: (filters, actor) => invoke('supply.pattiyals.candidates.sales', { filters, actor }),
     candidateGrns: (filters, actor) => invoke('supply.pattiyals.candidates.grns', { filters, actor }),
+    adjustmentLabels: (filters, actor) => invoke('supply.pattiyals.adjustmentLabels', { filters, actor }),
+    expenseDeductions: (filters, actor) => invoke('supply.pattiyals.expenseDeductions', { filters, actor }),
     saveDraft: (statement, actor) => invoke('supply.pattiyals.drafts.save', { statement, actor }),
     review: (statementId, userId, actor) => invoke('supply.pattiyals.review', { statementId, userId, actor }),
     reopen: (statementId, userId, reason, actor) => invoke('supply.pattiyals.reopen', { statementId, userId, reason, actor }),
@@ -207,6 +202,9 @@ contextBridge.exposeInMainWorld('posApi', {
     getInvoice: (invoiceId, actor) => invoke('billing.invoices.get', { invoiceId, actor }),
     collectInvoiceBalance: (payload, actor) => invoke('billing.invoices.collect', { ...payload, actor }),
     unsettleInvoice: (payload, actor) => invoke('billing.invoices.unsettle', { ...payload, actor }),
+    copyInvoiceToBill: (invoiceId, actor) => invoke('billing.invoices.copyToBill', { invoiceId, actor }),
+    rememberedSupplyCode: (productId, actor) => invoke('billing.supplyCodes.remembered', { productId, actor }),
+    forgetSupplyCode: (productId, actor) => invoke('billing.supplyCodes.forget', { productId, actor }),
     holdBill: (session, actor) => invoke('billing.bill.hold', { session, actor }),
     addItem: (bill, item, actor) => invoke('billing.bill.addItem', { bill, item, actor }),
     updateItem: (itemId, updates, actor) => invoke('billing.bill.updateItem', { itemId, updates, actor }),

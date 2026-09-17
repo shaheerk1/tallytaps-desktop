@@ -225,17 +225,31 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
     };
   }
 
-  // A location sees the shared categories plus the ones it added itself.
+  /** The reason every location can always fall back on, so an expense is never blocked for want of one. */
+  const DEFAULT_CATEGORY_CODE = 'other';
+
+  // A location sees the shared reasons plus the ones it added itself. When a
+  // location changes a shared reason it gets its own row with the same code,
+  // and that row stands in for the shared one there -- other locations and
+  // every past expense are untouched.
   async function listCategories({ includeInactive = false, locCode = null } = {}) {
     const scope = requestContext.scopedLocation({ locCode });
     return database.withConnection(async (connection) => {
       const [rows] = await connection.execute(
         `SELECT * FROM expense_categories
-         WHERE (loc_code IS NULL OR ? IS NULL OR loc_code = ?) ${includeInactive ? '' : 'AND is_active = 1'}
+         WHERE (loc_code IS NULL OR ? IS NULL OR loc_code = ?)
          ORDER BY sort_order, name, id`,
         [scope, scope]
       );
-      return rows.map(mapCategory);
+      const byCode = new Map();
+      for (const row of rows) {
+        const current = byCode.get(row.category_code);
+        if (!current || (current.loc_code == null && row.loc_code != null)) byCode.set(row.category_code, row);
+      }
+      return rows
+        .filter((row) => byCode.get(row.category_code) === row)
+        .filter((row) => includeInactive || row.is_active)
+        .map((row) => ({ ...mapCategory(row), isDefault: row.category_code === DEFAULT_CATEGORY_CODE }));
     });
   }
 
@@ -245,7 +259,7 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
       if (!name) throw new Error('Give the category a name.');
       const treatment = text(input.defaultTreatment) || 'overhead';
       if (!['lot_cost', 'overhead', 'supplier_deduction'].includes(treatment)) {
-        throw new Error('Choose whether this category belongs to received goods, to the period, or to a supplier.');
+        throw new Error('Choose whether this reason is a lot expense or a shop expense.');
       }
       const helpText = text(input.helpText) || null;
       const isActive = input.isActive === false ? 0 : 1;
@@ -253,14 +267,35 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
       const id = Number(input.id || 0);
       const scope = requestContext.scopedLocation(input);
       if (id) {
-        // A location changes only its own categories. The shared ones are the
-        // same for every location, so no single location may rewrite them.
-        const [owned] = await connection.execute(
-          'SELECT loc_code FROM expense_categories WHERE id = ? AND (? IS NULL OR loc_code = ?)', [id, scope, scope]
-        );
-        if (!owned.length) {
-          throw new Error('This category is shared by every location and cannot be changed here. Add a category of your own instead.');
+        const [found] = await connection.execute('SELECT * FROM expense_categories WHERE id = ?', [id]);
+        const current = found[0];
+        if (!current) throw new Error('This expense reason no longer exists.');
+        if (current.category_code === DEFAULT_CATEGORY_CODE && !isActive) {
+          throw new Error(`${current.name} is the reason every expense can fall back on, so it always stays available.`);
         }
+        if (current.loc_code == null && scope) {
+          // A shared reason is changed for this location only: its own row with
+          // the same code takes the shared one's place here.
+          const [existing] = await connection.execute(
+            'SELECT id FROM expense_categories WHERE loc_code = ? AND category_code = ?', [scope, current.category_code]
+          );
+          if (existing.length) {
+            await connection.execute(
+              'UPDATE expense_categories SET name = ?, default_treatment = ?, help_text = ?, is_active = ?, sort_order = ? WHERE id = ?',
+              [name, treatment, helpText, isActive, sortOrder, existing[0].id]
+            );
+            const [rows] = await connection.execute('SELECT * FROM expense_categories WHERE id = ?', [existing[0].id]);
+            return mapCategory(rows[0]);
+          }
+          const [result] = await connection.execute(
+            `INSERT INTO expense_categories (loc_code, category_code, name, default_treatment, help_text, is_active, sort_order)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [scope, current.category_code, name, treatment, helpText, isActive, sortOrder]
+          );
+          const [rows] = await connection.execute('SELECT * FROM expense_categories WHERE id = ?', [result.insertId]);
+          return mapCategory(rows[0]);
+        }
+        if (scope && current.loc_code !== scope) throw new Error('This expense reason belongs to another location.');
         await connection.execute(
           'UPDATE expense_categories SET name = ?, default_treatment = ?, help_text = ?, is_active = ?, sort_order = ? WHERE id = ?',
           [name, treatment, helpText, isActive, sortOrder, id]
@@ -269,7 +304,11 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
         return mapCategory(rows[0]);
       }
       const code = (text(input.categoryCode) || name).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 80);
-      if (!code) throw new Error('Give the category a name using letters or numbers.');
+      if (!code) throw new Error('Give the reason a name using letters or numbers.');
+      const [taken] = await connection.execute(
+        `SELECT name FROM expense_categories WHERE category_code = ? AND (loc_code IS NULL OR loc_code <=> ?) LIMIT 1`, [code, scope]
+      );
+      if (taken.length) throw new Error(`There is already a reason called ${taken[0].name}. Edit that one instead.`);
       const [result] = await connection.execute(
         `INSERT INTO expense_categories (loc_code, category_code, name, default_treatment, help_text, is_active, sort_order)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -427,6 +466,43 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
     };
   }
 
+  /**
+   * Which goods a lot expense belongs to. The GRN is required (unless a schedule
+   * is recording it, which is attached later as before); a lot narrows it to one
+   * lot of that GRN. A whole GRN is split by weight when every lot was weighed,
+   * otherwise by package count.
+   */
+  async function resolveExpenseGoods(connection, { input, locCode, categoryName }) {
+    const goodsReceiptId = Number(input.goodsReceiptId || 0) || null;
+    const inventoryLotId = Number(input.inventoryLotId || 0) || null;
+    if (!goodsReceiptId) {
+      if (input.requireGoodsLink) throw new Error(`${categoryName} is a lot expense. Choose the GRN it belongs to.`);
+      return null;
+    }
+    const [grns] = await connection.execute(
+      `SELECT id, grn_number, status FROM goods_receipts WHERE id = ? AND loc_code = ?`, [goodsReceiptId, locCode]
+    );
+    if (!grns.length) throw new Error('That GRN does not belong to this location.');
+    if (!['finalized', 'corrected'].includes(grns[0].status)) throw new Error(`${grns[0].grn_number} is not a posted GRN.`);
+    const [lots] = await connection.execute(
+      `SELECT l.id, l.lot_code, l.received_base_quantity FROM inventory_lots l
+       JOIN goods_receipt_lines gl ON gl.id = l.goods_receipt_line_id
+       WHERE gl.goods_receipt_id = ?`, [goodsReceiptId]
+    );
+    if (!lots.length) throw new Error(`${grns[0].grn_number} has no lots to carry this cost.`);
+    let lotCode = null;
+    if (inventoryLotId) {
+      const lot = lots.find((row) => Number(row.id) === inventoryLotId);
+      if (!lot) throw new Error(`That lot is not part of ${grns[0].grn_number}.`);
+      lotCode = lot.lot_code;
+    }
+    const allWeighed = lots.every((row) => row.received_base_quantity != null && Number(row.received_base_quantity) > 0);
+    return {
+      goodsReceiptId, inventoryLotId, grnNumber: grns[0].grn_number, lotCode,
+      basis: inventoryLotId ? 'direct' : (allWeighed ? 'base_quantity' : 'handling_quantity')
+    };
+  }
+
   async function recordExpense(input) {
     const origin = { locCode: text(input.locCode), macCode: text(input.macCode), txnDate: dateOnly(input.txnDate) };
     return database.withConnection(async (connection) => {
@@ -448,6 +524,11 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
         );
         const category = categories[0];
         if (!category || !category.is_active) throw new Error('Choose an active expense category.');
+
+        // A lot expense belongs to received goods, so it says which delivery.
+        const goods = category.default_treatment === 'lot_cost'
+          ? await resolveExpenseGoods(connection, { input, locCode: origin.locCode, categoryName: category.name })
+          : null;
 
         const fund = await lockFund(connection, input.fundAccountId, origin.locCode);
         // A till payment belongs to the shift that counted it, so it can only be
@@ -531,6 +612,17 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
           metadata: { expenseNumber, fundCode: fund.fundCode }
         });
 
+        let attached = null;
+        if (goods) {
+          if (!lotCostingRepository) throw new Error('This build cannot attach a cost to goods.');
+          const allocation = await lotCostingRepository.allocateExpenseWithConnection(connection, {
+            ...origin, userId: input.userId, expenseEntryId: Number(result.insertId),
+            inventoryLotId: goods.inventoryLotId, goodsReceiptId: goods.inventoryLotId ? null : goods.goodsReceiptId,
+            basis: goods.basis, reason
+          }, { day });
+          attached = { goodsReceiptId: goods.goodsReceiptId, grnNumber: goods.grnNumber, lotCode: goods.lotCode, allocatedTotal: allocation.allocated };
+        }
+
         await connection.commit();
         const [saved] = await loadFunds(connection, { locCode: origin.locCode, includeInactive: true, fundId: fund.id });
         return {
@@ -542,7 +634,8 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
           fundName: fund.name,
           fundBalance: saved ? saved.balance : 0,
           stakeholderName: stakeholder ? stakeholder.displayName : null,
-          stakeholderEntryNumber: borneEntryNumber
+          stakeholderEntryNumber: borneEntryNumber,
+          attached
         };
       } catch (error) { await connection.rollback(); throw error; }
     });

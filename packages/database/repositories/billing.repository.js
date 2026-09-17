@@ -71,7 +71,7 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
         : [[]];
       const rememberedLotId = Number(preferenceRows[0]?.inventory_lot_id || 0) || null;
       const [rows] = await connection.execute(
-        `SELECT l.id, l.lot_code, l.loc_code, l.mac_code, l.txn_date, l.grn_no, l.line_no,
+        `SELECT l.id, l.lot_code, l.lot_tag, l.loc_code, l.mac_code, l.txn_date, l.grn_no, l.line_no,
                 l.received_handling_quantity, l.remaining_handling_quantity,
                 l.received_base_quantity, l.remaining_base_quantity,
                 l.handling_uom_snapshot, l.base_uom_snapshot, l.conversion_mode,
@@ -140,6 +140,56 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
     });
   }
 
+  /**
+   * The active lot a typed code points at.
+   *
+   * The code is a lot's short tag (KAR1), not a supplier code: one typed code
+   * means one lot. Nothing matching means the line takes no stock at all --
+   * see allocateFinalizedSaleToLots -- rather than silently eating the oldest
+   * lot, so a mistyped code stays visible as an unmatched allocation.
+   */
+  async function findActiveLotByTag({ tag, productId, locCode, txnDate }) {
+    const normalized = String(tag || '').trim().toUpperCase();
+    if (!normalized) return null;
+    return database.withConnection(async (connection) => {
+      const [rows] = await connection.execute(
+        `SELECT l.id, l.lot_tag, l.lot_code, l.product_id
+         FROM inventory_lots l
+         JOIN products p ON p.id = l.product_id
+         JOIN goods_receipt_lines gl ON gl.id = l.goods_receipt_line_id
+         JOIN goods_receipts g ON g.id = gl.goods_receipt_id
+         WHERE l.loc_code = ? AND l.active_lot_tag = ? AND l.txn_date <= ? AND g.status = 'finalized'
+           AND (? IS NULL OR l.product_id = ?)
+         LIMIT 1`,
+        [String(locCode || '').trim(), normalized, txnDate, productId || null, productId || null]
+      );
+      return rows[0] ? { id: Number(rows[0].id), lotTag: rows[0].lot_tag, lotCode: rows[0].lot_code, productId: Number(rows[0].product_id) } : null;
+    });
+  }
+
+  /** Whether a lot may still be named as a bill line's first stock. */
+  async function lotIsAvailableForLine({ lotId, productId, locCode, txnDate }) {
+    return database.withConnection(async (connection) =>
+      validateAllocationPriority(connection, { lotId, productId, locCode, txnDate }));
+  }
+
+  /** The typed code on a live line, kept as the cashier entered it. */
+  async function updateLiveItemSupplyCode({ itemId, supplyCode }) {
+    return database.withConnection(async (connection) => {
+      const [items] = await connection.execute(
+        `SELECT id, product_id, loc_code, txn_date FROM invoice_items
+         WHERE id = ? AND invoice_id IS NULL LIMIT 1`, [Number(itemId)]
+      );
+      if (!items.length) throw new Error('The editable bill line was not found.');
+      await connection.execute(
+        'UPDATE invoice_items SET supplier_code = ?, upd_stat = 1 WHERE id = ? AND invoice_id IS NULL',
+        [String(supplyCode || '').trim().toUpperCase(), Number(itemId)]
+      );
+      const item = items[0];
+      return { itemId: Number(itemId), productId: Number(item.product_id), locCode: item.loc_code, txnDate: item.txn_date };
+    });
+  }
+
   async function setLiveItemAllocationPriority({ itemId, lotId = null, source = null, userId = null }) {
     return database.withConnection(async (connection) => {
       const [items] = await connection.execute(
@@ -152,7 +202,11 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
         lotId, productId: item.product_id, locCode: item.loc_code, txnDate: item.txn_date
       });
       if (lotId != null && !validLotId) throw new Error('That stock lot is no longer available for this bill line.');
-      const normalizedSource = validLotId && ['automatic', 'remembered', 'manual'].includes(source) ? source : null;
+      // `unmatched` is a decision, not an absence: the typed code matched no lot,
+      // so this line must take no stock when the bill is finalized.
+      const normalizedSource = validLotId
+        ? (['automatic', 'remembered', 'manual', 'tag'].includes(source) ? source : null)
+        : (source === 'unmatched' ? 'unmatched' : null);
       const normalizedUserId = validLotId && Number.isInteger(Number(userId)) && Number(userId) > 0 ? Number(userId) : null;
       await connection.execute(
         `UPDATE invoice_items
@@ -209,6 +263,14 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
 
   async function allocateFinalizedSaleToLots(connection, item, txnDate, userId) {
     if (!item.product_id) return;
+    // A line whose typed code matched no lot deliberately consumes nothing. The
+    // unallocated quantity is recorded below as an exception to be resolved.
+    if (item.allocation_priority_source === 'unmatched') {
+      const handling = Number(item.handling_quantity ?? item.qty ?? item.quantity ?? 0) || 0;
+      const base = item.base_quantity == null && item.kilos == null ? null : Number(item.base_quantity ?? item.kilos);
+      await recordAllocationException(connection, item, { handling, base });
+      return;
+    }
     const baseQuantity = item.base_quantity == null && item.kilos == null ? null : Number(item.base_quantity ?? item.kilos);
     const byBase = baseQuantity != null;
     let remainingBase = byBase ? toStockQuantity(baseQuantity) : null;
@@ -305,19 +367,24 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
     }
     const unallocatedControlling = byBase ? remainingBase : remainingHandling;
     if (unallocatedControlling > 0.0005 || remainingHandling > 0.0005) {
-      await connection.execute(
-        `INSERT INTO inventory_allocation_exceptions
-           (invoice_item_id, loc_code, mac_code, txn_date, document_no, line_no, product_id,
-            unallocated_handling_quantity, unallocated_base_quantity, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')
-         ON DUPLICATE KEY UPDATE
-           unallocated_handling_quantity = VALUES(unallocated_handling_quantity),
-           unallocated_base_quantity = VALUES(unallocated_base_quantity), status = 'open',
-           resolution_note = NULL, resolved_by = NULL, resolved_at = NULL`,
-        [item.id, item.loc_code, item.mac_code, item.txn_date, item.receipt_no, item.seq_no, item.product_id,
-          remainingHandling, byBase ? remainingBase : null]
-      );
+      await recordAllocationException(connection, item, { handling: remainingHandling, base: byBase ? remainingBase : null });
     }
+  }
+
+  /** What a sale could not take from any lot, left open for someone to resolve. */
+  async function recordAllocationException(connection, item, { handling, base }) {
+    await connection.execute(
+      `INSERT INTO inventory_allocation_exceptions
+         (invoice_item_id, loc_code, mac_code, txn_date, document_no, line_no, product_id,
+          unallocated_handling_quantity, unallocated_base_quantity, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')
+       ON DUPLICATE KEY UPDATE
+         unallocated_handling_quantity = VALUES(unallocated_handling_quantity),
+         unallocated_base_quantity = VALUES(unallocated_base_quantity), status = 'open',
+         resolution_note = NULL, resolved_by = NULL, resolved_at = NULL`,
+      [item.id, item.loc_code, item.mac_code, item.txn_date, item.receipt_no, item.seq_no, item.product_id,
+        handling, base]
+    );
   }
 
   function normalizeLineMetadata(metadata, kilos) {
@@ -884,7 +951,7 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
           `SELECT id, loc_code, mac_code, txn_date, receipt_no, seq_no, product_id, item_code, description,
                   quantity AS qty, handling_quantity, kilos, base_quantity, handling_uom_snapshot, base_uom_snapshot,
                   allocation_priority_lot_id, allocation_priority_source, allocation_priority_set_by,
-                  unit_price, discount, tax, merchandise_total, bag_charge_total, wage_charge_total, total
+                  unit_price, discount, tax, merchandise_total, bag_charge_total, wage_charge_total, total, metadata
            FROM invoice_items
            WHERE invoice_id IS NULL AND loc_code = ? AND mac_code = ? AND txn_date = ? AND receipt_no = ?
            ORDER BY seq_no ASC`,
@@ -893,6 +960,13 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
         if (items.length === 0) {
           throw new Error('Cannot finalize a bill with no items.');
         }
+        // A bill started from a finished one says so on the invoice it becomes.
+        const copiedFrom = items.map((item) => {
+          const meta = typeof item.metadata === 'string'
+            ? (() => { try { return JSON.parse(item.metadata); } catch { return null; } })()
+            : item.metadata;
+          return meta && meta.copiedFrom ? meta.copiedFrom : null;
+        }).find(Boolean) || null;
 
         // Compute totals from DB using DECIMAL aggregates (avoids JS float errors)
         const [totals] = await connection.execute(
@@ -963,7 +1037,7 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
             grossAmt, grossAmt, Number(bagChargeTotalOverride || totals[0].bag_charge_total), Number(wageChargeTotalOverride || totals[0].wage_charge_total), discountTotal, grandTotal, tenderTotal, balance,
             cashAmt, changeAmt,
             totals[0].start_time, userId,
-            JSON.stringify({ sessionId, ...invoiceMetadata })
+            JSON.stringify({ sessionId, ...invoiceMetadata, ...(copiedFrom ? { copiedFrom } : {}) })
           ]
         );
 
@@ -1095,6 +1169,9 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
     rememberAllocationLot,
     clearRememberedAllocationLot,
     setLiveItemAllocationPriority,
+    findActiveLotByTag,
+    lotIsAvailableForLine,
+    updateLiveItemSupplyCode,
     collectInvoiceBalance,
     unsettleInvoice,
     getInvoice,

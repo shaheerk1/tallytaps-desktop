@@ -140,7 +140,7 @@ async function main() {
         await lotCostingRepository.recomputeLotCostsWithConnection(txConnection, lotIds);
 
         // ── 1. A split sums back to the whole ───────────────
-        const lorryBill = await expenses.recordExpense({
+        const lorryBill = await expenses.recordExpense({ attachLater: true,
           ...base, expenseCategoryId: lotCategory.id, fundAccountId: safeFund.insertId,
           amount: 100, reason: 'Lorry wage for the whole delivery'
         });
@@ -238,7 +238,7 @@ async function main() {
            VALUES (?, ?, ?, ?, ?, 'consignment_accrual', 8000, ?, 'sale', 1, 1, 99, 'Consignment sale accrual', ?)`,
           [supplier.insertId, locCode, macCode, grn.insertId, consignLot.insertId, txnDate, user.id]
         );
-        const unloading = await expenses.recordExpense({
+        const unloading = await expenses.recordExpense({ attachLater: true,
           ...base, expenseCategoryId: lotCategory.id, fundAccountId: safeFund.insertId,
           amount: 250, reason: 'Unloading the consignment bags'
         });

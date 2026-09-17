@@ -15,3 +15,10 @@ h3 { margin:17px 0 7px; color:var(--ui-navy); font-size:13px; }.ledger-row { dis
 @keyframes slide-in { from { transform:translateX(28px); opacity:.75; } to { transform:none; opacity:1; } }
 @media(max-width:1050px) { .customer-row { grid-template-columns:minmax(180px,1.4fr) 1fr 1fr 110px; }.customer-row>span:nth-child(4),.customer-head>span:nth-child(4),.customer-row>time,.customer-head>span:nth-child(6) { display:none; } }
 @media(max-width:760px) { .accounts-page { padding:18px; }.page-header,.advance-head { flex-direction:column; }.summary-strip,.metrics,.identity-grid,.form-grid,.advance-form { grid-template-columns:1fr; }.customer-row { grid-template-columns:1fr 110px; }.customer-row>span:nth-child(2),.customer-row>span:nth-child(3),.customer-head>span:nth-child(2),.customer-head>span:nth-child(3) { display:none; }.form-grid .wide,.advance-form>strong,.advance-form .wide,.advance-form-actions { grid-column:auto; }.statement-bar { align-items:stretch; flex-direction:column; } }
+
+/* Account lines that belong to a bill open that bill in the invoice archive. */
+button.ledger-row { width:100%; border:0; border-radius:0; background:transparent; color:inherit; font:inherit; text-align:left; }
+button.ledger-row:disabled { opacity:1; cursor:default; }
+.ledger-row.link-row { cursor:pointer; transition:background .12s ease; }
+.ledger-row.link-row:hover { background:var(--ui-primary-soft); }
+.ledger-row.link-row:hover strong { color:var(--ui-primary); }

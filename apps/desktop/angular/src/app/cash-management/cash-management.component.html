@@ -1,159 +1,260 @@
 <section class="cash-page">
-  <header>
-    <h1>Cash Management <span>~ Drawer Accountability</span></h1>
-    <p>Open, move, count, reconcile, and keep a history of every printed shift report.</p>
+  <header class="page-head">
+    <div>
+      <h1>Cash Management <span>Drawer accountability</span></h1>
+      <p>Open the drawer, record cash coming in and going out, and count it at day end.</p>
+    </div>
+    <div class="head-actions" *ngIf="shift">
+      <span class="status-pill" [attr.data-status]="shift.status">{{ statusLabel(shift.status) }}</span>
+      <button type="button" class="btn ghost" (click)="printReport('X')" *ngIf="shift.status !== 'closed'">Print X report</button>
+      <button type="button" class="btn ghost" (click)="printReport('Z')" *ngIf="shift.status === 'closed'">Print Z report</button>
+    </div>
   </header>
 
-  <p class="alert error" *ngIf="error">{{ error }}</p>
-  <p class="alert success" *ngIf="info">{{ info }}</p>
+  <div class="alert error" *ngIf="error" role="alert"><span>{{ error }}</span><button type="button" (click)="error = ''" aria-label="Dismiss">×</button></div>
+  <div class="alert success" *ngIf="info" role="status"><span>{{ info }}</span><button type="button" (click)="info = ''" aria-label="Dismiss">×</button></div>
 
-  <section class="open-card" *ngIf="!shift">
-    <h2>Open Cash Shift</h2>
-    <p>Count the opening float by denomination before taking payments.</p>
-    <div class="denominations">
-      <label *ngFor="let line of openingLines">
-        {{ line.denomination | number:'1.2-2' }}
-        <input type="number" min="0" [(ngModel)]="line.quantity" />
+  <!-- ── No shift yet: count the opening float ─────────────── -->
+  <section class="card open-card" *ngIf="!shift">
+    <div class="card-head">
+      <div><h2>Open cash shift</h2><p>Count the opening float by denomination before taking payments.</p></div>
+      <div class="total-chip"><span>Opening total</span><strong>{{ total(openingLines) | number:'1.2-2' }}</strong></div>
+    </div>
+    <div class="denominations wide" (keydown)="onFlowKeydown($event, openShiftFromKeyboard)">
+      <label *ngFor="let line of openingLines" [class.filled]="line.quantity">
+        <span class="denom">{{ line.denomination | number:'1.0-0' }}</span>
+        <input type="number" min="0" data-flow [(ngModel)]="line.quantity" placeholder="0" />
+        <small>{{ line.denomination * (line.quantity || 0) | number:'1.2-2' }}</small>
       </label>
     </div>
-    <strong>Opening total: {{ total(openingLines) | number:'1.2-2' }}</strong>
-    <button class="primary" (click)="openShift()" [disabled]="loading">Open Shift</button>
+    <div class="card-foot">
+      <small class="key-hint"><kbd>Enter</kbd> next note · <kbd>Ctrl</kbd>+<kbd>Enter</kbd> open shift</small>
+      <button type="button" class="btn primary" (click)="openShift()" [disabled]="loading">{{ loading ? 'Opening…' : 'Open shift' }}</button>
+    </div>
   </section>
 
   <ng-container *ngIf="shift">
-    <section class="summary">
-      <div><span>Drawer</span><strong>{{ shift.drawerName }}</strong></div>
-      <div><span>Status</span><strong>{{ shift.status }}</strong></div>
-      <div><span>Opening</span><strong>{{ shift.openingTotal | number:'1.2-2' }}</strong></div>
-      <div><span>Expected</span><strong>{{ shift.expectedTotal | number:'1.2-2' }}</strong></div>
-      <div *ngIf="shift.declaredTotal !== null"><span>Declared</span><strong>{{ shift.declaredTotal | number:'1.2-2' }}</strong></div>
-      <div *ngIf="shift.varianceTotal !== null"><span>Variance</span><strong>{{ shift.varianceTotal | number:'1.2-2' }}</strong></div>
+    <!-- ── Shift at a glance ─────────────────────────────────── -->
+    <section class="stats">
+      <div><span>Drawer</span><strong>{{ shift.drawerName }}</strong><small>{{ businessDateText(shift.businessDate) }}</small></div>
+      <div><span>Opening float</span><strong>{{ shift.openingTotal | number:'1.2-2' }}</strong></div>
+      <div class="in"><span>Cash in</span><strong>+{{ shiftCashIn | number:'1.2-2' }}</strong><small>excluding opening float</small></div>
+      <div class="out"><span>Cash out</span><strong>−{{ shiftCashOut | number:'1.2-2' }}</strong></div>
+      <div class="expected"><span>Expected in drawer</span><strong>{{ shift.expectedTotal | number:'1.2-2' }}</strong></div>
+      <div *ngIf="shift.declaredTotal !== null"><span>Counted</span><strong>{{ shift.declaredTotal | number:'1.2-2' }}</strong></div>
+      <div *ngIf="shift.varianceTotal !== null" [class.out]="shift.varianceTotal! < 0" [class.in]="shift.varianceTotal! > 0"><span>Variance</span><strong>{{ shift.varianceTotal | number:'1.2-2' }}</strong></div>
     </section>
 
-    <button style="margin-top: 10px;" class="primary" (click)="printReport('X')" *ngIf="shift.status !== 'closed'">Print X Report</button>
-    <button class="primary" (click)="printReport('Z')" *ngIf="shift.status === 'closed'">Print Z Report</button>
+    <section class="work-grid" *ngIf="shift.status === 'open'">
+      <!-- ── Cash movement: the everyday form ─────────────────── -->
+      <article class="card movement-card" #movementForm (keydown)="onFlowKeydown($event, recordFromKeyboard)">
+        <div class="card-head">
+          <div><h2>Cash movement</h2><p>Choose the direction, fill in the details, and check the drawer effect before recording.</p></div>
+        </div>
 
-    <section class="two-col" *ngIf="shift.status === 'open'">
-      <article>
-        <h2>Cash Movement</h2>
-        <p>Choose the direction first. The drawer effect is shown again before saving.</p>
-        <div class="movement-direction" role="group" aria-label="Cash movement direction">
-          <button type="button" class="direction-in" [class.selected]="movementDirection === 'in'" (click)="selectDirection('in')"><b>↓ CASH COMING IN</b><span>Drawer balance increases</span></button>
-          <button type="button" class="direction-out" [class.selected]="movementDirection === 'out'" (click)="selectDirection('out')"><b>↑ CASH GOING OUT</b><span>Drawer balance decreases</span></button>
+        <div class="direction-toggle" role="radiogroup" aria-label="Cash movement direction" (keydown)="onDirectionKeydown($event)">
+          <button type="button" role="radio" class="dir in" [class.selected]="movementDirection === 'in'" [attr.aria-checked]="movementDirection === 'in'"
+            [tabIndex]="movementDirection === 'in' ? 0 : -1" (click)="chooseDirection('in')">
+            <span class="dir-icon">↓</span><span><b>Cash coming in</b><small>Drawer increases</small></span><kbd>Alt+I</kbd>
+          </button>
+          <button type="button" role="radio" class="dir out" [class.selected]="movementDirection === 'out'" [attr.aria-checked]="movementDirection === 'out'"
+            [tabIndex]="movementDirection === 'out' ? 0 : -1" (click)="chooseDirection('out')">
+            <span class="dir-icon">↑</span><span><b>Cash going out</b><small>Recorded as an expense</small></span><kbd>Alt+O</kbd>
+          </button>
         </div>
-        <div class="out-reason-options" *ngIf="movementDirection === 'out'">
-          <button type="button" [class.selected]="movementType === 'cash_out'" (click)="selectMovement('cash_out')">Other cash out</button>
-          <button type="button" [class.selected]="movementType === 'safe_drop'" (click)="selectMovement('safe_drop')">Safe drop</button>
-          <button type="button" [class.selected]="movementType === 'bank_drop'" (click)="selectMovement('bank_drop')">Bank drop</button>
+
+        <div class="form-body">
+          <ng-container *ngIf="movementDirection === 'in'">
+            <label class="field amount-field">
+              <span>Amount</span>
+              <div class="amount-input"><em>{{ shift.currencyCode || 'LKR' }}</em><input type="number" min="0.01" step="0.01" data-flow data-flow-start [(ngModel)]="movementAmount" placeholder="0.00" /></div>
+            </label>
+            <label class="field">
+              <span>Reason</span>
+              <input data-flow [(ngModel)]="movementReason" placeholder="Where the cash came from" />
+            </label>
+          </ng-container>
+
+          <ng-container *ngIf="movementDirection === 'out'">
+            <p class="notice warn" *ngIf="!canRecordExpense">Your role cannot record expenses, so cash going out has to be recorded by a manager.</p>
+            <ng-container *ngIf="canRecordExpense">
+              <label class="field">
+                <span>What was this for?</span>
+                <select data-flow data-flow-start [(ngModel)]="outCategoryId" (ngModelChange)="onOutCategoryChanged()">
+                  <option *ngFor="let reason of expenseReasons" [ngValue]="reason.id">{{ reason.name }}{{ reason.defaultTreatment === 'lot_cost' ? '  ·  lot expense' : '' }}</option>
+                </select>
+                <small *ngIf="outCategory?.helpText">{{ outCategory?.helpText }}</small>
+              </label>
+              <div class="field" *ngIf="outCategory?.defaultTreatment === 'lot_cost'">
+                <span>Goods it was for</span>
+                <pos-expense-goods-picker [(goodsReceiptId)]="outGoodsReceiptId" [(inventoryLotId)]="outLotId"></pos-expense-goods-picker>
+              </div>
+              <div class="field-row">
+                <label class="field amount-field">
+                  <span>Amount</span>
+                  <div class="amount-input"><em>{{ shift.currencyCode || 'LKR' }}</em><input type="number" min="0.01" step="0.01" data-flow [(ngModel)]="movementAmount" placeholder="0.00" /></div>
+                </label>
+                <label class="field">
+                  <span>Paid from</span>
+                  <select data-flow [(ngModel)]="outFundId">
+                    <option *ngFor="let fund of payingFunds" [ngValue]="fund.id">{{ fund.id === drawerFund?.id ? 'This drawer' : fund.name }}{{ fund.fundKind === 'stakeholder' ? '  ·  partner' : '  ·  ' + (fund.balance | number:'1.2-2') }}</option>
+                  </select>
+                </label>
+              </div>
+              <p class="notice warn" *ngIf="!drawerFund">This drawer is not set up as a fund yet. Reopen Cash Management after the shift is opened.</p>
+              <p class="notice" *ngIf="outFund?.fundKind === 'stakeholder'">Paid from a partner's own money: the business will owe them this amount.</p>
+              <label class="field">
+                <span>Details</span>
+                <input data-flow [(ngModel)]="movementReason" placeholder="What exactly was it for?" />
+              </label>
+            </ng-container>
+          </ng-container>
         </div>
-        <input type="number" min="0.01" [(ngModel)]="movementAmount" placeholder="Amount" />
-        <label class="drop-target" *ngIf="isFundDrop">
-          {{ movementType === 'bank_drop' ? 'Receiving bank account' : 'Receiving cash safe' }}
-          <select [(ngModel)]="movementTargetFundId" [disabled]="!canTransferFunds">
-            <option [ngValue]="null">Choose destination</option>
-            <option *ngFor="let fund of dropTargets" [ngValue]="fund.id">{{ fund.name }} · {{ fund.balance | number:'1.2-2' }}</option>
-          </select>
-          <small *ngIf="!canTransferFunds">A manager with fund-transfer permission must record this drop.</small>
-          <small *ngIf="canTransferFunds && dropTargets.length === 0">Create an active {{ movementType === 'bank_drop' ? 'bank account' : 'cash safe' }} in Money first.</small>
-        </label>
-        <input [(ngModel)]="movementReason" placeholder="Required reason" />
-        <div class="movement-impact" [class.money-in]="movementDirection === 'in'" [class.money-out]="movementDirection === 'out'"><span>{{ movementDirection === 'in' ? 'DRAWER WILL INCREASE BY' : 'DRAWER WILL DECREASE BY' }}</span><strong>{{ movementDirection === 'in' ? '+' : '−' }}{{ movementAmount || 0 | number:'1.2-2' }}</strong><small>{{ movementLabel }}</small></div>
-        <button class="primary movement-save" [class.outgoing]="movementDirection === 'out'" (click)="addMovement()" [disabled]="isFundDrop && (!canTransferFunds || !movementTargetFundId)">{{ movementDirection === 'in' ? 'Confirm Cash Coming In' : 'Confirm Cash Going Out' }}</button>
+
+        <div class="record-bar">
+          <div class="impact" [class.money-in]="movementDirection === 'in'" [class.money-out]="movementDirection === 'out' && outFromDrawer" [class.money-elsewhere]="movementDirection === 'out' && !outFromDrawer">
+            <ng-container *ngIf="movementDirection === 'in' || outFromDrawer">
+              <span>{{ movementDirection === 'in' ? 'Drawer will increase by' : 'Drawer will decrease by' }}</span>
+              <strong>{{ movementDirection === 'in' ? '+' : '−' }}{{ movementAmount || 0 | number:'1.2-2' }}</strong>
+              <small>{{ movementDirection === 'in' ? 'Other cash coming in' : (outCategory?.name || 'Expense') }}</small>
+            </ng-container>
+            <ng-container *ngIf="movementDirection === 'out' && !outFromDrawer">
+              <span>Drawer is not changed</span>
+              <strong>{{ movementAmount || 0 | number:'1.2-2' }}</strong>
+              <small>{{ outCategory?.name || 'Expense' }} paid from {{ outFund?.name || 'another fund' }}</small>
+            </ng-container>
+          </div>
+          <div class="record-actions">
+            <button type="button" class="btn record" [class.outgoing]="movementDirection === 'out'" data-flow (click)="addMovement()"
+              [disabled]="saving || (movementDirection === 'out' && (!canRecordExpense || !outFundId || outNeedsGoods))">
+              {{ saving ? 'Recording…' : movementDirection === 'in' ? 'Record cash in' : 'Record expense' }}
+            </button>
+            <small class="key-hint"><kbd>Enter</kbd> next · <kbd>Ctrl</kbd>+<kbd>Enter</kbd> record · <kbd>Esc</kbd> clear</small>
+          </div>
+        </div>
       </article>
 
-      <article>
-        <h2>Blind Closing Count</h2>
-        <p>Count physical cash without relying on the expected amount.</p>
-        <div class="denominations">
-          <label *ngFor="let line of closingLines">
-            {{ line.denomination | number:'1.2-2' }}
-            <input type="number" min="0" [(ngModel)]="line.quantity" />
-          </label>
+      <!-- ── Day end: blind closing count, same place as always ── -->
+      <aside class="card close-count-card" [class.counting]="closingCountOpen">
+        <div class="card-head">
+          <div><span class="eyebrow">Day end</span><h2>Blind closing count</h2><p>Count the physical cash without looking at the expected amount.</p></div>
         </div>
-        <strong>Declared total: {{ total(closingLines) | number:'1.2-2' }}</strong>
-        <button class="primary" (click)="blindClose()">Submit Count</button>
-      </article>
-    </section>
-
-    <section class="close-card" *ngIf="shift.status === 'blind_closed'">
-      <h2>Final Reconciliation</h2>
-      <p>Expected {{ shift.expectedTotal | number:'1.2-2' }} | Declared {{ shift.declaredTotal | number:'1.2-2' }} | Variance {{ (shift.declaredTotal! - shift.expectedTotal) | number:'1.2-2' }}</p>
-      <input [(ngModel)]="varianceReason" placeholder="Reason required if there is a variance" />
-      <button class="primary" (click)="closeShift()">Finalize Z Close</button>
-    </section>
-
-    <section class="movement-list">
-      <h2>Shift Activity</h2>
-      <p>Automatic entries are corrected from their sale, refund, advance, or settlement. Manually entered cash can be corrected here until this shift closes.</p>
-      <div *ngFor="let movement of shift.movements" class="movement-row">
-        <ng-container *ngIf="removingMovementId === movement.id">
-          <span><b>Remove this entry?</b><small>{{ movement.direction === 'out' ? '-' : '+' }}{{ movement.amount | number:'1.2-2' }} · {{ movement.reason || movement.movement_type }}</small></span>
-          <input [(ngModel)]="removeReason" placeholder="Why is it being removed?" aria-label="Removal reason" (keyup.enter)="confirmMovementRemove()" />
-          <span class="movement-actions"><button type="button" class="danger-link" (click)="confirmMovementRemove()">Remove entry</button><button type="button" (click)="cancelMovementRemove()">Cancel</button></span>
-        </ng-container>
-        <ng-container *ngIf="removingMovementId !== movement.id">
-        <ng-container *ngIf="editingMovementId !== movement.id; else editMovement">
-          <span><b>{{ movement.direction === 'in' ? 'Cash in' : 'Cash out' }}</b><small>{{ movement.movement_type }}</small></span>
-          <span>{{ movement.reason || 'System transaction' }}</span>
-          <strong [class.out]="movement.direction === 'out'">{{ movement.direction === 'out' ? '-' : '+' }}{{ movement.amount | number:'1.2-2' }}</strong>
-          <span class="movement-actions" *ngIf="movement.editable && canCorrectMovements">
-            <button type="button" (click)="beginMovementEdit(movement)">Edit</button>
-            <button type="button" class="danger-link" (click)="beginMovementRemove(movement)">Remove</button>
-          </span>
-          <small class="source-lock" *ngIf="!movement.editable && movement.reference_type">Linked to {{ movement.reference_type }}</small>
-        </ng-container>
-        </ng-container>
-        <ng-template #editMovement>
-          <select [(ngModel)]="editDirection"><option value="in">Cash coming in</option><option value="out">Cash going out</option></select>
-          <input type="number" min="0.01" [(ngModel)]="editAmount" aria-label="Corrected amount" />
-          <input [(ngModel)]="editReason" placeholder="Correction reason" aria-label="Correction reason" />
-          <span class="movement-actions"><button type="button" class="primary" (click)="saveMovementEdit()">Save correction</button><button type="button" (click)="cancelMovementEdit()">Cancel</button></span>
-        </ng-template>
-      </div>
-    </section>
-
-    <section class="history-card movement-history-card">
-      <h2>Cash Movement History</h2>
-      <p>Review previous business days and trace removed entries without changing closed history.</p>
-      <div class="history-filters">
-        <label>From<input type="date" [(ngModel)]="historyFromDate" /></label>
-        <label>Until<input type="date" [(ngModel)]="historyToDate" /></label>
-        <label>Direction<select [(ngModel)]="historyDirection"><option value="">All</option><option value="in">Cash in</option><option value="out">Cash out</option></select></label>
-        <label>Find<input [(ngModel)]="historyTerm" placeholder="Reason, user or reference" /></label>
-        <label class="void-toggle"><input type="checkbox" [(ngModel)]="historyIncludeVoided" /> Include removed</label>
-        <button type="button" class="primary" (click)="loadMovementHistory()">Apply filters</button>
-      </div>
-      <p class="history-empty" *ngIf="movementHistory.length === 0">No cash movements match these filters.</p>
-      <div class="cash-history-list" *ngIf="movementHistory.length">
-        <article *ngFor="let movement of movementHistory" [class.voided]="movement.status === 'void'">
-          <div><strong>{{ businessDateText(movement.businessDate) }}</strong><span>Shift {{ movement.shiftNo }} · {{ movement.machineCode }}</span></div>
-          <div><strong>{{ movement.direction === 'in' ? 'Cash in' : 'Cash out' }}</strong><span>{{ movement.movementType }}</span></div>
-          <div><strong [class.out]="movement.direction === 'out'">{{ movement.direction === 'out' ? '-' : '+' }}{{ movement.amount | number:'1.2-2' }}</strong><span>{{ movement.reason || 'System transaction' }}</span></div>
-          <div><strong>{{ movement.createdByName }}</strong><span>{{ movement.createdAt | date:'short' }}</span></div>
-          <div *ngIf="movement.status === 'void'"><strong>Removed</strong><span>{{ movement.voidReason }}</span></div>
-        </article>
-      </div>
-    </section>
-
-    <section class="history-card">
-      <h2>Report History</h2>
-      <p class="history-empty" *ngIf="reportHistory.length === 0">No report has been archived yet for this shift.</p>
-      <div class="history-list" *ngIf="reportHistory.length > 0">
-        <article *ngFor="let report of reportHistory" class="history-item">
-          <div>
-            <strong>{{ report.reportType }} #{{ report.reportNo }}</strong>
-            <span>{{ report.printedAt | date:'medium' }}</span>
+        <button type="button" class="btn count-start" *ngIf="!closingCountOpen" (click)="openClosingCount()">
+          <span class="count-icon">▦</span><span><b>Start closing count</b><small>Count notes and coins at day end</small></span>
+        </button>
+        <ng-container *ngIf="closingCountOpen">
+          <div class="denominations compact" #closingForm (keydown)="onFlowKeydown($event, submitCountFromKeyboard)">
+            <label *ngFor="let line of closingLines" [class.filled]="line.quantity">
+              <span class="denom">{{ line.denomination | number:'1.0-0' }}</span>
+              <input type="number" min="0" data-flow [(ngModel)]="line.quantity" placeholder="0" />
+            </label>
           </div>
-          <div>
-            <span>Printed by</span>
-            <strong>{{ report.printedByName || 'System' }}</strong>
+          <div class="count-total"><span>Counted total</span><strong>{{ total(closingLines) | number:'1.2-2' }}</strong></div>
+          <div class="count-actions">
+            <button type="button" class="btn ghost" (click)="closingCountOpen = false">Cancel</button>
+            <button type="button" class="btn primary" (click)="blindClose()">Submit count</button>
           </div>
-          <div>
-            <span>Snapshot</span>
-            <strong>{{ snapshotAmount(report, 'expectedTotal') | number:'1.2-2' }}</strong>
-          </div>
-        </article>
+          <small class="key-hint"><kbd>Enter</kbd> next note · <kbd>Ctrl</kbd>+<kbd>Enter</kbd> submit</small>
+        </ng-container>
+      </aside>
+    </section>
+
+    <!-- ── After the count: manager reconciliation ─────────────── -->
+    <section class="card reconcile-card" *ngIf="shift.status === 'blind_closed'">
+      <div class="card-head"><div><span class="eyebrow">Day end</span><h2>Final reconciliation</h2><p>Compare the count with what the drawer should hold, explain any difference, then close the shift.</p></div></div>
+      <div class="reconcile-figures">
+        <div><span>Expected</span><strong>{{ shift.expectedTotal | number:'1.2-2' }}</strong></div>
+        <div><span>Counted</span><strong>{{ shift.declaredTotal | number:'1.2-2' }}</strong></div>
+        <div [class.out]="(shift.declaredTotal! - shift.expectedTotal) < -0.005" [class.in]="(shift.declaredTotal! - shift.expectedTotal) > 0.005">
+          <span>Variance</span><strong>{{ (shift.declaredTotal! - shift.expectedTotal) | number:'1.2-2' }}</strong>
+        </div>
       </div>
+      <div class="reconcile-actions">
+        <label class="field"><span>Reason for any variance</span><input [(ngModel)]="varianceReason" (keyup.enter)="closeShift()" placeholder="Required if the count differs" /></label>
+        <button type="button" class="btn primary" (click)="closeShift()">Finalize Z close</button>
+      </div>
+    </section>
+
+    <!-- ── This shift's entries ──────────────────────────────── -->
+    <section class="card table-card">
+      <div class="card-head">
+        <div><h2>Shift activity</h2><p>Automatic entries are corrected from their sale, refund, advance or expense. Cash entered here can be corrected until the shift closes.</p></div>
+        <div class="head-figures">
+          <span class="in">In +{{ shiftCashIn | number:'1.2-2' }}</span>
+          <span class="out">Out −{{ shiftCashOut | number:'1.2-2' }}</span>
+          <span>{{ shift.movements.length }} {{ shift.movements.length === 1 ? 'entry' : 'entries' }}</span>
+        </div>
+      </div>
+      <div class="table activity-table" *ngIf="shift.movements.length">
+        <div class="row head"><span>Time</span><span>Type</span><span>Details</span><span class="num">Amount</span><span></span></div>
+        <ng-container *ngFor="let movement of shift.movements">
+          <div class="row" *ngIf="removingMovementId !== movement.id && editingMovementId !== movement.id" [class.is-out]="movement.direction === 'out'">
+            <span class="time">{{ movement.created_at | date:'HH:mm' }}</span>
+            <span><em class="type" [class.in]="movement.direction === 'in'" [class.out]="movement.direction === 'out'">{{ movementTypeLabel(movement.movement_type) }}</em></span>
+            <span class="details"><strong>{{ movement.reason || 'System transaction' }}</strong><small *ngIf="!movement.editable && movement.reference_type">Linked to {{ referenceLabel(movement.reference_type) }}</small></span>
+            <span class="num amount" [class.in]="movement.direction === 'in'" [class.out]="movement.direction === 'out'">{{ movement.direction === 'out' ? '−' : '+' }}{{ movement.amount | number:'1.2-2' }}</span>
+            <span class="row-actions">
+              <ng-container *ngIf="movement.editable && canCorrectMovements">
+                <button type="button" class="btn tiny" (click)="beginMovementEdit(movement)">Edit</button>
+                <button type="button" class="btn tiny danger" (click)="beginMovementRemove(movement)">Remove</button>
+              </ng-container>
+            </span>
+          </div>
+          <div class="row editing" *ngIf="editingMovementId === movement.id">
+            <span class="time">{{ movement.created_at | date:'HH:mm' }}</span>
+            <select [(ngModel)]="editDirection" aria-label="Direction"><option value="in">Cash in</option><option value="out">Cash out</option></select>
+            <input [(ngModel)]="editReason" placeholder="Correction reason" aria-label="Correction reason" (keyup.enter)="saveMovementEdit()" (keyup.escape)="cancelMovementEdit()" />
+            <input class="num" type="number" min="0.01" [(ngModel)]="editAmount" aria-label="Corrected amount" (keyup.enter)="saveMovementEdit()" />
+            <span class="row-actions"><button type="button" class="btn tiny primary" (click)="saveMovementEdit()">Save</button><button type="button" class="btn tiny" (click)="cancelMovementEdit()">Cancel</button></span>
+          </div>
+          <div class="row removing" *ngIf="removingMovementId === movement.id">
+            <span class="time">{{ movement.created_at | date:'HH:mm' }}</span>
+            <span><em class="type out">Remove?</em></span>
+            <input [(ngModel)]="removeReason" placeholder="Why is it being removed?" aria-label="Removal reason" (keyup.enter)="confirmMovementRemove()" (keyup.escape)="cancelMovementRemove()" />
+            <span class="num amount" [class.out]="movement.direction === 'out'">{{ movement.direction === 'out' ? '−' : '+' }}{{ movement.amount | number:'1.2-2' }}</span>
+            <span class="row-actions"><button type="button" class="btn tiny danger" (click)="confirmMovementRemove()">Remove</button><button type="button" class="btn tiny" (click)="cancelMovementRemove()">Cancel</button></span>
+          </div>
+        </ng-container>
+      </div>
+      <p class="empty" *ngIf="!shift.movements.length">No cash has moved in this shift yet.</p>
+    </section>
+
+    <!-- ── Earlier days ───────────────────────────────────────── -->
+    <section class="card table-card">
+      <div class="card-head"><div><h2>Cash movement history</h2><p>Review previous business days and trace removed entries. Closed history is never changed.</p></div></div>
+      <div class="filters" (keyup.enter)="loadMovementHistory()">
+        <label class="field"><span>From</span><input type="date" [(ngModel)]="historyFromDate" /></label>
+        <label class="field"><span>Until</span><input type="date" [(ngModel)]="historyToDate" /></label>
+        <label class="field"><span>Direction</span><select [(ngModel)]="historyDirection"><option value="">All</option><option value="in">Cash in</option><option value="out">Cash out</option></select></label>
+        <label class="field grow"><span>Find</span><input [(ngModel)]="historyTerm" placeholder="Reason, user or reference" /></label>
+        <label class="check"><input type="checkbox" [(ngModel)]="historyIncludeVoided" /> Include removed</label>
+        <button type="button" class="btn primary" (click)="loadMovementHistory()">Apply</button>
+      </div>
+      <div class="table history-table" *ngIf="movementHistory.length">
+        <div class="row head"><span>Day / shift</span><span>Type</span><span>Details</span><span>By</span><span class="num">Amount</span></div>
+        <div class="row" *ngFor="let movement of movementHistory" [class.voided]="movement.status === 'void'">
+          <span class="stack"><strong>{{ businessDateText(movement.businessDate) }}</strong><small>Shift {{ movement.shiftNo }} · {{ movement.machineCode }} · {{ movement.createdAt | date:'HH:mm' }}</small></span>
+          <span><em class="type" [class.in]="movement.direction === 'in'" [class.out]="movement.direction === 'out'">{{ movementTypeLabel(movement.movementType) }}</em></span>
+          <span class="details"><strong>{{ movement.reason || 'System transaction' }}</strong><small class="void-note" *ngIf="movement.status === 'void'">Removed{{ movement.voidedByName ? ' by ' + movement.voidedByName : '' }}: {{ movement.voidReason }}</small></span>
+          <span class="stack"><strong>{{ movement.createdByName }}</strong></span>
+          <span class="num amount" [class.in]="movement.direction === 'in'" [class.out]="movement.direction === 'out'">{{ movement.direction === 'out' ? '−' : '+' }}{{ movement.amount | number:'1.2-2' }}</span>
+        </div>
+      </div>
+      <p class="empty" *ngIf="movementHistory.length === 0">No cash movements match these filters.</p>
+    </section>
+
+    <section class="card table-card">
+      <div class="card-head"><div><h2>Report history</h2><p>Every X and Z report printed for this shift.</p></div></div>
+      <div class="table report-table" *ngIf="reportHistory.length > 0">
+        <div class="row head"><span>Report</span><span>Printed</span><span>Printed by</span><span class="num">Expected at print</span></div>
+        <div class="row" *ngFor="let report of reportHistory">
+          <span><em class="type">{{ report.reportType }} #{{ report.reportNo }}</em></span>
+          <span>{{ report.printedAt | date:'medium' }}</span>
+          <span>{{ report.printedByName || 'System' }}</span>
+          <span class="num amount">{{ snapshotAmount(report, 'expectedTotal') | number:'1.2-2' }}</span>
+        </div>
+      </div>
+      <p class="empty" *ngIf="reportHistory.length === 0">No report has been printed for this shift yet.</p>
     </section>
   </ng-container>
 </section>

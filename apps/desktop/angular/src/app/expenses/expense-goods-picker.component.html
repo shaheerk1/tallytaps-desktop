@@ -1,0 +1,22 @@
+<div class="goods-picker">
+  <div class="picker-search">
+    <input type="search" data-flow-stay [(ngModel)]="term" (keyup.enter)="load()" placeholder="Find a GRN, supplier, lot or item" />
+    <button type="button" (click)="load()" [disabled]="loading">{{ loading ? 'Finding…' : 'Find' }}</button>
+  </div>
+  <label>
+    <span>GRN it belongs to</span>
+    <select [ngModel]="goodsReceiptId" (ngModelChange)="chooseGrn($event)">
+      <option [ngValue]="null">Choose the GRN</option>
+      <option *ngFor="let grn of targets" [ngValue]="grn.id">{{ grn.grnNumber }} · {{ grn.supplierCode || grn.supplierName }} · {{ grn.date }}</option>
+    </select>
+    <small *ngIf="!term && !loading">Showing GRNs from the last 30 days. Search to find an older one.</small>
+    <small class="picker-error" *ngIf="error">{{ error }}</small>
+  </label>
+  <label *ngIf="selected">
+    <span>Lot</span>
+    <select [ngModel]="inventoryLotId" (ngModelChange)="chooseLot($event)">
+      <option [ngValue]="null">Whole GRN ({{ selected.lots.length }} {{ selected.lots.length === 1 ? 'lot' : 'lots' }}, shared by weight)</option>
+      <option *ngFor="let lot of selected.lots" [ngValue]="lot.id">{{ lot.lotTag || lot.lotCode }} · {{ lot.productName }}</option>
+    </select>
+  </label>
+</div>

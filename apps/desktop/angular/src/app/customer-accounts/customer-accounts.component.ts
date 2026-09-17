@@ -1,6 +1,7 @@
 import { Component, HostListener, OnInit } from '@angular/core';
 import { SessionService } from '../services/session.service';
 import { PrintingService } from '../services/printing.service';
+import { PageLinksService } from '../services/page-links.service';
 import type { CustomerAdvanceSummary, FundAccount, PaymentMode } from '../../../../../../packages/shared/ipc/pos-api';
 
 type Customer = {
@@ -21,7 +22,23 @@ export class CustomerAccountsComponent implements OnInit {
   advanceFunds: FundAccount[] = [];
   private receiptSettings: any = null;
 
-  constructor(public session: SessionService, private printing: PrintingService) {}
+  constructor(public session: SessionService, private printing: PrintingService, private pageLinks: PageLinksService) {}
+
+  /** Opens the invoice archive at this bill, with its filters set to find it. */
+  openInvoice(invoice: { id: number; invoice_number?: string; loc_code?: string; mac_code?: string; txn_date?: string | Date }): void {
+    void this.pageLinks.openInvoiceArchive({
+      invoiceId: Number(invoice.id), invoiceNumber: invoice.invoice_number,
+      locCode: invoice.loc_code, macCode: invoice.mac_code, txnDate: invoice.txn_date
+    });
+  }
+
+  /** An activity line that belongs to a bill opens that bill; returns and adjustments stay put. */
+  openEntryInvoice(entry: { invoice_id?: number | null; invoice_number?: string | null }): void {
+    if (!entry.invoice_id) return;
+    void this.pageLinks.openInvoiceArchive({
+      invoiceId: Number(entry.invoice_id), invoiceNumber: entry.invoice_number || undefined, showReturned: true
+    });
+  }
   private actor() { return this.session.getActor() || undefined; }
   get canManage(): boolean { return this.session.hasPermission('customers.manage'); }
   get canReceiveAdvance(): boolean { return this.session.hasPermission('customer-advances.create'); }
