@@ -1,49 +1,124 @@
-<section class="info-panel">
-  <div class="panel-header">
-    <h1>Welcome, {{ userName }}</h1>
-    <p class="panel-subtitle">Your current market POS session</p>
-  </div>
+<section class="dash">
+  <header class="dash-head">
+    <div>
+      <h1>Welcome, {{ userName }}</h1>
+      <p>{{ wsSession ? wsSession.workstationName + ' · ' + wsSession.locationCode : 'No workstation session' }}<ng-container *ngIf="wsSession"> · business date {{ wsSession.billingDate }}</ng-container></p>
+    </div>
 
-  <div class="info-grid">
-    <article class="info-card">
-      <h2>User Profile</h2>
-      <dl class="info-list">
-        <div class="info-row"><dt>Display Name</dt><dd>{{ userName }}</dd></div>
-        <div class="info-row"><dt>Username</dt><dd>{{ userUsername }}</dd></div>
-        <div class="info-row" *ngIf="userEmail"><dt>Email</dt><dd>{{ userEmail }}</dd></div>
-        <div class="info-row" *ngIf="userPhone"><dt>Phone</dt><dd>{{ userPhone }}</dd></div>
-        <div class="info-row"><dt>Role(s)</dt><dd><span class="badge" *ngFor="let role of userRoles">{{ role }}</span></dd></div>
-        <div class="info-row"><dt>Last Login</dt><dd>{{ lastLoginAt }}</dd></div>
-      </dl>
-    </article>
+    <!-- ── Who is signed in, kept small ────────────────────── -->
+    <div class="profile-chip" [title]="(userEmail ? userEmail + ' · ' : '') + (userPhone ? userPhone + ' · ' : '') + 'Last sign-in ' + lastLoginAt">
+      <div class="avatar">{{ initials }}</div>
+      <div class="profile-text">
+        <strong>{{ userName }}</strong>
+        <span>&#64;{{ userUsername }}<ng-container *ngFor="let role of userRoles"> · <em>{{ role }}</em></ng-container></span>
+        <small>Last sign-in {{ lastLoginAt }}</small>
+      </div>
+    </div>
+  </header>
 
-    <article class="info-card" *ngIf="wsSession">
-      <h2>Workstation</h2>
-      <dl class="info-list">
-        <div class="info-row"><dt>Station</dt><dd>{{ wsSession.workstationName }}</dd></div>
-        <div class="info-row"><dt>Location</dt><dd>{{ wsSession.locationCode }}</dd></div>
-        <div class="info-row"><dt>Machine</dt><dd>{{ wsSession.machineCode }}</dd></div>
-        <div class="info-row">
-          <dt>Business Date</dt>
-          <dd class="highlight">
-            {{ wsSession.billingDate }}
-            <button class="date-change-btn" type="button" routerLink="/business-day" *ngIf="userPermissions.includes('business-day.view')">Manage</button>
-          </dd>
+  <div class="main-grid">
+    <!-- ── Stock in lots ─────────────────────────────────────── -->
+    <section class="card lots-card" *ngIf="can('receiving.view') && wsSession; else noLots">
+      <div class="card-head">
+        <div>
+          <h2>Stock in lots</h2>
+          <p>What is on hand, lot by lot. The code on the left is the one to type when billing that lot.</p>
         </div>
-        <div class="info-row"><dt>Opening Balance</dt><dd>{{ wsSession.openingBalance | number:'1.2-2' }}</dd></div>
-        <div class="info-row"><dt>Next Receipt #</dt><dd class="highlight">{{ wsSession.currentReceiptNo }}</dd></div>
-        <div class="info-row"><dt>Status</dt><dd><span class="status-badge" [class.open]="wsSession.status === 'open'">{{ wsSession.status | uppercase }}</span></dd></div>
-      </dl>
-    </article>
+        <div class="lots-tools">
+          <input type="search" [(ngModel)]="lotTerm" placeholder="Find an item, code or supplier" aria-label="Find a lot" />
+          <button type="button" class="icon-btn" (click)="loadLots()" [disabled]="lotsLoading" title="Refresh">↻</button>
+          <button type="button" class="icon-btn" (click)="openLotCodes()" title="Change lot codes in Supplier Receiving">⚙</button>
+        </div>
+      </div>
 
-    <article class="info-card warning-card" *ngIf="!wsSession">
-      <h2>No Workstation</h2>
-      <p>No workstation session is active. Billing requires a configured workstation.</p>
-    </article>
+      <p class="lots-summary" *ngIf="itemGroups.length">{{ itemGroups.length }} {{ itemGroups.length === 1 ? 'item' : 'items' }} in {{ lotCount }} {{ lotCount === 1 ? 'lot' : 'lots' }}</p>
+      <p class="notice error" *ngIf="lotsError">{{ lotsError }}</p>
+      <p class="empty" *ngIf="!lotsLoading && !lotsError && !itemGroups.length">No lot is holding stock at this location.</p>
+      <p class="empty" *ngIf="itemGroups.length && !visibleGroups.length">Nothing matches “{{ lotTerm }}”.</p>
 
-    <article class="info-card">
-      <h2>Permissions</h2>
-      <div class="permissions-list"><span class="perm-tag" *ngFor="let permission of userPermissions">{{ permission }}</span></div>
-    </article>
+      <div class="item-group" *ngFor="let group of visibleGroups; trackBy: trackGroup">
+        <div class="item-head">
+          <div class="item-name"><strong>{{ group.name }}</strong><span>{{ group.sku }}</span></div>
+          <div class="item-total">
+            <strong>{{ quantity(group.remainingHandling) }} <small>{{ group.handlingUom }}</small></strong>
+            <span *ngIf="group.remainingBase != null">{{ quantity(group.remainingBase) }} {{ group.baseUom }}</span>
+            <em>{{ group.lots.length }} {{ group.lots.length === 1 ? 'lot' : 'lots' }}</em>
+          </div>
+        </div>
+        <div class="lot-row" *ngFor="let lot of group.lots; trackBy: trackLot">
+          <span class="lot-tag" title="Type this code when billing">{{ lot.tag || '—' }}</span>
+          <div class="lot-source">
+            <strong>{{ lot.supplierName }}</strong>
+            <small>{{ ageLabel(lot.receivedOn) }} · {{ lot.receivedOn }} <em class="own" [class.consignment]="lot.ownership === 'consignment'">{{ lot.ownership === 'consignment' ? 'Consignment' : 'Owned' }}</em></small>
+          </div>
+          <div class="lot-qty">
+            <strong>{{ quantity(lot.remainingHandling) }} <small>{{ lot.handlingUom }}</small></strong>
+            <span *ngIf="lot.remainingBase != null">{{ quantity(lot.remainingBase) }} {{ lot.baseUom }}</span>
+          </div>
+          <small class="lot-code" [title]="lot.lotCode">{{ lot.lotCode }}</small>
+        </div>
+      </div>
+
+      <div class="quick-actions" *ngIf="can('receiving.manage') || can('supplier-settlements.manage')">
+        <button type="button" class="btn action" *ngIf="can('receiving.manage')" (click)="newGrn()">
+          <span class="action-icon">＋</span><span><b>Create a GRN</b><small>Receive goods</small></span>
+        </button>
+        <button type="button" class="btn action" *ngIf="can('supplier-settlements.manage')" (click)="newStatement()">
+          <span class="action-icon">≡</span><span><b>Create a statement</b><small>Supplier sales or purchase</small></span>
+        </button>
+        <button type="button" class="btn action" *ngIf="can('receiving.manage')" (click)="sendGoodsOut()">
+          <span class="action-icon alt">⇢</span><span><b>Send goods out</b><small>A load leaving on a lorry</small></span>
+        </button>
+        <button type="button" class="btn action" *ngIf="can('receiving.manage')" (click)="adjustAndCount()">
+          <span class="action-icon alt">±</span><span><b>Adjust &amp; count</b><small>Stock adjustment or lot count</small></span>
+        </button>
+      </div>
+    </section>
+    <ng-template #noLots><div></div></ng-template>
+
+    <aside class="side">
+      <!-- ── This workstation, read live ───────────────────────── -->
+      <article class="card station-card" *ngIf="wsSession">
+        <div class="card-head">
+          <div><h2>{{ wsSession.workstationName }}</h2><p>{{ wsSession.locationCode }} · machine {{ wsSession.machineCode }}</p></div>
+          <span class="pill" [class.good]="wsSession.status === 'open'">{{ wsSession.status === 'open' ? 'Open' : 'Closed' }}</span>
+        </div>
+        <dl class="station-list">
+          <div>
+            <dt>Business date</dt>
+            <dd><strong>{{ wsSession.billingDate }}</strong><small>Day {{ dayStatusLabel(dayState?.day?.status) | lowercase }} <a *ngIf="can('business-day.view')" routerLink="/business-day">Manage</a></small></dd>
+          </div>
+          <div>
+            <dt>Next receipt</dt>
+            <dd><strong>#{{ wsSession.currentReceiptNo }}</strong></dd>
+          </div>
+          <div>
+            <dt>Cash drawer</dt>
+            <dd><strong>{{ shift ? (shift.expectedTotal | number:'1.2-2') : '—' }}</strong><small>{{ shift ? (shift.status === 'open' ? 'Expected in drawer' : 'Counted, awaiting close') : 'No shift open' }} <a *ngIf="can('cash.shift.view')" routerLink="/cash-management">Open</a></small></dd>
+          </div>
+        </dl>
+        <div class="today" *ngIf="dayState?.summary as summary">
+          <div><span>Sales today</span><strong>{{ summary.salesTotal | number:'1.2-2' }}</strong></div>
+          <div><span>Bills</span><strong>{{ summary.invoiceCount }}</strong></div>
+          <div><span>Refunds</span><strong>{{ summary.refundCount }}</strong></div>
+        </div>
+      </article>
+
+      <article class="card warning-card" *ngIf="!wsSession">
+        <h2>No workstation</h2>
+        <p>No workstation session is active. Billing requires a configured workstation.</p>
+      </article>
+
+      <!-- ── Permissions, folded away ──────────────────────────── -->
+      <section class="card permissions-card">
+        <button type="button" class="fold" (click)="permissionsOpen = !permissionsOpen" [attr.aria-expanded]="permissionsOpen">
+          <span><b>Permissions</b><small>{{ userPermissions.length }} granted to your roles</small></span>
+          <span class="chevron" [class.open]="permissionsOpen">⌄</span>
+        </button>
+        <div class="permissions-list" *ngIf="permissionsOpen">
+          <span class="perm-tag" *ngFor="let permission of userPermissions">{{ permission }}</span>
+        </div>
+      </section>
+    </aside>
   </div>
 </section>

@@ -1851,6 +1851,8 @@ export interface PosApi {
     getIssuedCheque: (chequeId: number, actor?: ActorContext | null) => Promise<IpcResult<unknown>>;
     createIssuedCheque: (cheque: Record<string, unknown>, actor?: ActorContext | null) => Promise<IpcResult<unknown>>;
     updateIssuedChequeStatus: (payload: Record<string, unknown>, actor?: ActorContext | null) => Promise<IpcResult<unknown>>;
+    /** Lots still holding stock at a location, with item, supplier and remaining quantities. */
+    listInventoryLots: (productId: number | null, locCode: string | null, actor?: ActorContext | null) => Promise<IpcResult<Array<Record<string, any>>>>;
   };
   customerAdvances: {
     balance: (customerAccountId: number, locCode: string, actor?: ActorContext | null) => Promise<IpcResult<number>>;

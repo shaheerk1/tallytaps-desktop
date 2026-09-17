@@ -1,9 +1,13 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnDestroy, OnInit, ViewChild } from '@angular/core';
+import { ActivatedRoute } from '@angular/router';
+import { Subscription } from 'rxjs';
 import { SessionService } from '../services/session.service';
 import { PrintingService } from '../services/printing.service';
+import { PageLinksService, ReceivingLink, readReceivingLink } from '../services/page-links.service';
+import { PattiyalWorkspaceComponent } from './pattiyal-workspace.component';
 
 @Component({ selector: 'pos-supply-receiving', templateUrl: './supply-receiving.component.html', styleUrls: ['./supply-receiving.component.css'] })
-export class SupplyReceivingComponent implements OnInit {
+export class SupplyReceivingComponent implements OnInit, OnDestroy {
   suppliers: any[] = []; products: any[] = []; receipts: any[] = []; agreements: any[] = []; lots: any[] = []; inventorySummary: any[] = []; allocationExceptions: any[] = []; recentLotAllocations: any[] = []; settlementFunds: any[] = []; info = ''; error = ''; saving = false;
   activePanel: 'receive' | 'pattiyal' | 'inventory' = 'receive';
   /** Which part of Stock control is open. Unmatched sales are shown on their tab, so none go unnoticed. */
@@ -24,7 +28,9 @@ export class SupplyReceivingComponent implements OnInit {
   saleReallocation: any = { allocationId: null, productId: null, saleDate: '', fromLotId: null, toInventoryLotId: null, handlingQuantity: null, baseQuantity: null, reason: '' };
   grnPage = 1; grnPageSize = 10; grnTotal = 0; grnFilters: any = { term: '', supplierId: null, status: '', fromDate: '', toDate: '' };
   grnView: 'posted' | 'drafts' = 'posted'; grnEditorOpen = false; grnReviewMode = false; grnDetail: any = null; correctionSource: any = null; correctionReason = '';
-  constructor(private session: SessionService, private printing: PrintingService) {}
+  @ViewChild(PattiyalWorkspaceComponent) statementWorkspace?: PattiyalWorkspaceComponent;
+  private linkSubscription?: Subscription;
+  constructor(private session: SessionService, private printing: PrintingService, private route: ActivatedRoute, private pageLinks: PageLinksService) {}
   private actor() { return this.session.getActor() || undefined; }
   private api(): any { return window.posApi?.catalog as any; }
   private origin(txnDate?: string): { locCode: string; macCode: string; txnDate: string } {
@@ -36,7 +42,29 @@ export class SupplyReceivingComponent implements OnInit {
     };
   }
   private dateInput(value: unknown): string { if (value instanceof Date) { const pad = (part: number) => String(part).padStart(2, '0'); return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`; } return String(value || '').slice(0, 10); }
-  async ngOnInit(): Promise<void> { await this.load(); }
+  async ngOnInit(): Promise<void> {
+    await this.load();
+    this.linkSubscription = this.pageLinks.onLink(this.route, readReceivingLink, (link) => this.applyLink(link));
+  }
+
+  ngOnDestroy(): void { this.linkSubscription?.unsubscribe(); }
+
+  /** Opens the area another screen asked for, once. */
+  private async applyLink(link: ReceivingLink): Promise<void> {
+    if (link.open === 'new-grn') {
+      this.selectPanel('receive');
+      this.newGoodsReceipt();
+    } else if (link.open === 'lot-codes' || link.open === 'send-out' || link.open === 'adjust-count') {
+      this.selectPanel('inventory');
+      this.stockTab = link.open === 'lot-codes' ? 'lotcodes' : link.open === 'send-out' ? 'sendout' : 'adjust';
+    } else if (link.open === 'new-statement') {
+      this.selectPanel('pattiyal');
+      // The statement workspace appears with the tab; start the draft once it is there.
+      await new Promise((resolve) => setTimeout(resolve));
+      await this.statementWorkspace?.newDraft();
+    }
+    await this.pageLinks.consume(this.route);
+  }
   selectPanel(panel: 'receive' | 'pattiyal' | 'inventory'): void { this.activePanel = panel; this.panelInfo = ''; this.panelError = ''; }
   private reportSuccess(message: string): void { this.info = message; this.error = ''; this.panelInfo = message; this.panelError = ''; }
   private reportError(message: string): void { this.error = message; this.info = ''; this.panelError = message; this.panelInfo = ''; }

@@ -37,12 +37,25 @@ export type BillingCopyLink = {
   copyFromInvoiceId: number;
 };
 
+/**
+ * Open Supplier Receiving at one of its areas: a new GRN, a new supplier
+ * statement, or the lot codes under Stock control.
+ */
+export type ReceivingLink = {
+  open: 'new-grn' | 'new-statement' | 'lot-codes' | 'send-out' | 'adjust-count';
+};
+
+const RECEIVING_TARGETS: ReceivingLink['open'][] = ['new-grn', 'new-statement', 'lot-codes', 'send-out', 'adjust-count'];
+
 const PARAMS = {
   invoiceArchive: {
     invoiceId: 'invoice', invoiceNumber: 'number', locCode: 'loc', macCode: 'mac', txnDate: 'date', showReturned: 'returned'
   },
   billingCopy: {
     copyFromInvoiceId: 'copyFrom'
+  },
+  receiving: {
+    open: 'open'
   }
 } as const;
 
@@ -71,6 +84,10 @@ export class PageLinksService {
     return this.router.navigate(['/billing'], {
       queryParams: { [PARAMS.billingCopy.copyFromInvoiceId]: link.copyFromInvoiceId }
     });
+  }
+
+  openReceiving(link: ReceivingLink): Promise<boolean> {
+    return this.router.navigate(['/receiving'], { queryParams: { [PARAMS.receiving.open]: link.open } });
   }
 
   /**
@@ -109,6 +126,11 @@ export function readInvoiceArchiveLink(params: ParamMap): InvoiceArchiveLink | n
 export function readBillingCopyLink(params: ParamMap): BillingCopyLink | null {
   const copyFromInvoiceId = positiveInteger(params.get(PARAMS.billingCopy.copyFromInvoiceId));
   return copyFromInvoiceId ? { copyFromInvoiceId } : null;
+}
+
+export function readReceivingLink(params: ParamMap): ReceivingLink | null {
+  const open = params.get(PARAMS.receiving.open) as ReceivingLink['open'] | null;
+  return open && RECEIVING_TARGETS.includes(open) ? { open } : null;
 }
 
 function positiveInteger(value: string | null): number | null {
