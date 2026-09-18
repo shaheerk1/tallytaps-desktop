@@ -40,3 +40,11 @@ button { font:inherit; font-weight:700; cursor:pointer; } button:disabled { curs
 .lot-code-record { font-family: ui-monospace, Consolas, monospace; font-size: 0.7rem; color: #5c6775; overflow: hidden; text-overflow: ellipsis; }
 
 .stock-tabs { display:flex; gap:6px; margin:0 0 12px; padding:5px; border:1px solid var(--ui-border); border-radius:var(--ui-radius); background:var(--ui-surface-muted); overflow-x:auto; }.stock-tabs button { display:inline-flex; align-items:center; gap:6px; min-height:34px; padding:6px 12px; border:1px solid transparent; border-radius:var(--ui-radius-sm); background:transparent; color:var(--ui-ink-muted); white-space:nowrap; font:inherit; font-size:12px; font-weight:750; cursor:pointer; }.stock-tabs button:hover { color:var(--ui-ink); }.stock-tabs button.active { border-color:var(--ui-border-strong); background:var(--ui-surface, #fff); color:var(--ui-primary); box-shadow:0 1px 2px rgba(0,0,0,.06); }.stock-tabs em { padding:1px 6px; border-radius:999px; background:var(--ui-border); color:var(--ui-ink-muted); font-size:10px; font-style:normal; font-weight:800; }.stock-tabs em.attention { background:var(--ui-warning-soft); color:#76500a; }
+
+.removal-panel { display:grid; grid-template-columns:1fr minmax(220px, 1fr) auto; align-items:center; gap:10px; margin-top:12px; padding:12px 14px; border:1px solid color-mix(in srgb, var(--ui-danger, #dc2626) 35%, transparent); border-radius:var(--ui-radius-sm, 8px); background:color-mix(in srgb, var(--ui-danger, #dc2626) 6%, var(--ui-surface)); }
+.removal-panel strong, .removal-panel small { display:block; }
+.removal-panel small { margin-top:3px; color:var(--ui-ink-muted); font-size:11px; line-height:1.45; }
+.removal-panel input { min-height:34px; }
+.removal-note { margin:8px 0 0; color:var(--ui-ink-muted); font-size:11px; }
+@media (max-width: 760px) { .removal-panel { grid-template-columns:1fr; } }
+.button-danger { min-height:34px; padding:6px 10px; border:1px solid #b7534a; border-radius:var(--ui-radius-sm); background:#a9362d; color:#fff; font-size:12px; }

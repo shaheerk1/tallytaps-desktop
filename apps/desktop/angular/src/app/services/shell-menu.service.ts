@@ -47,7 +47,7 @@ export class ShellMenuService {
     }
     if (this.session.hasPermission('products.manage')) core.push({ id: 'items', label: 'Items', route: '/items', icon: icon('items.png'), order: 2.5, core: true });
     if (this.session.hasAnyPermission(['receiving.view', 'receiving.manage', 'supplier-settlements.view', 'supplier-settlements.manage'])) core.push({ id: 'receiving', label: 'Supplier Receiving', route: '/receiving', icon: icon('supplier_receiving.png'), order: 2.6, core: true });
-    if (this.session.hasAnyPermission(['supplier-settlements.view', 'supplier-settlements.manage'])) core.push({ id: 'supplier-accounts', label: 'Supplier Accounts', route: '/supplier-accounts', icon: icon('customer_accounts.png'), order: 2.62, core: true });
+    if (this.session.hasAnyPermission(['supplier-settlements.view', 'supplier-settlements.manage'])) core.push({ id: 'supplier-accounts', label: 'Supplier Accounts', route: '/supplier-accounts', icon: icon('supplier.png'), order: 2.62, core: true });
     if (this.session.hasAnyPermission(['expenses.view', 'funds.view', 'lot-costing.view', 'stakeholders.view', 'accounting.journal.view'])) core.push({ id: 'expenses', label: 'Money', route: '/expenses', icon: icon('expenses.png'), order: 2.65, core: true });
     if (this.session.hasPermission('reports.view')) core.push({ id: 'reports', label: 'Reports', route: '/reports', icon: icon('reports.png'), order: 2.7, core: true });
     if (this.session.hasPermission('field-inbox.view')) core.push({ id: 'field-inbox', label: 'Field Transaction Inbox', route: '/field-inbox', icon: icon('field_transaction_inbox.png'), order: 2.75, core: true });

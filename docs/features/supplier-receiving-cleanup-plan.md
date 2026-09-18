@@ -59,3 +59,23 @@ agreement where one exists.
 `npm run verify:grn-supplier` — through the real IPC channel: new typed supplier,
 reuse by code or name, ownership on the GRN with no commission, corrections keep
 ownership, old inactive agreements do not block, retired channels are gone.
+
+## Follow-up (2026-09-18): removing unused GRNs, typed statement suppliers
+
+- **Remove GRN** (migration 121, status `removed`): on a finalized GRN's view.
+  Allowed only when nothing has used it: no stock movement other than the
+  receipt (sale, send-out, count, adjustment, issue), no live lot expense or
+  expense allocation, no statement that is not void, no settlement, no active
+  correction. The detail tells the screen why not (`removalBlocker`).
+  Removing posts a `receipt_removed` stock movement per lot (document type
+  `grn_removal`, document no = GRN id), empties the lots (freeing lot codes),
+  reverses owned-purchase amounts due with `return_credit` entries, and keeps
+  the GRN with who, when and why. Removed GRNs leave every list and picker.
+  Drafts are still cancelled, not removed.
+- **Statement supplier** is type-or-pick, as on the GRN. A new name is added
+  (`supply.pattiyals.suppliers.resolve`) when the statement is saved, when
+  Enter is pressed, or before correcting a sale line's supplier.
+- **Register totals**: the statement list returns totals over every statement
+  the filters match (subtotal, commission, credits/deductions, BL / Net, and
+  finalized-only net); voided statements are counted but their money is left out.
+- Verify: `npm run verify:grn-removal`.

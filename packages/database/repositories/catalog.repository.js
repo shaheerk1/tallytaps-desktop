@@ -798,6 +798,116 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
     });
   }
 
+  /**
+   * Why a finalized GRN cannot be removed, or null when nothing has used it:
+   * its stock must be untouched (not sold, sent out, counted, adjusted or
+   * costed), and no live statement, lot expense, settlement or correction may
+   * point at it.
+   */
+  async function goodsReceiptRemovalBlocker(connection, receipt) {
+    if (receipt.status !== 'finalized') return 'Only a finalized GRN can be removed. A draft is cancelled instead.';
+    if (receipt.document_type !== 'receipt') return 'A correction cannot be removed on its own.';
+    const one = async (sql) => { const [rows] = await connection.execute(sql, [receipt.id]); return rows.length > 0; };
+    const lots = `SELECT l.id FROM inventory_lots l JOIN goods_receipt_lines grl ON grl.id = l.goods_receipt_line_id WHERE grl.goods_receipt_id = ?`;
+    if (await one(`SELECT g.id FROM goods_receipts g WHERE g.corrects_goods_receipt_id = ? AND g.status IN ('draft','finalized') LIMIT 1`)) {
+      return 'This GRN has a correction. Cancel or remove the correction first.';
+    }
+    if (await one(`SELECT m.id FROM stock_movements m WHERE m.inventory_lot_id IN (${lots}) AND m.movement_type <> 'receipt' LIMIT 1`)
+      || await one(`SELECT a.id FROM lot_sale_allocations a WHERE a.inventory_lot_id IN (${lots}) LIMIT 1`)
+      || await one(`SELECT c.id FROM inventory_stock_count_lines c WHERE c.inventory_lot_id IN (${lots}) LIMIT 1`)
+      || await one(`SELECT i.id FROM inventory_issue_lines i WHERE i.inventory_lot_id IN (${lots}) LIMIT 1`)) {
+      return 'Stock from this GRN has already been sold, sent out, counted or adjusted, so it cannot be removed. Use a correction or a stock adjustment instead.';
+    }
+    if (await one(`SELECT a.id FROM expense_allocations a WHERE a.inventory_lot_id IN (${lots}) LIMIT 1`)
+      || await one(`SELECT e.id FROM expense_entries e WHERE e.goods_receipt_id = ? AND e.status <> 'void' LIMIT 1`)) {
+      return 'A lot expense is recorded against this GRN. Reverse that expense first.';
+    }
+    if (await one(`SELECT l.statement_id FROM supplier_sale_statement_grns l JOIN supplier_sale_statements s ON s.id = l.statement_id WHERE l.goods_receipt_id = ? AND s.status <> 'void' LIMIT 1`)
+      || await one(`SELECT p.statement_id FROM supplier_sale_statement_purchase_lines p JOIN supplier_sale_statements s ON s.id = p.statement_id WHERE p.goods_receipt_id = ? AND s.status <> 'void' LIMIT 1`)) {
+      return 'A supplier statement uses this GRN. Remove it from that statement (or void the statement) first.';
+    }
+    if (await one(`SELECT e.id FROM supplier_payable_entries e JOIN supplier_settlement_lines sl ON sl.payable_entry_id = e.id WHERE e.goods_receipt_id = ? LIMIT 1`)) {
+      return 'This GRN is part of a supplier settlement, so it cannot be removed.';
+    }
+    return null;
+  }
+
+  /**
+   * Removes a GRN nothing has used: its lots are emptied with a reversing stock
+   * movement, an owned purchase's amount due is reversed, and the GRN is kept
+   * as 'removed' with who, when and why. It disappears from GRN lists and pickers.
+   */
+  async function removeGoodsReceipt({ goodsReceiptId, reason, locCode, macCode, businessDate, txnDate, userId = null }) {
+    const removalDate = businessDate || txnDate;
+    const why = String(reason || '').trim();
+    if (!goodsReceiptId) throw new Error('Choose the GRN to remove.');
+    if (!why) throw new Error('Write why this GRN is being removed.');
+    if (!String(locCode || '').trim() || !String(macCode || '').trim() || !removalDate) throw new Error('An active workstation session is required.');
+    return database.withConnection(async (connection) => {
+      await connection.beginTransaction();
+      try {
+        const [rows] = await connection.execute('SELECT * FROM goods_receipts WHERE id = ? FOR UPDATE', [goodsReceiptId]);
+        const receipt = rows[0];
+        if (!receipt || receipt.loc_code !== locCode) throw new Error('This GRN does not belong to this location.');
+        const blocker = await goodsReceiptRemovalBlocker(connection, receipt);
+        if (blocker) throw new Error(blocker);
+        await businessDayRepository.assertOpenWithConnection(connection, { locationCode: locCode, businessDate: removalDate });
+        const [lots] = await connection.execute(
+          `SELECT l.* FROM inventory_lots l JOIN goods_receipt_lines grl ON grl.id = l.goods_receipt_line_id
+           WHERE grl.goods_receipt_id = ? ORDER BY l.line_no FOR UPDATE`, [receipt.id]
+        );
+        for (const lot of lots) {
+          const handlingQty = Number(lot.received_handling_quantity ?? lot.received_quantity ?? 0);
+          const baseQty = lot.received_base_quantity == null && lot.received_kilos == null ? null : Number(lot.received_base_quantity ?? lot.received_kilos);
+          await inventoryLedgerRepository.postWithConnection(connection, {
+            productId: lot.product_id, inventoryLotId: lot.id, locCode, macCode, businessDate: removalDate,
+            documentType: 'grn_removal', documentNo: receipt.id, lineNo: lot.line_no, eventNo: 1,
+            movementType: 'receipt_removed', referenceType: 'goods_receipt', referenceId: receipt.id,
+            note: `GRN ${receipt.grn_number} removed: ${why}`.slice(0, 255), createdBy: userId,
+            handlingDelta: handlingQty === 0 ? null : -handlingQty,
+            baseDelta: baseQty == null || baseQty === 0 ? null : -baseQty,
+            handlingUom: lot.handling_uom_snapshot, baseUom: lot.base_uom_snapshot
+          });
+          await connection.execute(
+            `UPDATE inventory_lots SET remaining_quantity = 0, remaining_handling_quantity = 0,
+               remaining_kilos = CASE WHEN remaining_kilos IS NULL THEN NULL ELSE 0 END,
+               remaining_base_quantity = CASE WHEN remaining_base_quantity IS NULL THEN NULL ELSE 0 END
+             WHERE id = ?`, [lot.id]
+          );
+          await connection.execute(
+            `INSERT INTO inventory_measurements
+               (inventory_lot_id, loc_code, mac_code, txn_date, document_type, document_no, line_no, event_no,
+                measurement_type, package_qty, kilos, reason, recorded_by)
+             VALUES (?, ?, ?, ?, 'grn_removal', ?, ?, 1, 'correction', ?, ?, ?, ?)`,
+            [lot.id, locCode, macCode, removalDate, receipt.id, lot.line_no,
+              -Number(lot.received_quantity || 0), lot.received_kilos == null ? null : -Number(lot.received_kilos),
+              `GRN removed: ${why}`.slice(0, 255), userId || null]
+          );
+        }
+        const [debits] = await connection.execute("SELECT * FROM supplier_payable_entries WHERE goods_receipt_id = ? AND entry_type = 'purchase_debit'", [receipt.id]);
+        let lineNo = 0;
+        for (const debit of debits) {
+          lineNo += 1;
+          await connection.execute(
+            `INSERT INTO supplier_payable_entries
+               (supplier_id, loc_code, mac_code, goods_receipt_id, inventory_lot_id, entry_type, amount, business_date,
+                document_type, document_no, line_no, entry_no, reason, created_by, metadata)
+             VALUES (?, ?, ?, ?, ?, 'return_credit', ?, ?, 'grn_removal', ?, ?, 1, ?, ?, CAST(? AS JSON))`,
+            [debit.supplier_id, locCode, macCode, receipt.id, debit.inventory_lot_id, -Number(debit.amount), removalDate,
+              receipt.id, lineNo, `GRN ${receipt.grn_number} removed`, userId || null,
+              JSON.stringify({ removedGoodsReceiptId: Number(receipt.id), originalPayableEntryId: Number(debit.id), reason: why })]
+          );
+        }
+        await connection.execute(
+          "UPDATE goods_receipts SET status = 'removed', removed_at = NOW(), removed_by = ?, removal_reason = ? WHERE id = ?",
+          [userId || null, why.slice(0, 255), receipt.id]
+        );
+        await connection.commit();
+        return { id: Number(receipt.id), grnNumber: receipt.grn_number, removed: true, lots: lots.length };
+      } catch (error) { await connection.rollback(); throw error; }
+    });
+  }
+
   async function cancelGoodsReceiptDraft({ goodsReceiptId, userId = null }) {
     if (!goodsReceiptId) throw new Error('GRN draft is required.');
     return database.withConnection(async (connection) => {
@@ -869,7 +979,7 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
     if (loc) { where.push('g.loc_code = ?'); params.push(loc); }
     if (value) { where.push('(g.grn_number LIKE ? OR s.supplier_code LIKE ? OR s.name LIKE ? OR g.vehicle_no LIKE ?)'); params.push(`%${value}%`, `%${value}%`, `%${value}%`, `%${value}%`); }
     if (supplierId) { where.push('g.supplier_id = ?'); params.push(supplierId); }
-    if (status && ['draft', 'finalized', 'cancelled', 'corrected'].includes(status)) { where.push('g.status = ?'); params.push(status); }
+    if (status && ['draft', 'finalized', 'cancelled', 'corrected', 'removed'].includes(status)) { where.push('g.status = ?'); params.push(status); }
     else if (scope === 'drafts') where.push("g.document_type = 'receipt' AND g.status = 'draft'");
     else if (scope === 'posted') where.push("g.document_type = 'receipt' AND g.status IN ('finalized', 'corrected')");
     if (fromDate) { where.push('g.business_date >= ?'); params.push(fromDate); }
@@ -911,7 +1021,8 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
          WHERE g.corrects_goods_receipt_id = ? GROUP BY g.id ORDER BY g.id DESC`,
         [goodsReceiptId]
       );
-      return { receipt: receipts[0], lines, corrections };
+      const removalBlocker = receipts[0].status === 'finalized' ? await goodsReceiptRemovalBlocker(connection, receipts[0]) : null;
+      return { receipt: receipts[0], lines, corrections, removable: receipts[0].status === 'finalized' && !removalBlocker, removalBlocker };
     });
   }
 
@@ -1686,6 +1797,7 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
   }
 
   return {
+    removeGoodsReceipt,
     listProducts,
     getProduct,
     createProduct,

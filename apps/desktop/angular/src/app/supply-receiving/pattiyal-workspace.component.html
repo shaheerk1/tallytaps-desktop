@@ -40,6 +40,13 @@
         <button type="button" class="button-quiet" (click)="openStatement(row.id)">{{ row.status === 'draft' ? 'Edit' : 'View' }}</button>
       </div>
     </div>
+    <div class="register-summary" *ngIf="registerTotals && registerTotals.statements">
+      <div class="summary-label"><strong>{{ registerTotals.statements }} statement{{ registerTotals.statements === 1 ? '' : 's' }} match these filters</strong><small>Totals cover every matching statement, not just this page<ng-container *ngIf="registerTotals.voided">; {{ registerTotals.voided }} voided left out</ng-container>.</small></div>
+      <div><span>Subtotal</span><b class="number">{{ registerTotals.merchandiseSubtotal | number:'1.2-2' }}</b></div>
+      <div><span>Commission</span><b class="number">{{ registerTotals.commissionAmount | number:'1.2-2' }}</b></div>
+      <div><span>Credits / deductions</span><b class="number">{{ registerTotals.adjustmentTotal | number:'1.2-2' }}</b></div>
+      <div class="net"><span>BL / Net</span><b class="number">{{ registerTotals.netPayable | number:'1.2-2' }}</b><small *ngIf="registerTotals.finalizedNetPayable !== registerTotals.netPayable">Finalized only {{ registerTotals.finalizedNetPayable | number:'1.2-2' }}</small></div>
+    </div>
     <div class="pagination" *ngIf="registerTotal > registerPageSize"><span>{{ registerTotal }} documents</span><button type="button" class="button-quiet" [disabled]="registerPage === 1" (click)="changeRegisterPage(registerPage - 1)">Previous</button><button type="button" class="page-button" *ngFor="let page of registerPageNumbers" [class.active]="page === registerPage" (click)="changeRegisterPage(page)">{{ page }}</button><button type="button" class="button-quiet" [disabled]="registerPage === registerPageCount" (click)="changeRegisterPage(registerPage + 1)">Next</button></div>
   </ng-container>
 
@@ -59,7 +66,7 @@
     <section class="editor-section configuration-card">
       <div class="section-heading"><div><h3>1. Supplier and source period</h3><p>This supplier owns the statement. The source period controls finalized sale lines; GRN references are searched separately across the supplier's effective finalized history.</p></div><strong>{{ selectedSupplierName() }}</strong></div>
       <div class="field-grid five">
-        <label>Supplier<select [(ngModel)]="draft.supplierId" (change)="supplierChanged()" [disabled]="saving"><option [ngValue]="null">Select supplier</option><option *ngFor="let supplier of suppliers" [ngValue]="supplier.id">{{ supplier.supplier_code || supplier.name }} - {{ supplier.name }}</option></select></label>
+        <label>Supplier<input list="statement-supplier-options" [ngModel]="supplierInputValue" (ngModelChange)="onSupplierTyped($event)" (keyup.enter)="ensureSupplier()" [disabled]="saving" placeholder="Pick or type a supplier" autocomplete="off"><small class="supplier-hint" *ngIf="supplierIsNew">New supplier. It is added when you save, or press Enter to add it now.</small></label>
         <label>Sales from<input type="date" [(ngModel)]="draft.fromDate" (change)="sourceDatesChanged()"></label>
         <label>Sales to<input type="date" [(ngModel)]="draft.toDate" (change)="sourceDatesChanged()"></label>
         <label>Commission %<input type="number" min="0" max="100" step="0.01" [(ngModel)]="draft.commissionRate"></label>
@@ -150,7 +157,7 @@
       <section class="editor-section configuration-card">
         <div class="section-heading"><div><h3>1. Supplier and GRN period</h3><p>Choose the supplier being paid. The dates find the GRNs received in that period.</p></div><strong>{{ selectedSupplierName() }}</strong></div>
         <div class="field-grid three">
-          <label>Supplier<select [(ngModel)]="draft.supplierId" (change)="supplierChanged()" [disabled]="saving"><option [ngValue]="null">Select supplier</option><option *ngFor="let supplier of suppliers" [ngValue]="supplier.id">{{ supplier.supplier_code || supplier.name }} - {{ supplier.name }}</option></select></label>
+          <label>Supplier<input list="statement-supplier-options" [ngModel]="supplierInputValue" (ngModelChange)="onSupplierTyped($event)" (keyup.enter)="ensureSupplier()" [disabled]="saving" placeholder="Pick or type a supplier" autocomplete="off"><small class="supplier-hint" *ngIf="supplierIsNew">New supplier. It is added when you save, or press Enter to add it now.</small></label>
           <label>GRNs from<input type="date" [(ngModel)]="grnFromDate" (change)="grnDatesChanged()"></label>
           <label>GRNs to<input type="date" [(ngModel)]="grnToDate" (change)="grnDatesChanged()"></label>
         </div>
@@ -251,3 +258,5 @@
     <div class="reason-panel" *ngIf="reasonAction"><div><strong>{{ reasonAction === 'reopen' ? 'Reopen reviewed statement' : 'Void statement' }}</strong><span>{{ reasonAction === 'reopen' ? 'This returns the document to an editable draft.' : 'The document remains visible with a void status and audit reason.' }}</span></div><input [(ngModel)]="lifecycleReason" placeholder="Required audit reason"><button type="button" class="button-primary" [disabled]="saving" (click)="confirmReasonAction()">Confirm</button><button type="button" class="button-quiet" (click)="cancelReasonAction()">Cancel</button></div>
   </ng-container>
 </section>
+
+<datalist id="statement-supplier-options"><option *ngFor="let supplier of suppliers" [value]="supplierOptionLabel(supplier)"></option></datalist>

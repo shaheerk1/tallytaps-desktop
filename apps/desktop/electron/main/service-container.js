@@ -172,7 +172,11 @@ async function createServiceContainer() {
   const cloudSyncService = createCloudSyncService({ repository: cloudSyncRepository, secretProtector });
   const cloudSyncScheduler = createCloudSyncScheduler({ service: cloudSyncService });
   const supplierSaleStatementService = createSupplierSaleStatementService({ repository: supplierSaleStatementRepository });
-  const supplierAccountRepository = createSupplierAccountRepository({ database, documentSequenceRepository, businessDayRepository, journalRepository, expenseRepository });
+  const supplierAccountRepository = createSupplierAccountRepository({ database, documentSequenceRepository, businessDayRepository, journalRepository, expenseRepository, issuedChequeRepository });
+  // Both cheque registers are built earlier; a cheque paid to a supplier that
+  // does not clear reverses that supplier payment through this hook.
+  issuedChequeRepository.setSupplierAccountHooks(supplierAccountRepository);
+  partyRepository.setSupplierAccountHooks(supplierAccountRepository);
   const supplierAccountService = createSupplierAccountService({ repository: supplierAccountRepository });
   const supplierAccountExportService = createSupplierAccountExportService();
   const expenseService = createExpenseService({ expenseRepository });

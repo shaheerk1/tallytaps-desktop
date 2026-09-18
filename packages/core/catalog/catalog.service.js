@@ -38,6 +38,7 @@ function createCatalogService({ catalogRepository, partyRepository = null, issue
     ,saveGoodsReceiptDraft: catalogRepository.saveGoodsReceiptDraft
     ,finalizeGoodsReceiptDraft: catalogRepository.finalizeGoodsReceiptDraft
     ,cancelGoodsReceiptDraft: catalogRepository.cancelGoodsReceiptDraft
+    ,removeGoodsReceipt: catalogRepository.removeGoodsReceipt
     ,createGoodsReceiptCorrection: catalogRepository.createGoodsReceiptCorrection
     ,listGoodsReceipts: catalogRepository.listGoodsReceipts
     ,getGoodsReceipt: catalogRepository.getGoodsReceipt

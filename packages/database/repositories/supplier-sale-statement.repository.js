@@ -445,7 +445,50 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
          WHERE ${where.join(' AND ')} ORDER BY st.created_at DESC, st.id DESC LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`,
         params
       );
-      return { rows: rows.map((row) => ({ ...row, txn_date: dateOnly(row.txn_date), from_date: dateOnly(row.from_date), to_date: dateOnly(row.to_date) })), total: Number(countRows[0].total || 0), page, pageSize };
+      // Totals over every statement the filters match, not just this page. Voided
+      // statements are counted but their money is left out.
+      const [sumRows] = await connection.execute(
+        `SELECT COUNT(*) AS statements, SUM(st.status = 'void') AS voided,
+                COALESCE(SUM(CASE WHEN st.status <> 'void' THEN st.merchandise_subtotal END), 0) AS merchandise_subtotal,
+                COALESCE(SUM(CASE WHEN st.status <> 'void' THEN st.commission_amount END), 0) AS commission_amount,
+                COALESCE(SUM(CASE WHEN st.status <> 'void' THEN st.adjustment_total END), 0) AS adjustment_total,
+                COALESCE(SUM(CASE WHEN st.status <> 'void' THEN st.net_payable END), 0) AS net_payable,
+                COALESCE(SUM(CASE WHEN st.status = 'finalized' THEN st.net_payable END), 0) AS finalized_net_payable
+         FROM supplier_sale_statements st JOIN suppliers s ON s.id = st.supplier_id WHERE ${where.join(' AND ')}`, params
+      );
+      const sums = sumRows[0] || {};
+      const totals = {
+        statements: Number(sums.statements || 0), voided: Number(sums.voided || 0),
+        merchandiseSubtotal: money(sums.merchandise_subtotal), commissionAmount: money(sums.commission_amount),
+        adjustmentTotal: money(sums.adjustment_total), netPayable: money(sums.net_payable), finalizedNetPayable: money(sums.finalized_net_payable)
+      };
+      return { rows: rows.map((row) => ({ ...row, txn_date: dateOnly(row.txn_date), from_date: dateOnly(row.from_date), to_date: dateOnly(row.to_date) })), total: Number(countRows[0].total || 0), page, pageSize, totals };
+    });
+  }
+
+  /**
+   * The supplier typed on a statement: an active supplier of this location whose
+   * code or name matches is used, otherwise one is added with that name (as a
+   * GRN does).
+   */
+  async function resolveSupplierByName({ supplierName, locCode }) {
+    const typed = text(supplierName);
+    const loc = text(locCode);
+    if (!typed) throw new Error('Type or pick a supplier.');
+    if (!loc) throw new Error('An active workstation session is required.');
+    return database.withConnection(async (connection) => {
+      const [matches] = await connection.execute(
+        `SELECT * FROM suppliers WHERE loc_code = ? AND is_active = 1 AND (UPPER(supplier_code) = UPPER(?) OR UPPER(name) = UPPER(?))
+         ORDER BY UPPER(COALESCE(supplier_code, '')) = UPPER(?) DESC, id ASC LIMIT 1`,
+        [loc, typed, typed, typed]
+      );
+      if (matches.length) return { supplier: matches[0], created: false };
+      const [created] = await connection.execute(
+        'INSERT INTO suppliers (loc_code, supplier_code, name, metadata) VALUES (?, NULL, ?, CAST(? AS JSON))',
+        [loc, typed.slice(0, 190), JSON.stringify({ createdFrom: 'supplier_statement' })]
+      );
+      const [rows] = await connection.execute('SELECT * FROM suppliers WHERE id = ?', [created.insertId]);
+      return { supplier: rows[0], created: true };
     });
   }
 
@@ -948,6 +991,7 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
   }
 
   return {
+    resolveSupplierByName,
     listStatements, getStatement, listCandidates, listCandidateGrns, listExpenseDeductions, listAdjustmentLabels, saveDraft,
     reviewStatement, reopenStatement, finalizeStatement, voidStatement, setInvoiceItemAttribution
   };

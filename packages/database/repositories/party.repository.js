@@ -434,9 +434,10 @@ function createPartyRepository({ database, businessDayRepository }) {
       const [rows] = await connection.execute(
         `SELECT c.*, i.invoice_number, i.customer_code,
                 ca.account_number AS customer_account_number, cp.display_name AS customer_name,
-                dp.display_name AS drawer_party_name
+                dp.display_name AS drawer_party_name, ps.name AS passed_to_supplier_name
          FROM cheques c
          JOIN invoices i ON i.id = c.invoice_id
+         LEFT JOIN suppliers ps ON ps.id = c.passed_to_supplier_id
          LEFT JOIN customer_accounts ca ON ca.id = c.received_from_customer_account_id
          LEFT JOIN parties cp ON cp.id = ca.party_id
          LEFT JOIN parties dp ON dp.id = c.drawer_party_id
@@ -458,8 +459,9 @@ function createPartyRepository({ database, businessDayRepository }) {
       const [rows] = await connection.execute(
         `SELECT c.*, i.invoice_number, i.customer_code,
                 ca.account_number AS customer_account_number, cp.display_name AS customer_name,
-                dp.display_name AS drawer_party_name
+                dp.display_name AS drawer_party_name, ps.name AS passed_to_supplier_name
          FROM cheques c JOIN invoices i ON i.id = c.invoice_id
+         LEFT JOIN suppliers ps ON ps.id = c.passed_to_supplier_id
          LEFT JOIN customer_accounts ca ON ca.id = c.received_from_customer_account_id
          LEFT JOIN parties cp ON cp.id = ca.party_id LEFT JOIN parties dp ON dp.id = c.drawer_party_id
          WHERE c.id = ? LIMIT 1`, [chequeId]
@@ -560,12 +562,19 @@ function createPartyRepository({ database, businessDayRepository }) {
     });
   }
 
+  // Supplier accounts hand in the step that reverses a supplier payment made
+  // with a customer's cheque that came back unpaid.
+  let supplierAccounts = null;
+  function setSupplierAccountHooks(hooks) { supplierAccounts = hooks || null; }
+
   async function updateChequeStatus({ chequeId, status, reason = '', depositedTo = '', depositedFundAccountId = null, userId = null, origin: originValue }) {
     const origin = requireOrigin(originValue);
     if (!origin.txnDate) throw new Error('The current business date is required.');
     const transitions = {
       received: new Set(['deposited', 'dishonoured', 'returned', 'cancelled']),
       deposited: new Set(['cleared', 'dishonoured', 'returned']),
+      // Handed to a supplier: they bank it (cleared) or bring it back unpaid.
+      passed_on: new Set(['cleared', 'dishonoured', 'returned']),
       cleared: new Set(), dishonoured: new Set(['replaced']), returned: new Set(['replaced']), cancelled: new Set(), replaced: new Set()
     };
     return database.withConnection(async (connection) => {
@@ -585,7 +594,8 @@ function createPartyRepository({ database, businessDayRepository }) {
         }
         let depositFund = null;
         const requestedFundId = Number(depositedFundAccountId || cheque.deposited_fund_account_id || 0);
-        if (['deposited', 'cleared'].includes(nextStatus)) {
+        const withSupplier = cheque.status === 'passed_on';
+        if (['deposited', 'cleared'].includes(nextStatus) && !withSupplier) {
           if (!requestedFundId) throw new Error('Choose the business bank account receiving this cheque.');
           const [fundRows] = await connection.execute(
             `SELECT id, name FROM fund_accounts
@@ -598,6 +608,14 @@ function createPartyRepository({ database, businessDayRepository }) {
         const businessDay = businessDayRepository
           ? await businessDayRepository.assertOpenWithConnection(connection, { locationCode: origin.locCode, businessDate: origin.txnDate })
           : null;
+        // Back from the supplier unpaid: they are owed that payment again.
+        if (withSupplier && ['dishonoured', 'returned'].includes(nextStatus) && cheque.supplier_account_entry_id) {
+          if (!supplierAccounts) throw new Error('Supplier accounts are not available to reverse this payment.');
+          await supplierAccounts.reverseForChequeOutcomeWithConnection(connection, {
+            entryId: cheque.supplier_account_entry_id, outcome: nextStatus === 'dishonoured' ? 'dishonoured by the bank' : 'returned by the supplier',
+            origin, userId
+          });
+        }
         if (['dishonoured', 'returned', 'cancelled'].includes(nextStatus)) {
           const accountId = cheque.received_from_customer_account_id || cheque.customer_account_id;
           if (!accountId) throw new Error('Link the cheque to the liable customer before recording a dishonour or return.');
@@ -702,6 +720,7 @@ function createPartyRepository({ database, businessDayRepository }) {
     updateCustomer,
     assignInvoiceCustomer,
     listCheques,
+    setSupplierAccountHooks,
     getCheque,
     updateChequeDetails,
     updateChequeStatus,

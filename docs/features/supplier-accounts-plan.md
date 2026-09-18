@@ -1,6 +1,6 @@
 # Supplier Accounts
 
-Status: phase 1 delivered 2026-09-18 (migration 119). Phase 2 (cheques) next.
+Status: phase 1 delivered 2026-09-18 (migration 119). Phase 2 (cheques) delivered 2026-09-18 (migration 120).
 Applies to: `desktop-app` (new page: Supplier Accounts)
 
 ## Why This Exists
@@ -108,10 +108,46 @@ statements on the account, detailed vs compact, payment from a fund with its
 journal posting and no double payment, till payment, opening balance once and
 adjustments with a reason, payment reversal, voided statement, and date range.
 
-## Phase 2: Cheques (next)
+## Phase 2: Cheques
 
-- Pay a supplier by **our own cheque**: an issued cheque in the register; if it
-  is cancelled, stopped or returned, the payment is reversed automatically.
-- **Pass a received customer cheque** to a supplier as payment.
-- Make the issued-cheque **bank accounts** the same thing as **bank funds**, so
-  one list of bank accounts serves funds, cheques and deposits.
+**One list of bank accounts.** Every bank fund is also a cheque bank account
+(migration 120 filled in the missing ones; a bank fund added in Money now
+creates its own, and renaming or switching it off follows through). The same
+list serves Money, issuing cheques and depositing received cheques.
+
+A payment is made in one of three ways:
+
+| Paid with | What happens | Books |
+| --- | --- | --- |
+| **A fund** | As in phase 1. | Dr 2010 supplier payables / Cr fund |
+| **Our cheque** | An issued cheque (purpose *supplier account*) is written in the Cheque Register as issued. The bank is debited only when it is marked cleared there. | Dr 2010 / Cr 2050 issued cheques; clearing: Dr 2050 / Cr bank |
+| **A customer's cheque** | A received cheque still in hand (not deposited) is passed on whole; its amount is the payment. The cheque becomes *Passed to a supplier*. | Dr 2010 / Cr 1100 cheques in hand |
+
+When a cheque does not go through, the supplier is owed it again, automatically:
+
+- Our cheque **cancelled, stopped or returned unpaid** in the Cheque Register:
+  the payment is reversed (reversal entry and journal mirror).
+- A passed-on cheque **dishonoured** (the supplier brings it back): the payment
+  is reversed, and, as for any dishonour, the customer owes the amount again.
+- A passed-on cheque **cleared by the supplier's bank**: it is closed. Nothing
+  moves in our bank and nothing more is posted.
+
+**Reverse** on the account sheet:
+
+- our cheque: allowed while it is prepared or issued; the cheque is cancelled.
+  A cleared cheque cannot be reversed (record an adjustment instead);
+- a customer's cheque: allowed while the supplier still holds it; the cheque
+  comes back into hand. After it is banked or dishonoured, it cannot.
+
+Data (migration 120): `supplier_account_entries.payment_method`
+(`fund` / `own_cheque` / `customer_cheque`), `issued_cheque_id`, `cheque_id`;
+`issued_cheques.purpose` gains `supplier_account` and
+`supplier_account_entry_id`; `cheques.status` gains `passed_on` with
+`passed_to_supplier_id`, `supplier_account_entry_id`, `passed_at`.
+IPC: `supplierAccounts.chequeOptions` (bank accounts and cheques in hand).
+
+Verify: `npm run verify:supplier-cheques` — 8 checks: bank fund as cheque
+account, own cheque payment and its posting, returned cheque reverses, reverse
+cancels / cleared refused, customer cheque passed on once, supplier banks it
+without touching our bank, dishonour reverses and restores the customer debt,
+reverse brings the cheque back into hand.

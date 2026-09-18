@@ -3,6 +3,11 @@ function createIssuedChequeRepository({ database, documentSequenceRepository, bu
     throw new Error('Issued cheque repository requires database, document sequence, and business-day repositories.');
   }
 
+  // Supplier accounts are built after this repository; the container hands in
+  // the step that reverses a supplier payment whose cheque did not clear.
+  let supplierAccounts = null;
+  function setSupplierAccountHooks(hooks) { supplierAccounts = hooks || null; }
+
   function text(value, maxLength = 255) {
     const normalized = String(value ?? '').trim();
     return normalized ? normalized.slice(0, maxLength) : null;
@@ -168,12 +173,13 @@ function createIssuedChequeRepository({ database, documentSequenceRepository, bu
       [businessDay.id, origin.locCode, origin.macCode, origin.txnDate, documentNo, Number(payload.bankAccountId),
         context.supplierPaymentId || null, context.supplierSettlementId || null, context.supplierId || null,
         payload.payeePartyId || null, payeeName, chequeNumber, chequeDate, amount,
-        context.supplierPaymentId ? 'supplier_settlement' : 'other', status, text(payload.reference, 190),
+        context.purpose || (context.supplierPaymentId ? 'supplier_settlement' : 'other'), status, text(payload.reference, 190),
         text(payload.notes, 500), status, payload.userId || null]
     );
     const cheque = { id: Number(result.insertId) };
     await insertEventWithConnection(connection, cheque, null, status,
-      context.supplierPaymentId ? 'Issued for supplier settlement payment' : 'Issued cheque recorded',
+      context.purpose === 'supplier_account' ? 'Issued as a supplier account payment'
+        : context.supplierPaymentId ? 'Issued for supplier settlement payment' : 'Issued cheque recorded',
       { supplierPaymentId: context.supplierPaymentId || null }, payload.userId, origin);
     return { id: cheque.id, documentNo, status };
   }
@@ -290,9 +296,17 @@ function createIssuedChequeRepository({ database, documentSequenceRepository, bu
         const terminal = ['cancelled', 'stopped', 'returned_unpaid'].includes(nextStatus);
         if (terminal && !text(payload.reason, 255)) throw new Error('Enter a reason for this cheque outcome.');
         await businessDayRepository.assertOpenWithConnection(connection, { locationCode: origin.locCode, businessDate: origin.txnDate });
-        const reversed = terminal
+        let reversed = terminal
           ? await reverseSupplierPaymentWithConnection(connection, cheque, payload.reason, payload.userId, origin)
           : false;
+        // A cheque paid on a supplier account that will not clear: the supplier is owed it again.
+        if (terminal && cheque.supplier_account_entry_id) {
+          if (!supplierAccounts) throw new Error('Supplier accounts are not available to reverse this payment.');
+          const undone = await supplierAccounts.reverseForChequeOutcomeWithConnection(connection, {
+            entryId: cheque.supplier_account_entry_id, outcome: nextStatus.replace(/_/g, ' '), origin, userId: payload.userId
+          });
+          reversed = reversed || Boolean(undone);
+        }
         await connection.execute(
           `UPDATE issued_cheques SET status = ?,
              issued_at = CASE WHEN ? = 'issued' THEN COALESCE(issued_at, NOW()) ELSE issued_at END,
@@ -314,6 +328,7 @@ function createIssuedChequeRepository({ database, documentSequenceRepository, bu
   return {
     listBankAccounts,
     saveBankAccount,
+    setSupplierAccountHooks,
     createWithConnection,
     createIssuedCheque,
     listIssuedCheques,

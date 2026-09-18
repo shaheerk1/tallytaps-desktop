@@ -158,3 +158,19 @@ kbd { padding: 1px 5px; border: 1px solid var(--ui-border-strong); border-bottom
   .range { margin-left: 0; }
   .field-row, .choice { grid-template-columns: 1fr; }
 }
+
+/* How a supplier is paid */
+.method-choice { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.method-choice button { display: grid; gap: 2px; padding: 10px 12px; border: 1px solid var(--ui-border); border-radius: 10px; background: var(--ui-surface); color: var(--ui-ink); font: inherit; text-align: left; cursor: pointer; }
+.method-choice button b { font-size: 13px; }
+.method-choice button span { color: var(--ui-ink-muted); font-size: 12px; }
+.method-choice button.selected { border-color: var(--ui-primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--ui-primary) 18%, transparent); }
+.method-note { display: block; color: var(--ui-ink-muted); font-size: 12px; line-height: 1.5; }
+.cheque-list { display: grid; gap: 6px; max-height: 260px; overflow-y: auto; }
+.cheque-list button { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--ui-border); border-radius: 10px; background: var(--ui-surface); color: var(--ui-ink); font: inherit; text-align: left; cursor: pointer; }
+.cheque-list button.selected { border-color: var(--ui-primary); background: color-mix(in srgb, var(--ui-primary) 6%, var(--ui-surface)); }
+.cheque-list button b { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.cheque-list .stack { display: grid; gap: 2px; }
+.cheque-list small { color: var(--ui-ink-muted); font-size: 12px; }
+.empty-note { margin: 0; padding: 10px 12px; border: 1px dashed var(--ui-border); border-radius: 10px; color: var(--ui-ink-muted); font-size: 13px; }
+@media (max-width: 560px) { .method-choice { grid-template-columns: 1fr; } }

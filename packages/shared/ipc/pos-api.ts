@@ -1594,6 +1594,40 @@ export type ExpenseGoodsTarget = {
 };
 
 /** One supplier on the supplier accounts list. Balance: + we owe them, - they owe us. */
+/** A bank account our cheques are drawn on; each is also a bank fund. */
+/** Money totals over every supplier statement the register filters match (voided ones excluded). */
+export type PattiyalRegisterTotals = {
+  statements: number;
+  voided: number;
+  merchandiseSubtotal: number;
+  commissionAmount: number;
+  adjustmentTotal: number;
+  netPayable: number;
+  finalizedNetPayable: number;
+};
+
+export type SupplierPaymentBankAccount = {
+  id: number;
+  bankName: string;
+  branchName: string | null;
+  accountName: string | null;
+  accountNumber: string | null;
+  fundAccountId: number;
+};
+
+/** A cheque received from a customer, still in hand, that can be passed to a supplier. */
+export type SupplierChequeInHand = {
+  id: number;
+  chequeNumber: string | null;
+  chequeDate: string | null;
+  bankName: string | null;
+  branchName: string | null;
+  amount: number;
+  drawerName: string | null;
+  customerName: string | null;
+  invoiceNumber: string;
+};
+
 export type SupplierAccountSummary = {
   supplierId: number; supplierCode: string | null; name: string; isActive: boolean; balance: number;
   statementCount: number; lastActivityAt: string | null; lastActivityDate: string | null;
@@ -1934,15 +1968,21 @@ export interface PosApi {
   supplierAccounts: {
     list: (filters: { term?: string; balance?: '' | 'owed' | 'owes_us' | 'settled'; includeAll?: boolean }, actor?: ActorContext | null) => Promise<IpcResult<SupplierAccountSummary[]>>;
     sheet: (filters: { supplierId: number; fromDate?: string; toDate?: string; view?: 'detailed' | 'compact' }, actor?: ActorContext | null) => Promise<IpcResult<SupplierAccountSheet>>;
-    pay: (payment: { supplierId: number; fundAccountId: number; amount: number; reference?: string; note?: string; paidOn?: string; paidOnReason?: string; requestId?: string }, actor?: ActorContext | null) => Promise<IpcResult<{ id: number; entryNumber: string; amount: number; fundName: string; stakeholderName: string | null; balance: number; replayed?: boolean }>>;
+    chequeOptions: (filters?: Record<string, unknown>, actor?: ActorContext | null) => Promise<IpcResult<{ bankAccounts: SupplierPaymentBankAccount[]; chequesInHand: SupplierChequeInHand[] }>>;
+    pay: (payment: {
+      supplierId: number; method?: 'fund' | 'own_cheque' | 'customer_cheque'; amount: number;
+      fundAccountId?: number; bankAccountId?: number; chequeNumber?: string; chequeDate?: string; chequeId?: number;
+      reference?: string; note?: string; paidOn?: string; paidOnReason?: string; requestId?: string
+    }, actor?: ActorContext | null) => Promise<IpcResult<{ id: number; entryNumber: string; amount: number; method?: string; paidWith?: string; fundName: string; stakeholderName: string | null; balance: number; replayed?: boolean }>>;
     openingBalance: (entry: { supplierId: number; amount: number; effect: 'owe_more' | 'owe_less'; note?: string; paidOn?: string; paidOnReason?: string; requestId?: string }, actor?: ActorContext | null) => Promise<IpcResult<{ id: number; entryNumber: string; balance: number }>>;
     adjust: (entry: { supplierId: number; amount: number; effect: 'owe_more' | 'owe_less'; reason: string; reference?: string; paidOn?: string; paidOnReason?: string; requestId?: string }, actor?: ActorContext | null) => Promise<IpcResult<{ id: number; entryNumber: string; balance: number }>>;
     reverse: (reversal: { entryId: number; reason: string }, actor?: ActorContext | null) => Promise<IpcResult<{ id: number; entryNumber: string; reverses: string; balance: number }>>;
     exportSheet: (filters: { supplierId: number; fromDate?: string; toDate?: string; view?: 'detailed' | 'compact' }, format: 'pdf' | 'xlsx', brand: { name?: string; addressLines?: string[]; phone?: string }, actor?: ActorContext | null) => Promise<IpcResult<{ filePath?: string; canceled?: boolean }>>;
   };
   pattiyals: {
-    list: (filters: Record<string, unknown>, actor?: ActorContext | null) => Promise<IpcResult<{ rows: Array<Record<string, any>>; total: number; page: number; pageSize: number }>>;
+    list: (filters: Record<string, unknown>, actor?: ActorContext | null) => Promise<IpcResult<{ rows: Array<Record<string, any>>; total: number; page: number; pageSize: number; totals?: PattiyalRegisterTotals }>>;
     get: (statementId: number, actor?: ActorContext | null) => Promise<IpcResult<PattiyalDetail | null>>;
+    resolveSupplier: (supplierName: string, origin?: { locCode?: string; macCode?: string; txnDate?: string } | null, actor?: ActorContext | null) => Promise<IpcResult<{ supplier: Record<string, any>; created: boolean }>>;
     candidates: (filters: Record<string, unknown>, actor?: ActorContext | null) => Promise<IpcResult<{ rows: PattiyalCandidate[]; total: number; page: number; pageSize: number; totals: Record<string, number> }>>;
     candidateGrns: (filters: Record<string, unknown>, actor?: ActorContext | null) => Promise<IpcResult<Array<Record<string, any>>>>;
     adjustmentLabels: (filters: { adjustmentType?: 'credit' | 'deduction' }, actor?: ActorContext | null) => Promise<IpcResult<PattiyalAdjustmentLabel[]>>;

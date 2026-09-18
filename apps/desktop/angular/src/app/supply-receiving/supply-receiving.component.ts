@@ -155,7 +155,7 @@ export class SupplyReceivingComponent implements OnInit, OnDestroy {
     this.receipt = { id: receipt.id, status: receipt.status, documentType: receipt.document_type, correctsGoodsReceiptId: receipt.corrects_goods_receipt_id, correctionReason: receipt.correction_reason || '', supplierId: receipt.supplier_id, supplierName: this.supplierLabel({ supplier_code: receipt.supplier_code, name: receipt.supplier_name }), ownershipModel: receipt.ownership_model === 'consignment' ? 'consignment' : 'owned', businessDate: this.dateInput(receipt.business_date), vehicleNo: receipt.vehicle_no || '', externalReference: receipt.external_reference || '', lines: detail.lines.map((line: any) => ({ productId: line.product_id, sku: line.sku, productName: line.product_name, packageQty: line.handling_quantity ?? line.package_qty, packageUnit: line.handling_uom_snapshot || line.package_unit || 'qty', expectedKilos: line.expected_base_quantity ?? line.expected_kilos, receivedKilos: line.received_base_quantity ?? line.received_kilos, expectedBasePerHandling: line.expected_base_per_handling, ratioTolerancePercent: line.ratio_tolerance_percent ?? 20, conversionMode: line.conversion_mode || 'variable', unitCost: line.unit_cost })) };
     this.grnDetail = detail; this.grnReviewMode = receipt.status !== 'draft'; this.grnEditorOpen = true; this.correctionSource = null;
   }
-  closeGoodsReceipt(): void { this.grnEditorOpen = false; this.grnReviewMode = false; this.grnDetail = null; this.correctionSource = null; }
+  closeGoodsReceipt(): void { this.removingGrn = false; this.grnEditorOpen = false; this.grnReviewMode = false; this.grnDetail = null; this.correctionSource = null; }
   async saveGoodsReceiptDraft(showMessage = true): Promise<boolean> {
     if (!this.hasSupplier || !this.receipt.businessDate) { this.reportError('Supplier and business date are required to save a GRN draft.'); return false; }
     this.saving = true;
@@ -171,6 +171,23 @@ export class SupplyReceivingComponent implements OnInit, OnDestroy {
   async finalize(): Promise<void> { if (!this.canFinalizeGrn) { this.reportError(this.grnReadiness); return; } if (!(await this.saveGoodsReceiptDraft(false))) return; this.saving = true; const result = await this.api().finalizeGoodsReceiptDraft(this.receipt.id, this.actor()?.id, this.actor()); this.saving = false; if (!result.success) { this.reportError(result.error || 'Could not finalize GRN.'); return; } this.reportSuccess(`GRN ${result.data.grnNumber} finalized. Stock and supplier entries are now posted.`); this.closeGoodsReceipt(); await this.load(); }
   async cancelGoodsReceipt(): Promise<void> { if (!this.receipt.id) { this.closeGoodsReceipt(); return; } const result = await this.api().cancelGoodsReceiptDraft(this.receipt.id, this.actor()?.id, this.actor()); if (!result.success) { this.reportError(result.error || 'Could not cancel GRN draft.'); return; } this.reportSuccess('GRN draft cancelled. No stock or supplier entries were posted.'); this.closeGoodsReceipt(); await this.load(); }
   beginCorrection(grn: any): void { this.correctionSource = grn; this.correctionReason = ''; }
+  removingGrn = false;
+  removalReason = '';
+  beginRemoval(): void { this.removingGrn = true; this.removalReason = ''; }
+  /** Removes a GRN nothing has used; the server refuses one whose stock or amounts are already in use. */
+  async confirmRemoval(): Promise<void> {
+    const receiptId = this.grnDetail?.receipt?.id;
+    if (!receiptId || !this.removalReason.trim() || this.saving) return;
+    this.saving = true;
+    const origin = this.origin();
+    const result = await this.api().removeGoodsReceipt(receiptId, this.removalReason.trim(), { ...origin, businessDate: origin.txnDate }, this.actor());
+    this.saving = false;
+    if (!result.success) { this.reportError(result.error || 'Could not remove this GRN.'); return; }
+    this.removingGrn = false;
+    this.reportSuccess(`${result.data.grnNumber} removed. Its stock was taken back out.`);
+    this.closeGoodsReceipt();
+    await this.load();
+  }
   async createCorrection(): Promise<void> { if (!this.correctionSource || !this.correctionReason.trim()) { this.reportError('Enter a reason before creating a correction.'); return; } const origin = this.origin(); const result = await this.api().createGoodsReceiptCorrection(this.correctionSource.id, this.correctionReason.trim(), this.actor()?.id, { ...origin, businessDate: origin.txnDate }, this.actor()); if (!result.success) { this.reportError(result.error || 'Could not create correction draft.'); return; } this.reportSuccess(`Correction ${result.data.grnNumber} created on the current business day as a draft.`); await this.load(); await this.openGoodsReceipt(result.data.id); }
   private grnDocument(detail: any): any {
     const receipt = detail.receipt;

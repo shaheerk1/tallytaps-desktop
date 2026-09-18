@@ -32,15 +32,25 @@ function createSupplierAccountService({ repository }) {
   return {
     list: (filters = {}) => repository.listAccounts(filters),
     sheet: (filters = {}) => repository.getSheet(filters),
+    chequeOptions: (filters = {}) => repository.listChequeOptions(filters),
 
     async recordPayment(input = {}) {
       const { origin, userId } = context(input);
       if (!Number(input.supplierId)) throw new Error('Choose the supplier being paid.');
-      if (!Number(input.fundAccountId)) throw new Error('Choose which fund the money is paid from.');
-      if (money(input.amount) <= 0) throw new Error('A payment must be more than zero.');
+      const method = ['own_cheque', 'customer_cheque'].includes(input.method) ? input.method : 'fund';
+      if (method === 'fund' && !Number(input.fundAccountId)) throw new Error('Choose which fund the money is paid from.');
+      if (method === 'own_cheque') {
+        if (!Number(input.bankAccountId)) throw new Error('Choose the bank account the cheque is drawn on.');
+        if (!text(input.chequeNumber)) throw new Error('Enter the cheque number.');
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(text(input.chequeDate))) throw new Error('Enter the date written on the cheque.');
+      }
+      if (method === 'customer_cheque' && !Number(input.chequeId)) throw new Error("Choose the customer's cheque being passed on.");
+      if (method !== 'customer_cheque' && money(input.amount) <= 0) throw new Error('A payment must be more than zero.');
       return repository.recordPayment({
-        ...origin, ...dated(input, origin), userId,
-        supplierId: Number(input.supplierId), fundAccountId: Number(input.fundAccountId), amount: money(input.amount),
+        ...origin, ...dated(input, origin), userId, method,
+        supplierId: Number(input.supplierId), fundAccountId: Number(input.fundAccountId || 0), amount: money(input.amount),
+        bankAccountId: Number(input.bankAccountId || 0), chequeNumber: text(input.chequeNumber), chequeDate: text(input.chequeDate),
+        chequeId: Number(input.chequeId || 0),
         reference: text(input.reference), note: text(input.note), requestId: text(input.requestId)
       });
     },

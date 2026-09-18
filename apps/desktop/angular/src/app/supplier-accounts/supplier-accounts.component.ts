@@ -1,12 +1,17 @@
 import { Component, HostListener, OnInit } from '@angular/core';
 import { SessionService } from '../services/session.service';
 import type {
-  FundAccount, SupplierAccountLine, SupplierAccountSheet, SupplierAccountSummary
+  FundAccount, SupplierAccountLine, SupplierAccountSheet, SupplierAccountSummary, SupplierChequeInHand, SupplierPaymentBankAccount
 } from '../../../../../../packages/shared/ipc/pos-api';
 
 type BalanceFilter = '' | 'owed' | 'owes_us' | 'settled';
+type PaymentMethod = 'fund' | 'own_cheque' | 'customer_cheque';
 type EntryForm =
-  | { kind: 'payment'; supplierId: number; supplierName: string; balance: number; amount: number | null; fundAccountId: number | null; reference: string; note: string; paidOn: string; paidOnReason: string; requestId: string }
+  | {
+      kind: 'payment'; supplierId: number; supplierName: string; balance: number; amount: number | null; method: PaymentMethod;
+      fundAccountId: number | null; bankAccountId: number | null; chequeNumber: string; chequeDate: string; chequeId: number | null;
+      reference: string; note: string; paidOn: string; paidOnReason: string; requestId: string
+    }
   | { kind: 'opening'; supplierId: number; supplierName: string; balance: number; amount: number | null; effect: 'owe_more' | 'owe_less'; note: string; paidOn: string; paidOnReason: string; requestId: string }
   | { kind: 'adjustment'; supplierId: number; supplierName: string; balance: number; amount: number | null; effect: 'owe_more' | 'owe_less'; reason: string; reference: string; paidOn: string; paidOnReason: string; requestId: string };
 
@@ -47,6 +52,13 @@ export class SupplierAccountsComponent implements OnInit {
   // Forms
   form: EntryForm | null = null;
   funds: FundAccount[] = [];
+  chequeBanks: SupplierPaymentBankAccount[] = [];
+  chequesInHand: SupplierChequeInHand[] = [];
+  readonly paymentMethods: Array<{ value: PaymentMethod; label: string; hint: string }> = [
+    { value: 'fund', label: 'From a fund', hint: 'Cash, safe, bank transfer' },
+    { value: 'own_cheque', label: 'Our cheque', hint: 'Written on our bank' },
+    { value: 'customer_cheque', label: "A customer's cheque", hint: 'Pass one on' }
+  ];
   drawerId: number | null = null;
 
   constructor(private session: SessionService) {}
@@ -176,12 +188,13 @@ export class SupplierAccountsComponent implements OnInit {
 
   async openPayment(supplierId: number, supplierName: string, balance: number): Promise<void> {
     this.clearMessages();
-    await this.loadFunds();
+    await Promise.all([this.loadFunds(), this.loadChequeOptions()]);
     const drawer = this.funds.find((fund) => fund.fundKind === 'pos_drawer' && fund.cashDrawerId === this.drawerId);
     this.form = {
       kind: 'payment', supplierId, supplierName, balance,
-      amount: balance > 0 ? this.money(balance) : null,
+      amount: balance > 0 ? this.money(balance) : null, method: 'fund',
       fundAccountId: drawer?.id ?? this.payingFunds[0]?.id ?? null,
+      bankAccountId: this.chequeBanks[0]?.id ?? null, chequeNumber: '', chequeDate: this.today, chequeId: null,
       reference: '', note: '', paidOn: this.today, paidOnReason: '', requestId: crypto.randomUUID()
     };
     this.focusFirstField();
@@ -208,6 +221,32 @@ export class SupplierAccountsComponent implements OnInit {
   }
 
   closeForm(): void { this.form = null; }
+
+  setPaymentMethod(method: PaymentMethod): void {
+    const form = this.form;
+    if (form?.kind !== 'payment' || form.method === method) return;
+    form.method = method;
+    // A customer's cheque is passed on whole, so its amount is the payment.
+    if (method === 'customer_cheque') form.amount = this.selectedCheque?.amount ?? null;
+    else if (!form.amount && form.balance > 0) form.amount = this.money(form.balance);
+    this.focusFirstField();
+  }
+
+  chooseCheque(cheque: SupplierChequeInHand): void {
+    const form = this.form;
+    if (form?.kind !== 'payment') return;
+    form.chequeId = cheque.id;
+    form.amount = cheque.amount;
+  }
+
+  get selectedCheque(): SupplierChequeInHand | null {
+    const form = this.form;
+    return form?.kind === 'payment' ? this.chequesInHand.find((cheque) => cheque.id === form.chequeId) || null : null;
+  }
+
+  bankLabel(bank: SupplierPaymentBankAccount): string {
+    return [bank.bankName, bank.accountName && bank.accountName !== bank.bankName ? bank.accountName : '', bank.accountNumber].filter(Boolean).join(' · ');
+  }
 
   /** This counter's own drawer, then every other place money can come from. Other tills are counted by their own shifts. */
   get payingFunds(): FundAccount[] {
@@ -243,6 +282,8 @@ export class SupplierAccountsComponent implements OnInit {
     const form = this.form;
     if (!form || !(Number(form.amount) > 0)) return false;
     if (this.isEarlier(form) && !form.paidOnReason.trim()) return false;
+    if (form.kind === 'payment' && form.method === 'own_cheque') return Boolean(form.bankAccountId && form.chequeNumber.trim() && form.chequeDate);
+    if (form.kind === 'payment' && form.method === 'customer_cheque') return Boolean(form.chequeId);
     if (form.kind === 'payment') return Boolean(form.fundAccountId);
     if (form.kind === 'adjustment') return Boolean(form.reason.trim());
     return true;
@@ -256,12 +297,17 @@ export class SupplierAccountsComponent implements OnInit {
     const api = window.posApi.supplierAccounts;
     let message = '';
     if (form.kind === 'payment') {
+      const how = form.method === 'own_cheque'
+        ? { bankAccountId: Number(form.bankAccountId), chequeNumber: form.chequeNumber.trim(), chequeDate: form.chequeDate }
+        : form.method === 'customer_cheque' ? { chequeId: Number(form.chequeId) } : { fundAccountId: Number(form.fundAccountId) };
       const result = await api.pay({
-        supplierId: form.supplierId, fundAccountId: Number(form.fundAccountId), amount: Number(form.amount),
+        supplierId: form.supplierId, method: form.method, amount: Number(form.amount), ...how,
         reference: form.reference.trim(), note: form.note.trim(), requestId: form.requestId, ...dated
       }, this.actor());
       if (!result.success) { this.saving = false; this.error = result.error || 'Could not record this payment.'; return; }
-      message = `${result.data.entryNumber}: paid ${form.supplierName} ${this.moneyText(result.data.amount)} from ${result.data.fundName}. Balance now ${this.balanceText(result.data.balance)}.`;
+      const paidWith = result.data.paidWith || result.data.fundName;
+      message = `${result.data.entryNumber}: paid ${form.supplierName} ${this.moneyText(result.data.amount)} ${form.method === 'fund' ? 'from' : 'by'} ${paidWith}. Balance now ${this.balanceText(result.data.balance)}.`;
+      if (form.method === 'own_cheque') message += ' The cheque is in the Cheque Register; the bank is only debited when it clears.';
       if (result.data.stakeholderName) message += ` The business now owes ${result.data.stakeholderName} this amount.`;
     } else if (form.kind === 'opening') {
       const result = await api.openingBalance({ supplierId: form.supplierId, amount: Number(form.amount), effect: form.effect, note: form.note.trim(), requestId: form.requestId, ...dated }, this.actor());
@@ -293,6 +339,13 @@ export class SupplierAccountsComponent implements OnInit {
       input?.focus();
       input?.select();
     });
+  }
+
+  private async loadChequeOptions(): Promise<void> {
+    if (!window.posApi) return;
+    const result = await window.posApi.supplierAccounts.chequeOptions({}, this.actor());
+    this.chequeBanks = result.success ? result.data?.bankAccounts || [] : [];
+    this.chequesInHand = result.success ? result.data?.chequesInHand || [] : [];
   }
 
   private async loadFunds(): Promise<void> {

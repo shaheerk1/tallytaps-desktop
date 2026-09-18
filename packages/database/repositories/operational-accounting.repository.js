@@ -289,7 +289,7 @@ function createOperationalAccountingRepository({ database, journalRepository }) 
 
   async function syncSupplierLedger(connection, locCode, userId) {
     const [obligations] = await connection.execute(
-      `SELECT e.*, COALESCE(g.business_day_id, b.id) AS business_day_id,
+      `SELECT e.*, COALESCE(b.id, g.business_day_id) AS business_day_id,
               e.business_date AS txn_date, e.created_by AS source_user_id, l.ownership_model
        FROM supplier_payable_entries e
        LEFT JOIN goods_receipts g ON g.id = e.goods_receipt_id
@@ -366,6 +366,9 @@ function createOperationalAccountingRepository({ database, journalRepository }) 
        JOIN business_days b ON b.loc_code = e.loc_code AND b.business_date = e.txn_date
        LEFT JOIN journal_entries j ON j.source_type = 'incoming_cheque_status' AND j.source_id = CAST(e.id AS CHAR)
        WHERE e.loc_code = ? AND e.to_status IN ('cleared','dishonoured','returned','cancelled') AND j.id IS NULL
+         -- A cheque the supplier banked was never ours to deposit: its payment already
+         -- moved it out of "cheques in hand", so there is nothing more to post.
+         AND NOT (e.to_status = 'cleared' AND e.from_status = 'passed_on')
        ORDER BY e.txn_date, e.id FOR UPDATE`, [locCode]
     );
     let posted = 0;
@@ -396,6 +399,7 @@ function createOperationalAccountingRepository({ database, journalRepository }) 
        WHERE e.loc_code = ? AND (
           e.to_status = 'cleared'
           OR (c.purpose = 'other' AND e.to_status IN ('issued','cancelled','stopped','returned_unpaid'))
+          -- Supplier-account cheques post when paid and when reversed, from the supplier account.
        ) AND j.id IS NULL
        ORDER BY e.txn_date, e.id FOR UPDATE`, [locCode]
     );

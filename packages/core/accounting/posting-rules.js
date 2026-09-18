@@ -307,6 +307,19 @@ function supplierAccountPaymentPosting({ amount, fund, stakeholderTreatment = 'c
   };
 }
 
+/**
+ * Paying a supplier on their account by cheque: what the business owes
+ * suppliers goes down against "issued cheques" (our own cheque, until it
+ * clears) or "cheques in hand" (a customer's cheque passed on).
+ */
+function supplierAccountChequePosting({ amount, creditAccount, supplierName = '', paidWith = '' }) {
+  const value = money(amount);
+  return {
+    narration: `Pay supplier${supplierName ? ` ${supplierName}` : ''}${paidWith ? ` by ${paidWith}` : ''}`,
+    lines: [debit(ACCOUNTS.SUPPLIER_PAYABLES, value), credit(creditAccount, value)]
+  };
+}
+
 function incomingChequeStatusPosting({ cheque, status }) {
   const value = money(cheque.amount);
   const bankDimensions = cheque.fundAccountId ? { fundAccountId: cheque.fundAccountId } : {};
@@ -389,6 +402,7 @@ module.exports = {
   supplierObligationPosting,
   supplierPaymentPosting,
   supplierAccountPaymentPosting,
+  supplierAccountChequePosting,
   incomingChequeStatusPosting,
   issuedChequeClearancePosting,
   otherIssuedChequePosting,

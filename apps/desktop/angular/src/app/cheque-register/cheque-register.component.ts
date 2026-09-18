@@ -37,8 +37,15 @@ export class ChequeRegisterComponent implements OnInit {
     if (Number.isNaN(date.getTime())) return String(value);
     return new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Colombo', day: '2-digit', month: '2-digit', year: 'numeric', ...(includeTime ? { hour: '2-digit', minute: '2-digit', hour12: false } : {}) }).format(date);
   }
+  issuedPurpose(cheque: any): string {
+    if (cheque.settlement_number) return cheque.settlement_number;
+    if (cheque.purpose === 'supplier_account') return 'Supplier account payment';
+    if (cheque.purpose === 'supplier_settlement') return 'Supplier settlement (old)';
+    return 'Register-only entry';
+  }
+
   statusLabel(status: string): string {
-    const labels: Record<string, string> = { received: 'Received', deposited: 'Deposited', cleared: 'Cleared', dishonoured: 'Dishonoured by bank', returned: 'Returned to customer', cancelled: 'Cancelled', replaced: 'Replaced', prepared: 'Prepared', issued: 'Issued / outstanding', stopped: 'Payment stopped', returned_unpaid: 'Returned unpaid', new: 'New' };
+    const labels: Record<string, string> = { received: 'Received', deposited: 'Deposited', cleared: 'Cleared', dishonoured: 'Dishonoured by bank', returned: 'Returned to customer', passed_on: 'Passed to a supplier', cancelled: 'Cancelled', replaced: 'Replaced', prepared: 'Prepared', issued: 'Issued / outstanding', stopped: 'Payment stopped', returned_unpaid: 'Returned unpaid', new: 'New' };
     return labels[String(status || '').toLowerCase()] || status;
   }
 
@@ -62,7 +69,7 @@ export class ChequeRegisterComponent implements OnInit {
     const result = await window.posApi.catalog.listCheques(filters, this.actor());
     if (!result.success) { this.error = result.error || 'Could not load incoming cheques.'; return; }
     const rows = result.data || [];
-    this.incoming = this.incomingStatus === 'open' ? rows.filter((row: any) => ['received', 'deposited'].includes(row.status)) : rows;
+    this.incoming = this.incomingStatus === 'open' ? rows.filter((row: any) => ['received', 'deposited', 'passed_on'].includes(row.status)) : rows;
   }
 
   async selectIncoming(id: number): Promise<void> {
@@ -133,7 +140,9 @@ export class ChequeRegisterComponent implements OnInit {
     if (!window.posApi || !this.incomingDetail || this.updating) return;
     const origin = this.origin(); const user = this.session.getUser(); if (!origin || !user) return;
     if (['dishonoured', 'returned'].includes(status) && !this.incomingReason.trim()) { this.error = 'A reason is required for a dishonoured or returned cheque.'; return; }
-    if (['deposited', 'cleared'].includes(status) && !this.incomingDepositFundId && !this.incomingDetail.cheque.deposited_fund_account_id) {
+    // A cheque with a supplier is banked by them, never into our account.
+    const withSupplier = this.incomingDetail.cheque.status === 'passed_on';
+    if (!withSupplier && ['deposited', 'cleared'].includes(status) && !this.incomingDepositFundId && !this.incomingDetail.cheque.deposited_fund_account_id) {
       this.error = 'Choose the business bank account receiving this cheque.'; return;
     }
     this.updating = true; this.error = '';

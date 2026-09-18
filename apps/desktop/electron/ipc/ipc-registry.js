@@ -598,6 +598,7 @@ function registerIpcHandlers(services) {
   wrapIpcHandler('supply.goodsReceipts.drafts.save', async (payload) => services.catalogService.saveGoodsReceiptDraft(payload?.receipt || {}), { authorize: requireReceivingManage });
   wrapIpcHandler('supply.goodsReceipts.drafts.finalize', async (payload) => services.catalogService.finalizeGoodsReceiptDraft({ goodsReceiptId: payload?.goodsReceiptId, userId: payload?.userId }), { authorize: requireReceivingManage });
   wrapIpcHandler('supply.goodsReceipts.drafts.cancel', async (payload) => services.catalogService.cancelGoodsReceiptDraft(payload || {}), { authorize: requireReceivingManage });
+  wrapIpcHandler('supply.goodsReceipts.remove', async (payload) => services.catalogService.removeGoodsReceipt({ ...(payload || {}), userId: actorId(payload) }), { authorize: requireReceivingManage });
   wrapIpcHandler('supply.goodsReceipts.corrections.create', async (payload) => services.catalogService.createGoodsReceiptCorrection(payload || {}), { authorize: requireReceivingManage });
   wrapIpcHandler('supply.goodsReceipts.list', async (payload) => services.catalogService.listGoodsReceipts(payload?.filters || {}), { authorize: requireReceivingView });
   wrapIpcHandler('supply.goodsReceipts.get', async (payload) => services.catalogService.getGoodsReceipt(payload?.goodsReceiptId), { authorize: requireReceivingView });
@@ -623,6 +624,7 @@ function registerIpcHandlers(services) {
   // that changes a balance needs settlements.manage.
   wrapIpcHandler('supplierAccounts.list', async (payload) => services.supplierAccountService.list(payload?.filters || {}), { authorize: requireSettlementsView });
   wrapIpcHandler('supplierAccounts.sheet', async (payload) => services.supplierAccountService.sheet(payload?.filters || {}), { authorize: requireSettlementsView });
+  wrapIpcHandler('supplierAccounts.chequeOptions', async (payload) => services.supplierAccountService.chequeOptions(payload?.filters || {}), { authorize: requireSettlementsManage });
   wrapIpcHandler('supplierAccounts.pay', async (payload) => services.supplierAccountService.recordPayment({ ...(payload?.payment || {}), userId: actorId(payload) }), { authorize: requireSettlementsManage });
   wrapIpcHandler('supplierAccounts.openingBalance', async (payload) => services.supplierAccountService.recordOpeningBalance({ ...(payload?.entry || {}), userId: actorId(payload) }), { authorize: requireSettlementsManage });
   wrapIpcHandler('supplierAccounts.adjust', async (payload) => services.supplierAccountService.recordAdjustment({ ...(payload?.entry || {}), userId: actorId(payload) }), { authorize: requireSettlementsManage });
@@ -647,6 +649,7 @@ function registerIpcHandlers(services) {
   wrapIpcHandler('supply.pattiyals.candidates.grns', async (payload) => services.supplierSaleStatementService.candidateGrns(payload?.filters || {}), { authorize: requireSettlementsView });
   wrapIpcHandler('supply.pattiyals.expenseDeductions', async (payload) => services.supplierSaleStatementService.expenseDeductions(payload?.filters || {}), { authorize: requireSettlementsView });
   wrapIpcHandler('supply.pattiyals.adjustmentLabels', async (payload) => services.supplierSaleStatementService.adjustmentLabels(payload?.filters || {}), { authorize: requireSettlementsView });
+  wrapIpcHandler('supply.pattiyals.suppliers.resolve', async (payload) => services.supplierSaleStatementService.resolveSupplier(payload || {}), { authorize: requireSettlementsManage });
   wrapIpcHandler('supply.pattiyals.drafts.save', async (payload) => services.supplierSaleStatementService.saveDraft(payload?.statement || {}), { authorize: requireSettlementsManage });
   wrapIpcHandler('supply.pattiyals.review', async (payload) => services.supplierSaleStatementService.review(payload?.statementId, payload?.userId), { authorize: requireSettlementsManage });
   wrapIpcHandler('supply.pattiyals.reopen', async (payload) => services.supplierSaleStatementService.reopen(payload?.statementId, payload?.userId, payload?.reason), { authorize: requireSettlementsManage });

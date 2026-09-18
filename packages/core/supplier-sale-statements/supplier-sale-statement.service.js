@@ -1,5 +1,7 @@
 'use strict';
 
+const requestContext = require('../security/request-context');
+
 function createSupplierSaleStatementService({ repository }) {
   if (!repository) throw new Error('Supplier sale statement service requires a repository.');
 
@@ -11,6 +13,9 @@ function createSupplierSaleStatementService({ repository }) {
     adjustmentLabels: (filters) => repository.listAdjustmentLabels(filters || {}),
     expenseDeductions: (filters) => repository.listExpenseDeductions(filters || {}),
     saveDraft: (statement) => repository.saveDraft(statement || {}),
+    resolveSupplier: (input = {}) => repository.resolveSupplierByName({
+      supplierName: input.supplierName, locCode: requestContext.resolveOrigin(input).locCode
+    }),
     review: (statementId, userId) => repository.reviewStatement(statementId, userId),
     reopen: (statementId, userId, reason) => repository.reopenStatement(statementId, userId, reason),
     finalize: (statementId, userId) => repository.finalizeStatement(statementId, userId),

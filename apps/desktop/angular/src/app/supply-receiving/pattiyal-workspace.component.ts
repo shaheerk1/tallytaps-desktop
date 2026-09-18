@@ -115,6 +115,9 @@ export class PattiyalWorkspaceComponent implements OnInit {
 
   registerRows: any[] = [];
   registerTotal = 0;
+  registerTotals: { statements: number; voided: number; merchandiseSubtotal: number; commissionAmount: number; adjustmentTotal: number; netPayable: number; finalizedNetPayable: number } | null = null;
+  /** What the person is typing in the supplier box; null shows the chosen supplier. */
+  supplierTyping: string | null = null;
   registerPage = 1;
   registerPageSize = 10;
   registerFilters: { term: string; supplierId: number | null; status: string; statementType: string; fromDate: string; toDate: string } = {
@@ -250,6 +253,7 @@ export class PattiyalWorkspaceComponent implements OnInit {
     }
     this.registerRows = result.data.rows || [];
     this.registerTotal = Number(result.data.total || 0);
+    this.registerTotals = result.data.totals || null;
     this.registerPage = Number(result.data.page || this.registerPage);
   }
 
@@ -283,6 +287,7 @@ export class PattiyalWorkspaceComponent implements OnInit {
     this.view = 'editor';
     this.detail = null;
     this.draft = this.emptyDraft();
+    this.supplierTyping = null;
     this.candidates = [];
     this.candidateTotal = 0;
     this.candidateTotals = {};
@@ -446,6 +451,7 @@ export class PattiyalWorkspaceComponent implements OnInit {
 
   private async hydrateEditor(detail: PattiyalDetail): Promise<void> {
     const statement = detail.statement;
+    this.supplierTyping = null;
     this.draft = {
       statementId: Number(statement['id']),
       statementType: statement['statement_type'] === 'owned_purchase' ? 'owned_purchase' : 'consignment',
@@ -557,8 +563,58 @@ export class PattiyalWorkspaceComponent implements OnInit {
     return ['cents', 'nearest_rupee', 'floor_rupee', 'ceil_rupee', 'manual'].includes(text) ? text as CommissionRounding : 'cents';
   }
 
+  supplierOptionLabel(supplier: any): string {
+    return supplier?.supplier_code ? `${supplier.supplier_code} - ${supplier.name}` : String(supplier?.name || '');
+  }
+
+  get supplierInputValue(): string {
+    if (this.supplierTyping != null) return this.supplierTyping;
+    const supplier = this.suppliers.find((row) => Number(row.id) === Number(this.draft.supplierId));
+    return supplier ? this.supplierOptionLabel(supplier) : '';
+  }
+
+  get supplierIsNew(): boolean {
+    return !this.draft.supplierId && Boolean(String(this.supplierTyping || '').trim());
+  }
+
+  /**
+   * The supplier box takes a pick from the list or free text, like the GRN.
+   * Text matching a known supplier's code, name or list label uses that
+   * supplier; anything else is a new supplier, added when the statement is saved.
+   */
+  async onSupplierTyped(value: string): Promise<void> {
+    this.supplierTyping = value;
+    const key = String(value || '').trim().toUpperCase();
+    const match = key ? this.suppliers.find((supplier: any) =>
+      String(supplier.supplier_code || '').toUpperCase() === key
+      || String(supplier.name || '').toUpperCase() === key
+      || this.supplierOptionLabel(supplier).toUpperCase() === key) : null;
+    const nextId = match ? Number(match.id) : null;
+    if (Number(this.draft.supplierId || 0) === Number(nextId || 0)) return;
+    this.draft.supplierId = nextId;
+    await this.supplierChanged();
+  }
+
+  /** Adds a typed new supplier (or finds it) so the statement can be saved against it. */
+  async ensureSupplier(): Promise<boolean> {
+    if (this.draft.supplierId) return true;
+    const typed = String(this.supplierTyping || '').trim();
+    const api = this.api();
+    if (!typed || !api) return false;
+    const result = await api.resolveSupplier(typed, this.origin(), this.actor());
+    if (!result.success) { this.setError(result.error || 'Could not add this supplier.'); return false; }
+    const supplier: any = result.data.supplier;
+    if (!this.suppliers.some((row) => Number(row.id) === Number(supplier.id))) this.suppliers.push(supplier);
+    this.draft.supplierId = Number(supplier.id);
+    this.supplierTyping = null;
+    if (result.data.created) this.setInfo(`${supplier.name} added as a new supplier.`);
+    await this.supplierChanged();
+    return true;
+  }
+
   selectedSupplierName(): string {
     const supplier = this.suppliers.find((row) => Number(row.id) === Number(this.draft.supplierId));
+    if (!supplier && this.supplierIsNew) return `${String(this.supplierTyping).trim()} (new supplier)`;
     if (!supplier) return 'Select supplier';
     return `${supplier.supplier_code || ''} ${supplier.name || ''}`.trim();
   }
@@ -720,6 +776,7 @@ export class PattiyalWorkspaceComponent implements OnInit {
   async correctAttribution(candidate: PattiyalCandidate): Promise<void> {
     const api = this.api();
     const reason = this.attributionReason(candidate).trim();
+    if (api && !this.draft.supplierId && this.supplierIsNew && !(await this.ensureSupplier())) return;
     if (!api || !this.draft.supplierId) return;
     if (!reason) {
       this.setError('Enter a reason before correcting the sale line supplier.');
@@ -1255,6 +1312,7 @@ export class PattiyalWorkspaceComponent implements OnInit {
   async saveDraft(showMessage = true): Promise<boolean> {
     const api = this.api();
     if (!api) return false;
+    if (!this.draft.supplierId && this.supplierIsNew && !(await this.ensureSupplier())) return false;
     const validation = this.validateDraft();
     if (validation) {
       this.setError(validation);

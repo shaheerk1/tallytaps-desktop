@@ -190,6 +190,11 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
                holder_name = ?, account_reference = ?, notes = ?, is_active = ?, sort_order = ? WHERE id = ?`,
             [...payload, fundId]
           );
+          // The matching cheque bank account follows the fund's name and on/off switch.
+          await connection.execute(
+            'UPDATE business_bank_accounts SET bank_name = ?, is_active = ? WHERE fund_account_id = ? AND mac_code = \'FUND\'',
+            [name, input.isActive === false ? 0 : 1, fundId]
+          );
         } else {
           const fundCode = text(input.fundCode).toUpperCase()
             || `${kind === 'bank' ? 'BANK' : kind === 'stakeholder' ? 'POCKET' : 'SAFE'}-${locCode}-${Date.now().toString().slice(-6)}`;
@@ -201,6 +206,16 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
             [fundCode, ...payload]
           );
           fundId = Number(result.insertId);
+          if (kind === 'bank') {
+            // One list of bank accounts: a bank fund can issue cheques and receive deposits.
+            await connection.execute(
+              `INSERT INTO business_bank_accounts
+                 (loc_code, mac_code, account_no, fund_account_id, account_code, bank_name, account_name, account_number, is_active, notes)
+               VALUES (?, 'FUND', ?, ?, ?, ?, ?, ?, ?, 'Created from the bank fund of the same name')`,
+              [locCode, fundId, fundId, `BA-FUND-${fundId}`, name, text(input.holderName) || name,
+                text(input.accountReference) || fundCode, input.isActive === false ? 0 : 1]
+            );
+          }
         }
         await connection.commit();
         const [saved] = await loadFunds(connection, { locCode, includeInactive: true, fundId });

@@ -109,6 +109,7 @@ contextBridge.exposeInMainWorld('posApi', {
     ,saveGoodsReceiptDraft: (receipt, actor) => invoke('supply.goodsReceipts.drafts.save', { receipt, actor })
     ,finalizeGoodsReceiptDraft: (goodsReceiptId, userId, actor) => invoke('supply.goodsReceipts.drafts.finalize', { goodsReceiptId, userId, actor })
     ,cancelGoodsReceiptDraft: (goodsReceiptId, userId, actor) => invoke('supply.goodsReceipts.drafts.cancel', { goodsReceiptId, userId, actor })
+    ,removeGoodsReceipt: (goodsReceiptId, reason, origin, actor) => invoke('supply.goodsReceipts.remove', { goodsReceiptId, reason, ...(origin || {}), actor })
     ,createGoodsReceiptCorrection: (goodsReceiptId, reason, userId, origin, actor) => invoke('supply.goodsReceipts.corrections.create', { goodsReceiptId, reason, userId, ...(origin || {}), actor })
     ,listGoodsReceipts: (filters, actor) => invoke('supply.goodsReceipts.list', { filters, actor })
     ,getGoodsReceipt: (goodsReceiptId, actor) => invoke('supply.goodsReceipts.get', { goodsReceiptId, actor })
@@ -183,6 +184,7 @@ contextBridge.exposeInMainWorld('posApi', {
   supplierAccounts: {
     list: (filters, actor) => invoke('supplierAccounts.list', { filters, actor }),
     sheet: (filters, actor) => invoke('supplierAccounts.sheet', { filters, actor }),
+    chequeOptions: (filters, actor) => invoke('supplierAccounts.chequeOptions', { filters, actor }),
     pay: (payment, actor) => invoke('supplierAccounts.pay', { payment, actor }),
     openingBalance: (entry, actor) => invoke('supplierAccounts.openingBalance', { entry, actor }),
     adjust: (entry, actor) => invoke('supplierAccounts.adjust', { entry, actor }),
@@ -192,6 +194,7 @@ contextBridge.exposeInMainWorld('posApi', {
   pattiyals: {
     list: (filters, actor) => invoke('supply.pattiyals.list', { filters, actor }),
     get: (statementId, actor) => invoke('supply.pattiyals.get', { statementId, actor }),
+    resolveSupplier: (supplierName, origin, actor) => invoke('supply.pattiyals.suppliers.resolve', { supplierName, ...(origin || {}), actor }),
     candidates: (filters, actor) => invoke('supply.pattiyals.candidates.sales', { filters, actor }),
     candidateGrns: (filters, actor) => invoke('supply.pattiyals.candidates.grns', { filters, actor }),
     adjustmentLabels: (filters, actor) => invoke('supply.pattiyals.adjustmentLabels', { filters, actor }),

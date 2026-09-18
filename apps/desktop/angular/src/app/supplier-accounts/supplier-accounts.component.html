@@ -110,7 +110,7 @@
           <div class="row reverse-row" *ngIf="reversingEntryId && reversingEntryId === line.entryId">
             <span></span><span></span>
             <input [(ngModel)]="reverseReason" placeholder="Why is this being reversed?" aria-label="Reversal reason" (keyup.enter)="confirmReverse()" (keyup.escape)="cancelReverse()" />
-            <span class="reverse-note">{{ line.kind === 'payment' ? 'The money goes back to the fund that paid.' : 'The balance returns to what it was.' }}</span>
+            <span class="reverse-note">{{ line.kind === 'payment' ? 'The money goes back: a fund is refunded, our cheque is cancelled, a customer cheque comes back in hand.' : 'The balance returns to what it was.' }}</span>
             <span></span><span></span>
             <span class="row-actions"><button type="button" class="btn tiny danger" [disabled]="saving" (click)="confirmReverse()">Reverse</button><button type="button" class="btn tiny" (click)="cancelReverse()">Cancel</button></span>
           </div>
@@ -139,13 +139,52 @@
     </div>
 
     <div class="fields">
-      <label class="field">
+      <div class="method-choice" *ngIf="form.kind === 'payment'" role="radiogroup" aria-label="How the supplier is paid">
+        <button type="button" *ngFor="let method of paymentMethods" [class.selected]="form.method === method.value" (click)="setPaymentMethod(method.value)">
+          <b>{{ method.label }}</b><span>{{ method.hint }}</span>
+        </button>
+      </div>
+
+      <label class="field" *ngIf="form.kind !== 'payment' || form.method !== 'customer_cheque'">
         <span>Amount</span>
         <div class="amount-input"><em>LKR</em><input type="number" min="0.01" step="0.01" [(ngModel)]="form.amount" placeholder="0.00" /></div>
       </label>
 
-      <ng-container *ngIf="form.kind === 'payment'">
+      <ng-container *ngIf="form.kind === 'payment' && form.method === 'own_cheque'">
         <label class="field">
+          <span>Drawn on</span>
+          <select [(ngModel)]="form.bankAccountId">
+            <option *ngFor="let bank of chequeBanks" [ngValue]="bank.id">{{ bankLabel(bank) }}</option>
+          </select>
+          <small *ngIf="!chequeBanks.length">No bank account yet. Add a bank fund in Money; it can then issue cheques.</small>
+        </label>
+        <div class="field-row">
+          <label class="field"><span>Cheque number</span><input [(ngModel)]="form.chequeNumber" placeholder="e.g. 004512" /></label>
+          <label class="field"><span>Date on the cheque</span><input type="date" [(ngModel)]="form.chequeDate" /></label>
+        </div>
+        <small class="method-note">The cheque goes into the Cheque Register as issued. The bank is debited when you mark it cleared there. If it is cancelled, stopped or returned unpaid, this payment is reversed and the supplier is owed the amount again.</small>
+      </ng-container>
+
+      <ng-container *ngIf="form.kind === 'payment' && form.method === 'customer_cheque'">
+        <div class="field">
+          <span>Cheque to pass on</span>
+          <div class="cheque-list" role="listbox" aria-label="Customer cheques in hand">
+            <button type="button" *ngFor="let cheque of chequesInHand" role="option" [attr.aria-selected]="form.chequeId === cheque.id"
+              [class.selected]="form.chequeId === cheque.id" (click)="chooseCheque(cheque)">
+              <span class="stack">
+                <strong>No. {{ cheque.chequeNumber || '(no number)' }}<ng-container *ngIf="cheque.bankName"> · {{ cheque.bankName }}</ng-container></strong>
+                <small>{{ cheque.customerName || 'Customer' }}<ng-container *ngIf="cheque.chequeDate"> · dated {{ cheque.chequeDate }}</ng-container> · {{ cheque.invoiceNumber }}</small>
+              </span>
+              <b>{{ moneyText(cheque.amount) }}</b>
+            </button>
+            <p class="empty-note" *ngIf="!chequesInHand.length">No customer cheques are in hand. Only cheques not yet deposited can be passed on.</p>
+          </div>
+        </div>
+        <small class="method-note">The whole cheque is passed on. If the supplier's bank dishonours it, mark it in the Cheque Register: this payment is reversed and the customer owes the amount again.</small>
+      </ng-container>
+
+      <ng-container *ngIf="form.kind === 'payment'">
+        <label class="field" *ngIf="form.method === 'fund'">
           <span>Paid from</span>
           <select [(ngModel)]="form.fundAccountId">
             <option *ngFor="let fund of payingFunds" [ngValue]="fund.id">{{ fundLabel(fund) }}</option>
@@ -181,7 +220,7 @@
       <ng-container *ngIf="canBackdate">
         <label class="field">
           <span>Date</span>
-          <input type="date" [(ngModel)]="form.paidOn" [max]="today" [disabled]="form.kind === 'payment' && selectedFund?.fundKind === 'pos_drawer'" />
+          <input type="date" [(ngModel)]="form.paidOn" [max]="today" [disabled]="form.kind === 'payment' && form.method === 'fund' && selectedFund?.fundKind === 'pos_drawer'" />
           <small>Leave it on today unless this happened on an earlier day.</small>
         </label>
         <label class="field" *ngIf="isEarlier(form)"><span>Why is it being recorded now?</span><input [(ngModel)]="form.paidOnReason" placeholder="Required for an earlier date" /></label>
