@@ -55,6 +55,9 @@ const { createCloudSyncService } = require('../../../../packages/core/cloud-sync
 const { createCloudSyncScheduler } = require('../../../../packages/core/cloud-sync/cloud-sync.scheduler');
 const { createBusinessDayService } = require('../../../../packages/core/business-days/business-day.service');
 const { createSupplierSaleStatementService } = require('../../../../packages/core/supplier-sale-statements/supplier-sale-statement.service');
+const { createSupplierAccountRepository } = require('../../../../packages/database/repositories/supplier-account.repository');
+const { createSupplierAccountService } = require('../../../../packages/core/supplier-accounts/supplier-account.service');
+const { createSupplierAccountExportService } = require('../../../../packages/core/printing/supplier-account-export.service');
 const { createCustomerAdvanceService } = require('../../../../packages/core/customer-advances/customer-advance.service');
 const { createExpenseService } = require('../../../../packages/core/expenses/expense.service');
 const { createLotCostingService } = require('../../../../packages/core/lot-costing/lot-costing.service');
@@ -169,6 +172,9 @@ async function createServiceContainer() {
   const cloudSyncService = createCloudSyncService({ repository: cloudSyncRepository, secretProtector });
   const cloudSyncScheduler = createCloudSyncScheduler({ service: cloudSyncService });
   const supplierSaleStatementService = createSupplierSaleStatementService({ repository: supplierSaleStatementRepository });
+  const supplierAccountRepository = createSupplierAccountRepository({ database, documentSequenceRepository, businessDayRepository, journalRepository, expenseRepository });
+  const supplierAccountService = createSupplierAccountService({ repository: supplierAccountRepository });
+  const supplierAccountExportService = createSupplierAccountExportService();
   const expenseService = createExpenseService({ expenseRepository });
   const lotCostingService = createLotCostingService({ lotCostingRepository });
   const inventoryIssueService = createInventoryIssueService({ inventoryIssueRepository, expenseRepository, lotCostingRepository });
@@ -209,6 +215,8 @@ async function createServiceContainer() {
     settingsService,
     catalogService,
     supplierSaleStatementService,
+    supplierAccountService,
+    supplierAccountExportService,
     customerAdvanceService,
     expenseService,
     lotCostingService,

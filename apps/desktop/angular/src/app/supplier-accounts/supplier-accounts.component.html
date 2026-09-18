@@ -1,0 +1,203 @@
+<section class="accounts-page">
+  <header class="page-head">
+    <div>
+      <h1>Supplier Accounts <span>What we owe</span></h1>
+      <p>Every finalized statement adds what we owe a supplier; payments and adjustments settle it.</p>
+    </div>
+  </header>
+
+  <div class="alert error" *ngIf="error" role="alert"><span>{{ error }}</span><button type="button" (click)="error = ''" aria-label="Dismiss">×</button></div>
+  <div class="alert success" *ngIf="info" role="status"><span>{{ info }}</span><button type="button" (click)="info = ''" aria-label="Dismiss">×</button></div>
+
+  <!-- ════════ SUPPLIER LIST ════════ -->
+  <ng-container *ngIf="view === 'list'">
+    <section class="stats">
+      <div class="owe"><span>We owe suppliers</span><strong>{{ moneyText(totalWeOwe) }}</strong></div>
+      <div class="owed"><span>Suppliers owe us</span><strong>{{ moneyText(totalOwedToUs) }}</strong></div>
+      <div><span>Suppliers listed</span><strong>{{ accounts.length }}</strong></div>
+    </section>
+
+    <section class="card">
+      <div class="toolbar">
+        <input type="search" [(ngModel)]="term" (keyup.enter)="loadAccounts()" placeholder="Find a supplier by name or code" aria-label="Find a supplier" />
+        <div class="chips" role="group" aria-label="Filter by balance">
+          <button type="button" [class.active]="balanceFilter === ''" (click)="setBalanceFilter('')">All</button>
+          <button type="button" [class.active]="balanceFilter === 'owed'" (click)="setBalanceFilter('owed')">We owe</button>
+          <button type="button" [class.active]="balanceFilter === 'owes_us'" (click)="setBalanceFilter('owes_us')">They owe us</button>
+          <button type="button" [class.active]="balanceFilter === 'settled'" (click)="setBalanceFilter('settled')">Settled</button>
+        </div>
+        <label class="check"><input type="checkbox" [(ngModel)]="includeAll" (change)="loadAccounts()" /> Include suppliers with no activity</label>
+      </div>
+
+      <div class="table list-table" *ngIf="accounts.length">
+        <div class="row head"><span>Supplier</span><span>Last activity</span><span class="num">Statements</span><span>Last payment</span><span class="num">Balance</span><span></span></div>
+        <div class="row" *ngFor="let row of accounts; trackBy: trackAccount" (dblclick)="openSheet(row.supplierId)">
+          <span class="stack"><strong>{{ row.name }}</strong><small>{{ row.supplierCode || 'No code' }}</small></span>
+          <span class="stack"><strong>{{ row.lastActivityDate || '—' }}</strong></span>
+          <span class="num">{{ row.statementCount }}</span>
+          <span class="stack"><strong>{{ row.lastPaymentDate || '—' }}</strong><small *ngIf="row.lastPaymentAmount != null">{{ moneyText(row.lastPaymentAmount) }}</small></span>
+          <span class="num balance" [class.owe]="row.balance > 0.005" [class.owed]="row.balance < -0.005">
+            <strong>{{ moneyText(row.balance < 0 ? -row.balance : row.balance) }}</strong>
+            <small>{{ row.balance > 0.005 ? 'to pay' : row.balance < -0.005 ? 'owed to us' : 'settled' }}</small>
+          </span>
+          <span class="row-actions">
+            <button type="button" class="btn small" (click)="openSheet(row.supplierId)">View account</button>
+            <button type="button" class="btn small primary" *ngIf="canManage" (click)="openPayment(row.supplierId, row.name, row.balance)">Record payment</button>
+          </span>
+        </div>
+      </div>
+      <p class="empty" *ngIf="!loading && !accounts.length">No supplier matches. Finalize a supplier statement, or include suppliers with no activity to record an opening balance.</p>
+    </section>
+  </ng-container>
+
+  <!-- ════════ ACCOUNT SHEET ════════ -->
+  <ng-container *ngIf="view === 'sheet' && sheet">
+    <section class="sheet-head card">
+      <div class="who">
+        <button type="button" class="btn ghost back" (click)="backToList()">← Suppliers</button>
+        <div>
+          <h2>{{ sheet.supplier.name }}</h2>
+          <p>{{ sheet.supplier.supplierCode || 'No code' }}<ng-container *ngIf="sheet.supplier.phone"> · {{ sheet.supplier.phone }}</ng-container></p>
+        </div>
+      </div>
+      <div class="balance-card" [class.owe]="sheet.currentBalance > 0.005" [class.owed]="sheet.currentBalance < -0.005">
+        <span>Balance now</span>
+        <strong>{{ moneyText(sheet.currentBalance < 0 ? -sheet.currentBalance : sheet.currentBalance) }}</strong>
+        <small>{{ sheet.currentBalance > 0.005 ? 'We owe the supplier' : sheet.currentBalance < -0.005 ? 'The supplier owes us' : 'Settled' }}</small>
+      </div>
+      <div class="sheet-actions">
+        <button type="button" class="btn primary" *ngIf="canManage" (click)="openPayment(sheet.supplier.id, sheet.supplier.name, sheet.currentBalance)">Record payment</button>
+        <button type="button" class="btn" *ngIf="canManage" (click)="openAdjustment()">Adjustment</button>
+        <button type="button" class="btn" *ngIf="canManage && !sheet.hasOpeningBalance" (click)="openOpeningBalance()">Opening balance</button>
+        <button type="button" class="btn ghost" (click)="exportSheet('pdf')">Save PDF</button>
+        <button type="button" class="btn ghost" (click)="exportSheet('xlsx')">Save Excel</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="toolbar">
+        <div class="segmented" role="radiogroup" aria-label="Sheet view">
+          <button type="button" role="radio" [class.active]="sheetView === 'detailed'" [attr.aria-checked]="sheetView === 'detailed'" (click)="setSheetView('detailed')">Detailed</button>
+          <button type="button" role="radio" [class.active]="sheetView === 'compact'" [attr.aria-checked]="sheetView === 'compact'" (click)="setSheetView('compact')">Compact</button>
+        </div>
+        <small class="view-hint">{{ sheetView === 'detailed' ? 'Each statement split into its subtotal, commission, credits and deductions.' : 'Each statement as one line at its net payable.' }}</small>
+        <div class="range" (keyup.enter)="loadSheet()">
+          <label>From<input type="date" [(ngModel)]="fromDate" /></label>
+          <label>To<input type="date" [(ngModel)]="toDate" /></label>
+          <button type="button" class="btn small" (click)="loadSheet()">Apply</button>
+          <button type="button" class="btn small ghost" *ngIf="fromDate || toDate" (click)="clearRange()">All dates</button>
+        </div>
+      </div>
+
+      <div class="table sheet-table">
+        <div class="row head"><span>Date</span><span>Reference</span><span>Description</span><span class="num">Owed to supplier (+)</span><span class="num">Paid / deducted (−)</span><span class="num">Balance</span><span></span></div>
+        <div class="row brought" *ngIf="sheet.broughtForward != null">
+          <span></span><span></span><span class="stack"><strong>Balance brought forward</strong><small>Everything before {{ sheet.fromDate }}</small></span><span></span><span></span>
+          <span class="num running" [class.neg]="sheet.broughtForward < -0.005">{{ moneyText(sheet.broughtForward) }}</span><span></span>
+        </div>
+        <ng-container *ngFor="let line of sheet.lines; let i = index; trackBy: trackLine">
+          <div class="row" [class.group-start]="startsGroup(i)" [class.continued]="!startsGroup(i)" [class.reversed]="line.reversed" [class.void]="line.kind === 'statement_void' || line.kind === 'reversal'">
+            <span class="stack when"><strong *ngIf="startsGroup(i)">{{ line.date }}</strong><small *ngIf="startsGroup(i)">{{ line.time }}</small></span>
+            <span class="refs"><ng-container *ngIf="startsGroup(i)"><em class="kind" [attr.data-kind]="line.kind">{{ kindLabel(line) }}</em><small *ngFor="let ref of line.refs">{{ ref }}</small></ng-container></span>
+            <span class="stack"><strong>{{ line.description }}</strong><small *ngIf="line.detail">{{ line.detail }}</small><small class="reversed-note" *ngIf="line.reversed">Reversed</small></span>
+            <span class="num owe-cell">{{ line.owed ? moneyText(line.owed) : '' }}</span>
+            <span class="num paid-cell">{{ line.paid ? moneyText(line.paid) : '' }}</span>
+            <span class="num running" [class.neg]="line.balance < -0.005">{{ moneyText(line.balance) }}</span>
+            <span class="row-actions">
+              <button type="button" class="btn tiny danger" *ngIf="canManage && line.reversible && reversingEntryId !== line.entryId" (click)="beginReverse(line)">Reverse</button>
+            </span>
+          </div>
+          <div class="row reverse-row" *ngIf="reversingEntryId && reversingEntryId === line.entryId">
+            <span></span><span></span>
+            <input [(ngModel)]="reverseReason" placeholder="Why is this being reversed?" aria-label="Reversal reason" (keyup.enter)="confirmReverse()" (keyup.escape)="cancelReverse()" />
+            <span class="reverse-note">{{ line.kind === 'payment' ? 'The money goes back to the fund that paid.' : 'The balance returns to what it was.' }}</span>
+            <span></span><span></span>
+            <span class="row-actions"><button type="button" class="btn tiny danger" [disabled]="saving" (click)="confirmReverse()">Reverse</button><button type="button" class="btn tiny" (click)="cancelReverse()">Cancel</button></span>
+          </div>
+        </ng-container>
+        <div class="row total">
+          <span></span><span></span><span class="stack"><strong>{{ sheet.fromDate || sheet.toDate ? 'Totals for this period' : 'Totals' }}</strong></span>
+          <span class="num">{{ moneyText(sheet.totalOwed) }}</span>
+          <span class="num">{{ moneyText(sheet.totalPaid) }}</span>
+          <span class="num running" [class.neg]="sheet.closingBalance < -0.005">{{ moneyText(sheet.closingBalance) }}</span><span></span>
+        </div>
+      </div>
+      <p class="empty" *ngIf="!sheet.lines.length">Nothing recorded {{ sheet.fromDate || sheet.toDate ? 'in this period' : 'for this supplier yet' }}.</p>
+      <p class="legend">A positive balance is what we owe the supplier. A negative balance, in red, is what the supplier owes us.</p>
+    </section>
+  </ng-container>
+</section>
+
+<!-- ════════ ENTRY FORMS ════════ -->
+<div class="overlay" *ngIf="form" (click)="closeForm()">
+  <section class="entry-drawer" (click)="$event.stopPropagation()" (keydown)="onFormKeydown($event)">
+    <button type="button" class="close" (click)="closeForm()" aria-label="Close">×</button>
+    <div class="drawer-head">
+      <span class="eyebrow">{{ form.kind === 'payment' ? 'Pay supplier' : form.kind === 'opening' ? 'Opening balance' : 'Adjustment' }}</span>
+      <h2>{{ form.supplierName }}</h2>
+      <p>Balance now: <b>{{ balanceText(form.balance) }}</b></p>
+    </div>
+
+    <div class="fields">
+      <label class="field">
+        <span>Amount</span>
+        <div class="amount-input"><em>LKR</em><input type="number" min="0.01" step="0.01" [(ngModel)]="form.amount" placeholder="0.00" /></div>
+      </label>
+
+      <ng-container *ngIf="form.kind === 'payment'">
+        <label class="field">
+          <span>Paid from</span>
+          <select [(ngModel)]="form.fundAccountId">
+            <option *ngFor="let fund of payingFunds" [ngValue]="fund.id">{{ fundLabel(fund) }}</option>
+          </select>
+          <small *ngIf="selectedFund?.fundKind === 'pos_drawer'">Taken from this drawer's open shift.</small>
+          <small *ngIf="selectedFund?.fundKind === 'stakeholder'">Paid with a partner's own money: the business will owe them this amount.</small>
+          <small *ngIf="!payingFunds.length">No fund is available. Open a cash shift, or add a safe or bank account in Money.</small>
+        </label>
+        <div class="field-row">
+          <label class="field"><span>Reference (optional)</span><input [(ngModel)]="form.reference" placeholder="Receipt, transfer or slip number" /></label>
+          <label class="field"><span>Note (optional)</span><input [(ngModel)]="form.note" placeholder="Part payment for August" /></label>
+        </div>
+        <p class="notice" *ngIf="form.balance <= 0.005">This supplier has nothing to be paid right now. A payment will leave them owing us, as an advance.</p>
+      </ng-container>
+
+      <ng-container *ngIf="form.kind === 'opening'">
+        <div class="choice" role="radiogroup" aria-label="Who owed whom">
+          <button type="button" [class.selected]="form.effect === 'owe_more'" (click)="form.effect = 'owe_more'"><b>We owed them</b><span>Carried over as money to pay</span></button>
+          <button type="button" [class.selected]="form.effect === 'owe_less'" (click)="form.effect = 'owe_less'"><b>They owed us</b><span>Carried over as money owed to us</span></button>
+        </div>
+        <label class="field"><span>Note (optional)</span><input [(ngModel)]="form.note" placeholder="From the old account book" /></label>
+      </ng-container>
+
+      <ng-container *ngIf="form.kind === 'adjustment'">
+        <div class="choice" role="radiogroup" aria-label="Direction">
+          <button type="button" [class.selected]="form.effect === 'owe_more'" (click)="form.effect = 'owe_more'"><b>Add to what we owe</b><span>The balance goes up</span></button>
+          <button type="button" [class.selected]="form.effect === 'owe_less'" (click)="form.effect = 'owe_less'"><b>Reduce what we owe</b><span>The balance goes down</span></button>
+        </div>
+        <label class="field"><span>Reason</span><input [(ngModel)]="form.reason" placeholder="What this correction is for (required)" /></label>
+        <label class="field"><span>Reference (optional)</span><input [(ngModel)]="form.reference" /></label>
+      </ng-container>
+
+      <ng-container *ngIf="canBackdate">
+        <label class="field">
+          <span>Date</span>
+          <input type="date" [(ngModel)]="form.paidOn" [max]="today" [disabled]="form.kind === 'payment' && selectedFund?.fundKind === 'pos_drawer'" />
+          <small>Leave it on today unless this happened on an earlier day.</small>
+        </label>
+        <label class="field" *ngIf="isEarlier(form)"><span>Why is it being recorded now?</span><input [(ngModel)]="form.paidOnReason" placeholder="Required for an earlier date" /></label>
+      </ng-container>
+
+      <div class="after" [class.owe]="balanceAfter > 0.005" [class.owed]="balanceAfter < -0.005">
+        <span>Balance after this</span><strong>{{ balanceText(balanceAfter) }}</strong>
+      </div>
+    </div>
+
+    <div class="drawer-actions">
+      <small class="key-hint"><kbd>Enter</kbd> save · <kbd>Esc</kbd> cancel</small>
+      <button type="button" class="btn ghost" (click)="closeForm()">Cancel</button>
+      <button type="button" class="btn primary" [disabled]="saving || !formReady" (click)="saveForm()">
+        {{ saving ? 'Saving…' : form.kind === 'payment' ? 'Record payment' : form.kind === 'opening' ? 'Save opening balance' : 'Save adjustment' }}
+      </button>
+    </div>
+  </section>
+</div>

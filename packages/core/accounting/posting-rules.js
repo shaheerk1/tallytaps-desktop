@@ -291,6 +291,22 @@ function supplierPaymentPosting({ payment, reversal = false }) {
   };
 }
 
+/**
+ * Paying a supplier on their account: what the business owes suppliers goes
+ * down, and the fund that paid goes down with it. A partner's own pocket is
+ * not business money, so paying from it becomes what the business owes them.
+ */
+function supplierAccountPaymentPosting({ amount, fund, stakeholderTreatment = 'capital', supplierName = '' }) {
+  const value = money(amount);
+  return {
+    narration: `Pay supplier${supplierName ? ` ${supplierName}` : ''} from ${fund.name}`,
+    lines: [
+      debit(ACCOUNTS.SUPPLIER_PAYABLES, value),
+      credit(fundAccountCode(fund, { stakeholderTreatment }), value, { fundAccountId: fund.id })
+    ]
+  };
+}
+
 function incomingChequeStatusPosting({ cheque, status }) {
   const value = money(cheque.amount);
   const bankDimensions = cheque.fundAccountId ? { fundAccountId: cheque.fundAccountId } : {};
@@ -372,6 +388,7 @@ module.exports = {
   customerAdvanceRefundPosting,
   supplierObligationPosting,
   supplierPaymentPosting,
+  supplierAccountPaymentPosting,
   incomingChequeStatusPosting,
   issuedChequeClearancePosting,
   otherIssuedChequePosting,

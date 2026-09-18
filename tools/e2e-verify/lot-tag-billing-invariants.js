@@ -14,7 +14,8 @@
  *   6. a lot's code can be renamed, and bills already billed against that lot
  *      are untouched;
  *   7. a code already used by another lot holding stock is refused;
- *   8. a sold-out lot releases its code for another lot to use.
+ *   8. a sold-out lot releases its code for another lot to use;
+ *   9. a code naming an open lot gives that lot's item, so billing can fill it in.
  */
 const { runVerifier, assert, expectRefusal } = require('./lib/ipc-harness');
 
@@ -195,6 +196,17 @@ runVerifier('Lot tag billing invariants', async (app) => {
   assert(Number(typedDefaultRow.lot_id) === Number(second.id) && typedDefaultRow.source === 'tag',
     'Typed on purpose, the same code does name that lot.');
   passed.push('the default code never picks a lot by accident, while the same code typed on purpose still does');
+
+  // ── A code names its item ───────────────────────────────
+  const codeItem = await ok('billing.supplyCodes.lot', { supplyCode: 'a-2-6' });
+  assert(codeItem && Number(codeItem.product.id) === Number(karavila.id) && codeItem.product.sku === 'KAR' && Number(codeItem.lotId) === Number(second.id),
+    `A code naming an open lot must return that lot's item, got ${JSON.stringify(codeItem && { lot: codeItem.lotId, sku: codeItem.product?.sku })}.`);
+  const unknown = await ok('billing.supplyCodes.lot', { supplyCode: 'NOSUCH9' });
+  assert(unknown === null, 'A code naming no open lot names no item.');
+  await db('UPDATE inventory_lots SET remaining_handling_quantity = 0, remaining_quantity = 0, remaining_base_quantity = NULL WHERE id = ?', [second.id]);
+  const soldOut = await ok('billing.supplyCodes.lot', { supplyCode: 'A-2-6' });
+  assert(soldOut === null, 'A sold-out lot no longer names an item.');
+  passed.push("a supply code naming an open lot gives that lot's item for the Item field; any other code gives none");
 
   return passed;
 });

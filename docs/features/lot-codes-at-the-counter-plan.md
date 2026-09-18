@@ -89,6 +89,22 @@ The tagline was chosen by the owner over a separate setting. Because the tagline
 is receipt text, changing it later changes the code saved on future lines only;
 older lines keep the code they were saved with.
 
+## The Code Fills In The Item
+
+Added 2026-09-18. A supply code that names an open lot also names its item, so
+pressing **Enter** (or Tab) in the Supply code field fills the **Item** field
+with that lot's item code and leaves it focused with the text selected:
+
+- **Enter** confirms the item, exactly as if its code had been typed. The lot the
+  code names is then the line's lot.
+- **Typing** replaces the selected text, so a different item needs no erasing.
+- Nothing is filled over an item the cashier already typed or chose, or for a
+  code that names no open lot (the field just moves on, as before).
+
+The filled code counts as typed for that line, so today's remembered code for
+the item does not replace it. The lookup is `billing.supplyCodes.lot`, which uses
+the counter's own location and business date.
+
 ## Supplier Settlements
 
 A sale line used to be credited to a supplier by matching the typed code against
@@ -112,4 +128,4 @@ suppliers' lots keeps the old behaviour.
 `npm run verify:lot-tag` — 13 checks through the real IPC channel: tag
 suggestion, typing a code, an unmatched code taking no stock, a named line
 consuming its lot, editing a line's code, renaming, tag reuse, supplier credit following the lot, the day-long memory,
-and the optional code with its tagline default.
+the optional code with its tagline default, and a code naming its item (14 checks).

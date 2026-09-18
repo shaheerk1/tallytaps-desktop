@@ -25,6 +25,7 @@ import { FieldTransactionInboxComponent } from './field-transaction-inbox/field-
 import { BusinessDayComponent } from './business-day/business-day.component';
 import { ExpensesComponent } from './expenses/expenses.component';
 import { ExpenseGoodsPickerComponent } from './expenses/expense-goods-picker.component';
+import { SupplierAccountsComponent } from './supplier-accounts/supplier-accounts.component';
 import { routes } from './app.routes';
 
 @NgModule({
@@ -50,7 +51,8 @@ import { routes } from './app.routes';
     FieldTransactionInboxComponent,
     BusinessDayComponent,
     ExpensesComponent,
-    ExpenseGoodsPickerComponent
+    ExpenseGoodsPickerComponent,
+    SupplierAccountsComponent
   ],
   imports: [
     BrowserModule,

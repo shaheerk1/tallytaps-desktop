@@ -1593,6 +1593,28 @@ export type ExpenseGoodsTarget = {
   lots: Array<{ id: number; lotCode: string; lotTag: string | null; productName: string }>;
 };
 
+/** One supplier on the supplier accounts list. Balance: + we owe them, - they owe us. */
+export type SupplierAccountSummary = {
+  supplierId: number; supplierCode: string | null; name: string; isActive: boolean; balance: number;
+  statementCount: number; lastActivityAt: string | null; lastActivityDate: string | null;
+  lastPaymentDate: string | null; lastPaymentAmount: number | null; hasOpeningBalance: boolean; hasActivity: boolean;
+};
+
+export type SupplierAccountLine = {
+  kind: 'statement' | 'statement_void' | 'payment' | 'opening_balance' | 'adjustment' | 'reversal';
+  date: string; time: string; refs: string[]; description: string; detail: string;
+  owed: number; paid: number; balance: number;
+  statementId?: number; statementNumber?: string; entryId?: number; entryNumber?: string;
+  reversed?: boolean; reversible?: boolean;
+};
+
+export type SupplierAccountSheet = {
+  supplier: { id: number; supplierCode: string | null; name: string; phone: string | null; address: string | null };
+  view: 'detailed' | 'compact'; fromDate: string | null; toDate: string | null;
+  broughtForward: number | null; totalOwed: number; totalPaid: number; closingBalance: number; currentBalance: number;
+  hasOpeningBalance: boolean; lines: SupplierAccountLine[];
+};
+
 export type PattiyalStatementType = 'consignment' | 'owned_purchase';
 /** A lot expense recorded against a statement's GRNs, offered as a deduction. */
 export type PattiyalExpenseDeduction = {
@@ -1909,6 +1931,15 @@ export interface PosApi {
     closePeriod: (period: { locCode: string; periodStart: string; periodEnd: string; macCode?: string; txnDate?: string; userId: number; notes?: string }, actor?: ActorContext | null) => Promise<IpcResult<{ id: number; periodStart: string; periodEnd: string; status: string }>>;
     reopenPeriod: (period: { periodId: number; userId: number; reason: string }, actor?: ActorContext | null) => Promise<IpcResult<{ id: number; status: string; reopenCount: number }>>;
   };
+  supplierAccounts: {
+    list: (filters: { term?: string; balance?: '' | 'owed' | 'owes_us' | 'settled'; includeAll?: boolean }, actor?: ActorContext | null) => Promise<IpcResult<SupplierAccountSummary[]>>;
+    sheet: (filters: { supplierId: number; fromDate?: string; toDate?: string; view?: 'detailed' | 'compact' }, actor?: ActorContext | null) => Promise<IpcResult<SupplierAccountSheet>>;
+    pay: (payment: { supplierId: number; fundAccountId: number; amount: number; reference?: string; note?: string; paidOn?: string; paidOnReason?: string; requestId?: string }, actor?: ActorContext | null) => Promise<IpcResult<{ id: number; entryNumber: string; amount: number; fundName: string; stakeholderName: string | null; balance: number; replayed?: boolean }>>;
+    openingBalance: (entry: { supplierId: number; amount: number; effect: 'owe_more' | 'owe_less'; note?: string; paidOn?: string; paidOnReason?: string; requestId?: string }, actor?: ActorContext | null) => Promise<IpcResult<{ id: number; entryNumber: string; balance: number }>>;
+    adjust: (entry: { supplierId: number; amount: number; effect: 'owe_more' | 'owe_less'; reason: string; reference?: string; paidOn?: string; paidOnReason?: string; requestId?: string }, actor?: ActorContext | null) => Promise<IpcResult<{ id: number; entryNumber: string; balance: number }>>;
+    reverse: (reversal: { entryId: number; reason: string }, actor?: ActorContext | null) => Promise<IpcResult<{ id: number; entryNumber: string; reverses: string; balance: number }>>;
+    exportSheet: (filters: { supplierId: number; fromDate?: string; toDate?: string; view?: 'detailed' | 'compact' }, format: 'pdf' | 'xlsx', brand: { name?: string; addressLines?: string[]; phone?: string }, actor?: ActorContext | null) => Promise<IpcResult<{ filePath?: string; canceled?: boolean }>>;
+  };
   pattiyals: {
     list: (filters: Record<string, unknown>, actor?: ActorContext | null) => Promise<IpcResult<{ rows: Array<Record<string, any>>; total: number; page: number; pageSize: number }>>;
     get: (statementId: number, actor?: ActorContext | null) => Promise<IpcResult<PattiyalDetail | null>>;
@@ -1969,6 +2000,8 @@ export interface PosApi {
     }>>;
     /** The supply code this cashier used for an item earlier today, if any. */
     rememberedSupplyCode: (productId: number, actor?: ActorContext) => Promise<IpcResult<{ supplyCode: string | null }>>;
+    /** The open lot a supply code names here, with its item; null when the code names none. */
+    lotForSupplyCode: (supplyCode: string, actor?: ActorContext) => Promise<IpcResult<{ lotId: number; lotTag: string; lotCode: string; product: Record<string, any> } | null>>;
     forgetSupplyCode: (productId: number, actor?: ActorContext) => Promise<IpcResult<{ forgotten: boolean }>>;
     holdBill: (session: BillContext, actor?: ActorContext) => Promise<IpcResult<OpenBillResult>>;
     addItem: (bill: BillContext, item: {

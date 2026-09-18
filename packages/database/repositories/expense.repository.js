@@ -1160,7 +1160,8 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
     loadFundsWithConnection: loadFunds,
     lockFundWithConnection: lockFund,
     spendFromFundWithConnection: spendFromFund,
-    receiveIntoFundWithConnection: receiveIntoFund
+    receiveIntoFundWithConnection: receiveIntoFund,
+    stakeholderForFundWithConnection: stakeholderForFund
   };
 }
 

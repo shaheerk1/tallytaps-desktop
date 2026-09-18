@@ -283,6 +283,23 @@ function createBillingEngineService({
     return { supplyCode };
   }
 
+  /**
+   * The open lot a supply code names at this counter's location, with the item
+   * it holds, so billing can fill in the item from the code. Tags are unique
+   * among lots still holding stock, so a code names at most one item.
+   */
+  async function lotForSupplyCode({ supplyCode }) {
+    const ws = requestContext.workstation();
+    const code = String(supplyCode || '').trim().toUpperCase();
+    if (!ws || !code) return null;
+    const origin = requestContext.resolveOrigin({});
+    const lot = await billingRepository.findActiveLotByTag({ tag: code, locCode: origin.locCode, txnDate: origin.txnDate });
+    if (!lot) return null;
+    const product = await catalogRepository.getProduct(lot.productId);
+    if (!product || !Number(product.is_active ?? 1)) return null;
+    return { lotId: lot.id, lotTag: lot.lotTag, lotCode: lot.lotCode, product };
+  }
+
   async function forgetSupplyCode({ productId }) {
     const ws = requestContext.workstation();
     const userId = requestContext.resolveUserId({});
@@ -912,6 +929,7 @@ function createBillingEngineService({
     copyInvoiceToBill,
     supplyCodePolicy,
     rememberedSupplyCode,
+    lotForSupplyCode,
     forgetSupplyCode
   };
 }

@@ -180,6 +180,15 @@ contextBridge.exposeInMainWorld('posApi', {
     closePeriod: (period, actor) => invoke('accounting.periods.close', { period, actor }),
     reopenPeriod: (period, actor) => invoke('accounting.periods.reopen', { period, actor })
   },
+  supplierAccounts: {
+    list: (filters, actor) => invoke('supplierAccounts.list', { filters, actor }),
+    sheet: (filters, actor) => invoke('supplierAccounts.sheet', { filters, actor }),
+    pay: (payment, actor) => invoke('supplierAccounts.pay', { payment, actor }),
+    openingBalance: (entry, actor) => invoke('supplierAccounts.openingBalance', { entry, actor }),
+    adjust: (entry, actor) => invoke('supplierAccounts.adjust', { entry, actor }),
+    reverse: (reversal, actor) => invoke('supplierAccounts.reverse', { reversal, actor }),
+    exportSheet: (filters, format, brand, actor) => invoke('supplierAccounts.export', { filters, format, brand, actor })
+  },
   pattiyals: {
     list: (filters, actor) => invoke('supply.pattiyals.list', { filters, actor }),
     get: (statementId, actor) => invoke('supply.pattiyals.get', { statementId, actor }),
@@ -204,6 +213,7 @@ contextBridge.exposeInMainWorld('posApi', {
     unsettleInvoice: (payload, actor) => invoke('billing.invoices.unsettle', { ...payload, actor }),
     copyInvoiceToBill: (invoiceId, actor) => invoke('billing.invoices.copyToBill', { invoiceId, actor }),
     rememberedSupplyCode: (productId, actor) => invoke('billing.supplyCodes.remembered', { productId, actor }),
+    lotForSupplyCode: (supplyCode, actor) => invoke('billing.supplyCodes.lot', { supplyCode, actor }),
     forgetSupplyCode: (productId, actor) => invoke('billing.supplyCodes.forget', { productId, actor }),
     holdBill: (session, actor) => invoke('billing.bill.hold', { session, actor }),
     addItem: (bill, item, actor) => invoke('billing.bill.addItem', { bill, item, actor }),

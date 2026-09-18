@@ -193,7 +193,7 @@ export class CashManagementComponent implements OnInit {
     const labels: Record<string, string> = {
       opening_float: 'Opening float', sale_cash: 'Sale', cash_in: 'Cash in', cash_out: 'Cash out',
       expense_cash: 'Expense', refund_cash: 'Refund', customer_advance_cash: 'Customer advance',
-      receivable_collection: 'Debt collected', correction: 'Correction', safe_drop: 'To safe', bank_drop: 'To bank',
+      receivable_collection: 'Debt collected', supplier_settlement_cash: 'Supplier payment', correction: 'Correction', safe_drop: 'To safe', bank_drop: 'To bank',
       fund_transfer_out: 'Moved out', fund_transfer_in: 'Moved in', supplier_payment: 'Supplier payment'
     };
     const plain = String(type || '').replace(/_/g, ' ');

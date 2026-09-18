@@ -34,6 +34,7 @@
     "verify:grn-supplier": "node tools/e2e-verify/grn-supplier-entry-invariants.js",
     "verify:owned-purchase": "node tools/e2e-verify/owned-purchase-statement-invariants.js",
     "verify:lot-expense-flow": "node tools/e2e-verify/lot-expense-flow-invariants.js",
+    "verify:supplier-accounts": "node tools/e2e-verify/supplier-account-invariants.js",
     "verify:workstation-isolation": "node tools/e2e-verify/workstation-isolation-invariants.js",
     "verify:ipc-gate": "node tools/e2e-verify/ipc-gate-invariants.js",
     "verify:cloud-archive": "node tools/e2e-verify/cloud-archive-streams.js",

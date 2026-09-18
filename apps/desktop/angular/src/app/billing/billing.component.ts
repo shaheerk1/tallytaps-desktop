@@ -158,6 +158,13 @@ export class BillingComponent implements OnInit, OnDestroy {
   defaultSupplyCode = '';
   /** Set when the cashier typed a code or picked a lot for the line being entered. */
   supplyCodeTypedThisLine = false;
+  /**
+   * The item filled in from a supply code, waiting in the Item field for the
+   * cashier to confirm with Enter or type over. Cleared as soon as the field
+   * says anything else.
+   */
+  private supplyCodeItem: Product | null = null;
+  private supplyCodeLookupToken = 0;
   private lotLookupToken = 0;
 
   // Billed items (live invoice_items for the current receipt)
@@ -949,6 +956,9 @@ export class BillingComponent implements OnInit, OnDestroy {
   }
 
   onItemCodeInput(): void {
+    if (this.supplyCodeItem && this.itemCode.trim().toUpperCase() !== String(this.supplyCodeItem.sku || '').toUpperCase()) {
+      this.supplyCodeItem = null;
+    }
     const term = this.itemCode.trim();
     if (!term) { this.filteredProducts = []; this.showItemDropdown = false; return; }
     void this.searchProductSuggestions(term);
@@ -1239,9 +1249,48 @@ export class BillingComponent implements OnInit, OnDestroy {
   }
 
   onSupplierCodeKeyDown(event: KeyboardEvent): void {
+    if (event.key === 'Tab' && !event.shiftKey) { void this.fillItemFromSupplyCode(); return; }
     if (event.key !== 'Enter') return;
     event.preventDefault();
     this.itemCodeInput?.nativeElement?.focus();
+    void this.fillItemFromSupplyCode();
+  }
+
+  /**
+   * A supply code naming an open lot also names its item, so the Item field is
+   * filled with that item's code and left focused with the text selected: Enter
+   * confirms it, and typing replaces it. Nothing is filled over an item the
+   * cashier already typed or chose, or for a code that names no open lot.
+   */
+  private async fillItemFromSupplyCode(): Promise<void> {
+    const api = window.posApi?.billing;
+    const code = this.supplierCode.trim().toUpperCase();
+    if (!api || !code || !this.itemFieldIsFree()) return;
+    const token = ++this.supplyCodeLookupToken;
+    const result = await api.lotForSupplyCode(code, this.actor()).catch(() => null);
+    if (token !== this.supplyCodeLookupToken || this.supplierCode.trim().toUpperCase() !== code) return;
+    const product = result?.success ? (result.data?.product as Product | undefined) : undefined;
+    if (!product || !this.itemFieldIsFree()) return;
+    if (this.selectedProductId === product.id) return;
+    this.supplyCodeItem = product;
+    // The code decided the item, so it stands as typed: today's remembered
+    // code for this item does not replace it when the item is confirmed.
+    this.supplyCodeTypedThisLine = true;
+    this.itemCode = product.sku;
+    this.showItemDropdown = false;
+    this.selectedDropdownIndex = -1;
+    setTimeout(() => {
+      const input = this.itemCodeInput?.nativeElement as HTMLInputElement | undefined;
+      input?.focus();
+      input?.select();
+    }, 0);
+  }
+
+  /** Empty, or still holding only what a supply code filled in. */
+  private itemFieldIsFree(): boolean {
+    const typed = this.itemCode.trim().toUpperCase();
+    if (!typed) return true;
+    return Boolean(this.supplyCodeItem && typed === String(this.supplyCodeItem.sku || '').toUpperCase() && this.selectedProductId === null);
   }
 
   private async searchProductSuggestions(term: string): Promise<void> {
@@ -1340,6 +1389,13 @@ export class BillingComponent implements OnInit, OnDestroy {
   }
 
   private lookupItem(): void {
+    // The item a supply code filled in is the exact product, not a search hit.
+    const fromCode = this.supplyCodeItem;
+    if (fromCode && this.itemCode.trim().toUpperCase() === String(fromCode.sku || '').toUpperCase()) {
+      this.supplyCodeItem = null;
+      this.selectProduct(fromCode);
+      return;
+    }
     if (!this.itemCode.trim()) {
       this.openItemPicker();
       return;
@@ -1741,6 +1797,8 @@ export class BillingComponent implements OnInit, OnDestroy {
     this.value = 0;
     this.selectedProductId = null;
     this.supplyCodeTypedThisLine = false;
+    this.supplyCodeItem = null;
+    this.supplyCodeLookupToken += 1;
     this.clearLotLookup();
     this.lineFieldValues = {};
     this.lineError = '';

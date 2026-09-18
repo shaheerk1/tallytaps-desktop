@@ -618,6 +618,29 @@ function registerIpcHandlers(services) {
   wrapIpcHandler('inventory.allocations.list', async (payload) => services.catalogService.listRecentLotAllocations(payload?.locCode, payload?.limit), { authorize: requireReceivingView });
   wrapIpcHandler('inventory.allocations.resolve', async (payload) => services.catalogService.allocateException({ ...(payload?.allocation || {}), userId: payload?.actor?.id || null }), { authorize: requireInventoryAdjust });
   wrapIpcHandler('inventory.allocations.reallocate', async (payload) => services.catalogService.reallocateSale({ ...(payload?.allocation || {}), userId: payload?.actor?.id || null }), { authorize: requireInventoryAdjust });
+  // Supplier accounts: balances from finalized statements, payments, an
+  // opening balance and adjustments. Viewing needs settlements.view; anything
+  // that changes a balance needs settlements.manage.
+  wrapIpcHandler('supplierAccounts.list', async (payload) => services.supplierAccountService.list(payload?.filters || {}), { authorize: requireSettlementsView });
+  wrapIpcHandler('supplierAccounts.sheet', async (payload) => services.supplierAccountService.sheet(payload?.filters || {}), { authorize: requireSettlementsView });
+  wrapIpcHandler('supplierAccounts.pay', async (payload) => services.supplierAccountService.recordPayment({ ...(payload?.payment || {}), userId: actorId(payload) }), { authorize: requireSettlementsManage });
+  wrapIpcHandler('supplierAccounts.openingBalance', async (payload) => services.supplierAccountService.recordOpeningBalance({ ...(payload?.entry || {}), userId: actorId(payload) }), { authorize: requireSettlementsManage });
+  wrapIpcHandler('supplierAccounts.adjust', async (payload) => services.supplierAccountService.recordAdjustment({ ...(payload?.entry || {}), userId: actorId(payload) }), { authorize: requireSettlementsManage });
+  wrapIpcHandler('supplierAccounts.reverse', async (payload) => services.supplierAccountService.reverseEntry({ ...(payload?.reversal || {}), userId: actorId(payload) }), { authorize: requireSettlementsManage });
+  wrapIpcHandler('supplierAccounts.export', async (payload) => {
+    const format = payload?.format === 'xlsx' ? 'xlsx' : 'pdf';
+    // The sheet is built again here from the database, never taken from the screen.
+    const sheet = await services.supplierAccountService.sheet(payload?.filters || {});
+    const safeName = String(sheet.supplier.name || 'supplier').replace(/[\\/:*?"<>|]+/g, '-');
+    const selected = await dialog.showSaveDialog({
+      title: 'Save supplier account',
+      defaultPath: `Supplier account - ${safeName}.${format}`,
+      filters: [format === 'xlsx' ? { name: 'Excel workbook', extensions: ['xlsx'] } : { name: 'PDF document', extensions: ['pdf'] }]
+    });
+    if (selected.canceled || !selected.filePath) return { canceled: true };
+    const save = format === 'xlsx' ? services.supplierAccountExportService.saveXlsx : services.supplierAccountExportService.savePdf;
+    return { filePath: await save(sheet, { filePath: selected.filePath, brand: payload?.brand || {} }) };
+  }, { authorize: requireSettlementsView });
   wrapIpcHandler('supply.pattiyals.list', async (payload) => services.supplierSaleStatementService.list(payload?.filters || {}), { authorize: requireSettlementsView });
   wrapIpcHandler('supply.pattiyals.get', async (payload) => services.supplierSaleStatementService.get(payload?.statementId), { authorize: requireSettlementsView });
   wrapIpcHandler('supply.pattiyals.candidates.sales', async (payload) => services.supplierSaleStatementService.candidates(payload?.filters || {}), { authorize: requireSettlementsView });
@@ -851,6 +874,9 @@ function registerIpcHandlers(services) {
   // The supply code a cashier used for an item earlier today, to fill in again.
   wrapIpcHandler('billing.supplyCodes.remembered', async (payload) =>
     services.billingEngineService.rememberedSupplyCode({ productId: payload?.productId }), { authorize: requireBillingCreate });
+  // The item held by the open lot a typed supply code names.
+  wrapIpcHandler('billing.supplyCodes.lot', async (payload) =>
+    services.billingEngineService.lotForSupplyCode({ supplyCode: payload?.supplyCode }), { authorize: requireBillingCreate });
   wrapIpcHandler('billing.supplyCodes.forget', async (payload) =>
     services.billingEngineService.forgetSupplyCode({ productId: payload?.productId }), { authorize: requireBillingCreate });
 
