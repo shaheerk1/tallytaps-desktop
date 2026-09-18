@@ -252,6 +252,7 @@ contextBridge.exposeInMainWorld('posApi', {
   cash: {
     activeShift: (sessionId, actor) => invoke('cash.activeShift', { sessionId, actor }),
     recoverableShift: (workstationId, userId, actor) => invoke('cash.recoverableShift', { workstationId, userId, actor }),
+    openingExpectation: (workstationId, actor) => invoke('cash.openingExpectation', { workstationId, actor }),
     getShift: (shiftId, actor) => invoke('cash.getShift', { shiftId, actor }),
     reportHistory: (shiftId, actor) => invoke('cash.reportHistory', { shiftId, actor }),
     archiveReportPrint: (payload, actor) => invoke('cash.archiveReportPrint', { ...payload, actor }),

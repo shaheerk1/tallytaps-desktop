@@ -22,6 +22,8 @@ const DEFAULT_DENOMINATIONS = [5000, 2000, 1000, 500, 100, 50, 20, 10, 5, 2, 1];
 export class CashManagementComponent implements OnInit {
   shift: CashShift | null = null;
   openingLines = this.blankLines();
+  openingExpectation: import('../../../../../../packages/shared/ipc/pos-api').CashOpeningExpectation | null = null;
+  openingDifferenceReason = '';
   closingLines = this.blankLines();
   movementDirection: 'in' | 'out' = 'in';
   movementAmount = 0;
@@ -258,6 +260,7 @@ export class CashManagementComponent implements OnInit {
       return;
     }
 
+    await this.loadOpeningExpectation();
     const recovery = await window.posApi.cash.recoverableShift(ctx.workstationId, ctx.userId, this.actor());
     if (!recovery.success) { this.error = recovery.error || 'Could not check for a pending cash shift.'; return; }
     this.shift = recovery.data;
@@ -299,6 +302,25 @@ export class CashManagementComponent implements OnInit {
     this.movementHistory = result.data || [];
   }
 
+  /** The cash the last closed shift left in this drawer, which the next opening count should match. */
+  async loadOpeningExpectation(): Promise<void> {
+    const ctx = this.context();
+    if (!window.posApi || !ctx.workstationId) return;
+    const result = await window.posApi.cash.openingExpectation(ctx.workstationId, this.actor());
+    this.openingExpectation = result.success ? result.data : null;
+  }
+
+  /** Opening minus what should be in the drawer; null before the drawer's first shift closes. */
+  get openingDifference(): number | null {
+    if (!this.openingExpectation) return null;
+    return Math.round((this.total(this.openingLines) - this.openingExpectation.carriedTotal) * 100) / 100;
+  }
+
+  useCarriedCount(): void {
+    const counted = new Map((this.openingExpectation?.lines || []).map((line) => [Number(line.denomination), line.quantity]));
+    this.openingLines = this.openingLines.map((line) => ({ ...line, quantity: counted.get(Number(line.denomination)) || 0 }));
+  }
+
   async loadHistory(): Promise<void> {
     if (!window.posApi || !this.shift) {
       this.reportHistory = [];
@@ -313,12 +335,20 @@ export class CashManagementComponent implements OnInit {
     this.loading = true; this.error = '';
     try {
       const ctx = this.context();
+      const difference = this.openingDifference;
+      if (difference !== null && difference !== 0 && !this.openingDifferenceReason.trim()) {
+        this.error = `The drawer should hold ${this.openingExpectation!.carriedTotal.toFixed(2)}. Count again, or write why it is different.`;
+        return;
+      }
       const result = await window.posApi.cash.openShift({
         workstationSessionId: ctx.sessionId, workstationId: ctx.workstationId, userId: ctx.userId,
-        businessDate: ctx.businessDate, openingLines: this.openingLines
+        businessDate: ctx.businessDate, openingLines: this.openingLines,
+        openingDifferenceReason: this.openingDifferenceReason.trim()
       }, this.actor());
       if (!result.success) { this.error = result.error || 'Could not open the cash shift.'; return; }
-      this.shift = result.data; this.info = 'Cash shift opened and opening float recorded.';
+      this.shift = result.data;
+      this.info = difference ? `Cash shift opened. The ${difference > 0 ? 'excess' : 'shortage'} of ${Math.abs(difference).toFixed(2)} was recorded with its reason.` : 'Cash shift opened and opening float recorded.';
+      this.openingExpectation = null; this.openingDifferenceReason = '';
       await this.loadFunds();
       await this.loadHistory();
     } finally { this.loading = false; }
@@ -460,6 +490,8 @@ export class CashManagementComponent implements OnInit {
       drawerName: this.shift.drawerName,
       businessDate: this.businessDateText(this.shift.businessDate),
       openingTotal: this.shift.openingTotal,
+      carriedInTotal: this.shift.carriedInTotal ?? null,
+      openingDifference: this.shift.openingDifference ?? null,
       expectedTotal: this.shift.expectedTotal,
       declaredTotal: this.shift.declaredTotal,
       varianceTotal: this.shift.varianceTotal,
@@ -494,7 +526,9 @@ export class CashManagementComponent implements OnInit {
       ],
       items,
       totals: [
+        ...(shift.carriedInTotal == null ? [] : [{ label: 'Left by last shift', value: shift.carriedInTotal.toFixed(2) }]),
         { label: 'Opening Float', value: shift.openingTotal.toFixed(2) },
+        ...(!shift.openingDifference ? [] : [{ label: shift.openingDifference > 0 ? 'Opening excess' : 'Opening shortage', value: shift.openingDifference.toFixed(2) }]),
         { label: 'Expected Cash', value: shift.expectedTotal.toFixed(2), bold: true },
         ...(shift.declaredTotal === null ? [] : [{ label: 'Declared Cash', value: shift.declaredTotal.toFixed(2) }]),
         ...(shift.varianceTotal === null ? [] : [{ label: 'Variance', value: shift.varianceTotal.toFixed(2), bold: true }])

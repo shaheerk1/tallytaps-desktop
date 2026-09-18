@@ -18,12 +18,13 @@ function createCashManagementService({ cashManagementRepository }) {
       .filter((line) => line.denomination > 0 && line.quantity > 0);
   }
 
-  async function openShift({ workstationSessionId, workstationId, userId, businessDate, openingLines }) {
+  async function openShift({ workstationSessionId, workstationId, userId, businessDate, openingLines, openingDifferenceReason }) {
     if (!workstationSessionId || !workstationId || !userId || !businessDate) {
       throw new Error('A workstation session, workstation, cashier, and business date are required to open a shift.');
     }
     return cashManagementRepository.createShift({
-      workstationSessionId, workstationId, userId, businessDate, openingLines: normalizeLines(openingLines)
+      workstationSessionId, workstationId, userId, businessDate, openingLines: normalizeLines(openingLines),
+      openingDifferenceReason: String(openingDifferenceReason || '').trim()
     });
   }
 
@@ -133,6 +134,7 @@ function createCashManagementService({ cashManagementRepository }) {
       return cashManagementRepository.getRecoverableShiftForWorkstation({ workstationId, userId });
     },
     getShift: (shiftId) => cashManagementRepository.getShift(shiftId),
+    getOpeningExpectation: ({ workstationId }) => (workstationId ? cashManagementRepository.getOpeningExpectation({ workstationId }) : null),
     openShift,
     recordMovement,
     correctMovement,

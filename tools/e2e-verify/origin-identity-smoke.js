@@ -124,7 +124,7 @@ async function main() {
         });
 
         await connection.execute("UPDATE cash_shifts SET status = 'closed' WHERE workstation_id = ? AND status IN ('open','blind_closed')", [workstation.id]);
-        const shift = await cash.createShift({ workstationSessionId: session.id, workstationId: workstation.id, userId, businessDate: txnDate, openingLines: [{ denomination: 100, quantity: 1 }] });
+        const shift = await cash.createShift({ workstationSessionId: session.id, workstationId: workstation.id, userId, businessDate: txnDate, openingLines: [{ denomination: 100, quantity: 1 }], openingDifferenceReason: 'Origin smoke test' });
         await cash.addMovement({ shiftId: shift.id, movementType: 'cash_in', direction: 'in', amount: 1, reason: 'Origin smoke test', userId });
         await catalog.recordSupplierPayment({ settlementId: settlement.id, method: 'cash', amount: 1, businessDate: txnDate, locCode, macCode, txnDate, sessionId: session.id, userId });
         await cash.archiveReportPrint({ shiftId: shift.id, reportType: 'X', snapshot: { smoke: true }, printedBy: userId });

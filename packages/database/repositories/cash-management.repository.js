@@ -76,7 +76,38 @@ function createCashManagementRepository({ database, documentSequenceRepository, 
     });
   }
 
-  async function createShift({ workstationSessionId, workstationId, userId, businessDate, openingLines = [] }) {
+  /**
+   * What the drawer should hold now: the cash counted when its last shift
+   * closed stays in the drawer for the next one. Null before a drawer's first
+   * shift has closed.
+   */
+  async function lastClosedShiftWithConnection(connection, drawerId) {
+    const [rows] = await connection.execute(
+      `SELECT id, shift_no, business_date, declared_total, closed_at FROM cash_shifts
+       WHERE drawer_id = ? AND status = 'closed' AND declared_total IS NOT NULL ORDER BY closed_at DESC, id DESC LIMIT 1`, [drawerId]
+    );
+    return rows[0] || null;
+  }
+
+  async function getOpeningExpectation({ workstationId }) {
+    return database.withConnection(async (connection) => {
+      const [drawers] = await connection.execute("SELECT id FROM cash_drawers WHERE workstation_id = ? AND status = 'active' LIMIT 1", [workstationId]);
+      if (!drawers[0]) return null;
+      const last = await lastClosedShiftWithConnection(connection, drawers[0].id);
+      if (!last) return null;
+      const [counts] = await connection.execute("SELECT id FROM cash_counts WHERE cash_shift_id = ? AND count_type = 'closing' ORDER BY id DESC LIMIT 1", [last.id]);
+      const [lines] = counts[0]
+        ? await connection.execute('SELECT denomination, quantity FROM cash_count_lines WHERE cash_count_id = ? ORDER BY denomination DESC', [counts[0].id])
+        : [[]];
+      return {
+        shiftId: Number(last.id), shiftNo: Number(last.shift_no), businessDate: last.business_date, closedAt: last.closed_at,
+        carriedTotal: money(last.declared_total),
+        lines: lines.map((line) => ({ denomination: money(line.denomination), quantity: Number(line.quantity) }))
+      };
+    });
+  }
+
+  async function createShift({ workstationSessionId, workstationId, userId, businessDate, openingLines = [], openingDifferenceReason = '' }) {
     return database.withConnection(async (connection) => {
       await connection.beginTransaction();
       try {
@@ -108,11 +139,22 @@ function createCashManagementRepository({ database, documentSequenceRepository, 
           documentType: 'cash_shift', locCode, macCode, txnDate: businessDate
         });
         const openingTotal = money(openingLines.reduce((sum, line) => sum + money(line.denomination) * Number(line.quantity || 0), 0));
+        // The drawer should still hold what the last shift counted at close.
+        const previous = await lastClosedShiftWithConnection(connection, drawer.id);
+        const carried = previous ? money(previous.declared_total) : null;
+        const difference = previous ? money(openingTotal - carried) : null;
+        const differenceReason = String(openingDifferenceReason || '').trim();
+        if (previous && Math.abs(difference) > 0.005 && !differenceReason) {
+          throw new Error(`The last shift closed with ${carried.toFixed(2)} left in this drawer, but you counted ${openingTotal.toFixed(2)} `
+            + `(${difference > 0 ? 'excess' : 'short'} ${Math.abs(difference).toFixed(2)}). Count again, or write why it is different.`);
+        }
         const [result] = await connection.execute(
           `INSERT INTO cash_shifts
-             (business_day_id, drawer_id, workstation_session_id, workstation_id, user_id, loc_code, mac_code, shift_no, business_date, opening_total)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [businessDay.id, drawer.id, workstationSessionId, workstationId, userId, locCode, macCode, shiftNo, businessDate, openingTotal]
+             (business_day_id, drawer_id, workstation_session_id, workstation_id, user_id, loc_code, mac_code, shift_no, business_date, opening_total,
+              carried_from_shift_id, carried_in_total, opening_difference, opening_difference_reason)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [businessDay.id, drawer.id, workstationSessionId, workstationId, userId, locCode, macCode, shiftNo, businessDate, openingTotal,
+            previous ? previous.id : null, carried, difference, Math.abs(difference || 0) > 0.005 ? differenceReason.slice(0, 255) : null]
         );
         const shiftId = result.insertId;
         const [count] = await connection.execute(
@@ -364,6 +406,9 @@ function createCashManagementRepository({ database, documentSequenceRepository, 
         workstationName: shift.workstation_name, locationCode: shift.location_code, machineCode: shift.machine_code,
         userId: shift.user_id, cashierName: shift.cashier_name, businessDate: shift.business_date,
         status: shift.status, currencyCode: shift.currency_code, openingTotal: money(shift.opening_total),
+        carriedInTotal: shift.carried_in_total == null ? null : money(shift.carried_in_total),
+        openingDifference: shift.opening_difference == null ? null : money(shift.opening_difference),
+        openingDifferenceReason: shift.opening_difference_reason || null,
         expectedTotal, declaredTotal: shift.declared_total == null ? null : money(shift.declared_total),
         varianceTotal: shift.variance_total == null ? null : money(shift.variance_total),
         varianceReason: shift.variance_reason, openedAt: shift.opened_at, blindClosedAt: shift.blind_closed_at,
@@ -566,6 +611,7 @@ function createCashManagementRepository({ database, documentSequenceRepository, 
   }
 
   return {
+    getOpeningExpectation,
     getActiveShiftForSession,
     getRecoverableShiftForWorkstation,
     createShift,

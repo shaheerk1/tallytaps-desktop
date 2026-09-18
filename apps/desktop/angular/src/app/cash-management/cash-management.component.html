@@ -17,8 +17,19 @@
   <!-- ── No shift yet: count the opening float ─────────────── -->
   <section class="card open-card" *ngIf="!shift">
     <div class="card-head">
-      <div><h2>Open cash shift</h2><p>Count the opening float by denomination before taking payments.</p></div>
+      <div><h2>Open cash shift</h2><p>Count the cash in the drawer by denomination before taking payments.</p></div>
       <div class="total-chip"><span>Opening total</span><strong>{{ total(openingLines) | number:'1.2-2' }}</strong></div>
+    </div>
+    <div class="carry-note" *ngIf="openingExpectation as carry">
+      <div>
+        <strong>Left in this drawer: {{ carry.carriedTotal | number:'1.2-2' }}</strong>
+        <small>Counted when shift #{{ carry.shiftNo }} closed{{ carry.closedAt ? ' on ' + (carry.closedAt | date:'dd MMM, h:mm a') : '' }}. The opening count should match it.</small>
+      </div>
+      <button type="button" class="btn ghost small" (click)="useCarriedCount()" *ngIf="carry.lines.length">Use that count</button>
+    </div>
+    <div class="carry-difference" *ngIf="openingDifference !== null && openingDifference !== 0">
+      <span [class.short]="openingDifference < 0">{{ openingDifference > 0 ? 'Excess' : 'Short' }} {{ (openingDifference < 0 ? -openingDifference : openingDifference) | number:'1.2-2' }}</span>
+      <input [(ngModel)]="openingDifferenceReason" placeholder="Why is the drawer different? (required)" aria-label="Opening difference reason" />
     </div>
     <div class="denominations wide" (keydown)="onFlowKeydown($event, openShiftFromKeyboard)">
       <label *ngFor="let line of openingLines" [class.filled]="line.quantity">

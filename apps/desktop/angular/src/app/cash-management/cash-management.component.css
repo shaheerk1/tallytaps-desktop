@@ -436,3 +436,12 @@ input[type='checkbox'] { width: 16px; min-height: 16px; margin: 0; accent-color:
   .record-actions { justify-items: stretch; }
   .dir kbd { display: none; }
 }
+
+/* What the last shift left in the drawer */
+.carry-note { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 12px; padding: 10px 14px; border: 1px solid var(--ui-border); border-radius: 10px; background: var(--ui-surface-muted); }
+.carry-note strong, .carry-note small { display: block; }
+.carry-note small { margin-top: 2px; color: var(--ui-ink-muted); font-size: 12px; }
+.carry-difference { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; }
+.carry-difference span { flex: none; padding: 6px 10px; border-radius: 8px; background: #fef3c7; color: #92400e; font-weight: 800; font-size: 13px; font-variant-numeric: tabular-nums; }
+.carry-difference span.short { background: #fee2e2; color: #991b1b; }
+.carry-difference input { flex: 1; min-height: 36px; }

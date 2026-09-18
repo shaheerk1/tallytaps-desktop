@@ -1022,6 +1022,11 @@ function registerIpcHandlers(services) {
     { authorize: requireCashView }
   );
   wrapIpcHandler(
+    'cash.openingExpectation',
+    async (payload) => services.cashManagementService.getOpeningExpectation({ workstationId: payload?.workstationId }),
+    { authorize: requireCashView }
+  );
+  wrapIpcHandler(
     'cash.openShift',
     async (payload) => services.cashManagementService.openShift(payload?.shift || {}),
     { authorize: requireCashOpen }

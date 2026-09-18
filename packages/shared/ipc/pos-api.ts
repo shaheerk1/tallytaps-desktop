@@ -1419,6 +1419,16 @@ export type CashShiftReportPrint = {
   printedByName: string;
 };
 
+/** What a drawer should hold when a shift opens: the cash its last shift closed with. */
+export type CashOpeningExpectation = {
+  shiftId: number;
+  shiftNo: number;
+  businessDate: string;
+  closedAt: string;
+  carriedTotal: number;
+  lines: Array<{ denomination: number; quantity: number }>;
+};
+
 export type CashShift = {
   id: number;
   drawerId: number;
@@ -1428,6 +1438,9 @@ export type CashShift = {
   status: 'open' | 'blind_closed' | 'closed';
   currencyCode: string;
   openingTotal: number;
+  carriedInTotal?: number | null;
+  openingDifference?: number | null;
+  openingDifferenceReason?: string | null;
   expectedTotal: number;
   declaredTotal: number | null;
   varianceTotal: number | null;
@@ -2168,6 +2181,7 @@ export interface PosApi {
   cash: {
     activeShift: (sessionId: number, actor?: ActorContext) => Promise<IpcResult<CashShift | null>>;
     recoverableShift: (workstationId: number, userId: number, actor?: ActorContext) => Promise<IpcResult<CashShift | null>>;
+    openingExpectation: (workstationId: number, actor?: ActorContext) => Promise<IpcResult<CashOpeningExpectation | null>>;
     getShift: (shiftId: number, actor?: ActorContext) => Promise<IpcResult<CashShift | null>>;
     reportHistory: (shiftId: number, actor?: ActorContext) => Promise<IpcResult<CashShiftReportPrint[]>>;
     archiveReportPrint: (
@@ -2186,6 +2200,7 @@ export interface PosApi {
       userId: number;
       businessDate: string;
       openingLines: CashCountLine[];
+      openingDifferenceReason?: string;
     }, actor?: ActorContext) => Promise<IpcResult<CashShift>>;
     addMovement: (movement: {
       shiftId: number;

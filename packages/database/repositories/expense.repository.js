@@ -93,6 +93,19 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
       for (const row of totals) {
         drawerTotals.set(Number(row.drawer_id), { balance: money(row.balance), lastMovementAt: row.last_movement_at });
       }
+      // Between shifts, the cash counted at the last close stays in the drawer.
+      const idle = drawerIds.filter((id) => !drawerTotals.has(Number(id)));
+      if (idle.length) {
+        const [left] = await connection.query(
+          `SELECT s.drawer_id, s.declared_total, s.closed_at FROM cash_shifts s
+           JOIN (SELECT drawer_id, MAX(closed_at) AS closed_at FROM cash_shifts WHERE drawer_id IN (?) AND status = 'closed' AND declared_total IS NOT NULL GROUP BY drawer_id) last
+             ON last.drawer_id = s.drawer_id AND last.closed_at = s.closed_at
+           WHERE s.status = 'closed'`, [idle]
+        );
+        for (const row of left) {
+          drawerTotals.set(Number(row.drawer_id), { balance: money(row.declared_total), lastMovementAt: row.closed_at });
+        }
+      }
     }
     if (ledgerIds.length) {
       const [totals] = await connection.query(
