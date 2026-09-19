@@ -576,20 +576,11 @@ function createRefundRepository({ database, documentSequenceRepository, business
             [remainingBalance, remainingBalance, draft.source_invoice_id]
           );
         }
-        const advanceRestoreTotal = toMoney((payments || []).filter((payment) => payment.method === 'advance')
-          .reduce((sum, payment) => sum + toMoney(payment.amount), 0));
-        const externalPayoutTotal = toMoney(payoutTotal - advanceRestoreTotal);
-        if (externalPayoutTotal > 0 && draft.source_customer_account_id) {
-          receivableEntryNo += 1;
-          await connection.execute(
-            `INSERT INTO customer_receivable_entries
-               (business_day_id, customer_account_id, loc_code, mac_code, txn_date, document_type, document_no, entry_no,
-                invoice_id, refund_id, cash_shift_id, entry_type, amount, reason, created_by, metadata)
-             VALUES (?, ?, ?, ?, ?, 'refund', ?, ?, ?, ?, ?, 'refund_debit', ?, 'Refund payout after debt settlement', ?, CAST(? AS JSON))`,
-            [businessDay.id, draft.source_customer_account_id, draft.loc_code, draft.mac_code, draft.txn_date, draft.refund_no, receivableEntryNo,
-              draft.source_invoice_id, refundId, cashShiftId, externalPayoutTotal, userId || draft.user_id || null, JSON.stringify({ refundNumber })]
-          );
-        }
+        // Money handed back is what the customer already paid for these goods,
+        // so it never touches what they owe. The customer ledger only ever held
+        // the unpaid part of a sale, and the return credit above has already
+        // cancelled that part. Charging the payout as a debit made every cash
+        // refund to a named customer show up as money they owe.
         let refundLineNo = 0;
         for (const item of items) {
           refundLineNo += 1;

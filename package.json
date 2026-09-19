@@ -29,6 +29,7 @@
     "verify:money-backdating": "node tools/e2e-verify/money-backdating-invariants.js",
     "verify:refund-visibility": "node tools/e2e-verify/refund-visibility-invariants.js",
     "verify:unpaid-bill": "node tools/e2e-verify/unpaid-bill-invariants.js",
+    "verify:customer-refund-ledger": "node tools/e2e-verify/customer-refund-ledger-invariants.js",
     "verify:bill-copy": "node tools/e2e-verify/bill-copy-invariants.js",
     "verify:lot-tag": "node tools/e2e-verify/lot-tag-billing-invariants.js",
     "verify:grn-supplier": "node tools/e2e-verify/grn-supplier-entry-invariants.js",
