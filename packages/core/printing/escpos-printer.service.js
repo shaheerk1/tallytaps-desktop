@@ -391,6 +391,36 @@ function renderBrand(printer, lines) {
   resetStyle(printer);
 }
 
+// The largest a logo may print in a plain receipt header, in printer dots.
+// Matches the raster header's `.logo` box, so a receipt looks the same
+// whichever path prints it.
+const LOGO_MAX_WIDTH = 260;
+const LOGO_MAX_HEIGHT = 138;
+
+/**
+ * Shrinks a logo that is larger than a receipt header to fit it.
+ *
+ * ESC/POS prints an image one dot per pixel, so an uploaded logo prints at
+ * whatever size it was saved: 877 px is wider than an 80 mm head (~576 dots)
+ * and about 11 cm tall. Returns a resized PNG, or null to print it unchanged
+ * when it already fits or when Electron's image tools are not available.
+ */
+function fitLogoToHeader(buffer) {
+  let nativeImage = null;
+  try { ({ nativeImage } = require('electron')); } catch { return null; }
+  if (!nativeImage || typeof nativeImage.createFromBuffer !== 'function') return null;
+  const image = nativeImage.createFromBuffer(buffer);
+  if (image.isEmpty()) return null;
+  const { width, height } = image.getSize();
+  const scale = Math.min(1, LOGO_MAX_WIDTH / width, LOGO_MAX_HEIGHT / height);
+  if (!(scale < 1)) return null;
+  return image.resize({
+    width: Math.max(1, Math.round(width * scale)),
+    height: Math.max(1, Math.round(height * scale)),
+    quality: 'best'
+  }).toPNG();
+}
+
 function renderLogo(printer, dataUrl) {
   if (!dataUrl || !escpos?.Image?.load) return Promise.resolve();
   const match = String(dataUrl).match(/^data:(image\/[\w.+-]+);base64,([A-Za-z0-9+/=]+)$/);
@@ -398,8 +428,11 @@ function renderLogo(printer, dataUrl) {
 
   return new Promise((resolve, reject) => {
     try {
-      const imageBuffer = Buffer.from(match[2], 'base64');
-      escpos.Image.load(imageBuffer, match[1], (imageOrError) => {
+      let imageBuffer = Buffer.from(match[2], 'base64');
+      let mimeType = match[1];
+      const fitted = fitLogoToHeader(imageBuffer);
+      if (fitted) { imageBuffer = fitted; mimeType = 'image/png'; }
+      escpos.Image.load(imageBuffer, mimeType, (imageOrError) => {
         if (!imageOrError || typeof imageOrError.toRaster !== 'function') {
           reject(imageOrError instanceof Error ? imageOrError : new Error('Unable to decode receipt logo.'));
           return;

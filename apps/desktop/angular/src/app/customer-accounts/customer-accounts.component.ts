@@ -194,6 +194,11 @@ export class CustomerAccountsComponent implements OnInit {
       documentTitle: title,
       brand: { name: settings.storeName || 'POS Platform', addressLines: settings.addressLines || [], phone: settings.phone || '' },
       logoDataUrl: settings.logoDataUrl || undefined,
+      // The same header as the bill. Without the language this slip fell to
+      // the plain text printer, which prints the logo at its uploaded size
+      // (877 px here, wider than the paper) and cannot print a Sinhala name.
+      receiptLanguage: settings.language || 'en-LK',
+      rasterHeaderLayout: 'billing',
       secondaryHeaderLines: [{ text: title, align: 'center', bold: true }],
       meta: [
         { label: 'Document', value: advance.number },
