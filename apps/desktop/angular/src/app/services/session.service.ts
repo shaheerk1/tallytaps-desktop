@@ -54,6 +54,13 @@ export class SessionService {
     return this.workstationSession;
   }
 
+  /** Take over the workstation this sign-in was just moved to. */
+  adoptWorkstationSession(session: WorkstationSession): void {
+    this.workstationSession = session;
+    if (session.billingDate) localStorage.setItem(this.BILLING_DATE_KEY, session.billingDate);
+    if (session.workstationId) localStorage.setItem(this.WORKSTATION_ID_KEY, String(session.workstationId));
+  }
+
   getBillingDate(): string | null {
     return this.workstationSession?.billingDate || localStorage.getItem(this.BILLING_DATE_KEY);
   }

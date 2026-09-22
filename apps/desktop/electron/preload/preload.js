@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld('posApi', {
     activeSession: (userId) => invoke('workstations.activeSession', { userId }),
     openSession: (payload) => invoke('workstations.openSession', payload),
     closeSession: (userId) => invoke('workstations.closeSession', { userId }),
+    switchTo: (targetWorkstationId, billingDate) => invoke('workstations.switch', { targetWorkstationId, billingDate }),
     updateSessionDate: (userId, billingDate, actor) =>
       invoke('workstations.updateSessionDate', { userId, billingDate, actor })
   },

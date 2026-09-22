@@ -257,6 +257,38 @@ function registerIpcHandlers(services) {
     return session;
   }, { session: true });
 
+  // Switching workstation is a sign-out and sign-in without the password: the
+  // session here is closed exactly as signing out closes it (an open cash shift
+  // stays open and is picked up again on return), then this sign-in is bound
+  // to a session on the chosen workstation. If that cannot open, the user is
+  // put back where they were.
+  wrapIpcHandler('workstations.switch', async (payload, context) => {
+    const targetId = Number(payload?.targetWorkstationId || 0);
+    if (!targetId) throw new Error('Choose the workstation to switch to.');
+    const previous = context.workstation;
+    if (previous && Number(previous.workstationId) === targetId) {
+      return services.workstationService.getSession(previous.workstationSessionId);
+    }
+    await services.workstationService.closeSession(context.user.id);
+    services.sessionContextService.invalidate(context.token);
+    let session;
+    try {
+      session = await services.workstationService.openSession({
+        userId: context.user.id, workstationId: targetId, billingDate: payload?.billingDate || null
+      });
+    } catch (error) {
+      if (previous?.workstationId) {
+        const back = await services.workstationService.openSession({ userId: context.user.id, workstationId: previous.workstationId, billingDate: payload?.billingDate || null });
+        await services.authRepository.bindWorkstationSession(context.token, back.sessionId);
+        services.sessionContextService.invalidate(context.token);
+      }
+      throw error;
+    }
+    await services.authRepository.bindWorkstationSession(context.token, session.sessionId);
+    services.sessionContextService.invalidate(context.token);
+    return session;
+  }, { session: true });
+
   wrapIpcHandler('workstations.closeSession', async (_payload, context) => {
     const result = await services.workstationService.closeSession(context.user.id);
     services.sessionContextService.invalidate(context.token);

@@ -17,12 +17,38 @@
       (mouseenter)="onSidebarMouseEnter()"
       (mouseleave)="onSidebarMouseLeave()"
     >
-      <div class="sidebar-header">
-        <span class="brand" *ngIf="!sidebarCollapsed">TallyTaps</span>
+      <div class="sidebar-header" [class.has-workstation]="currentWorkstation && !sidebarCollapsed">
+        <span class="brand" *ngIf="!sidebarCollapsed && !currentWorkstation">TallyTaps</span>
+        <div class="ws-pill" *ngIf="!sidebarCollapsed && currentWorkstation as ws" [title]="'Signed in on ' + ws.name + ' (' + ws.code + ')'">
+          <span class="ws-dot" aria-hidden="true"></span>
+          <span class="ws-text"><strong>{{ ws.name }}</strong><small>{{ ws.code }}</small></span>
+          <button
+            type="button"
+            class="ws-switch"
+            *ngIf="nextWorkstation as next"
+            [disabled]="switchingWorkstation"
+            (click)="switchToNext()"
+            [title]="'Switch to ' + next.name + ' (' + next.locationCode + ' / ' + next.machineCode + ') · Ctrl+Shift+W'"
+            aria-label="Switch to the next workstation"
+          >{{ switchingWorkstation ? '…' : '⇄' }}</button>
+        </div>
         <button class="toggle-btn" (click)="toggleSidebar()" title="Toggle sidebar">
           {{ sidebarCollapsed ? '☰' : '✕' }}
         </button>
       </div>
+      <button
+        type="button"
+        class="ws-compact"
+        *ngIf="sidebarCollapsed && currentWorkstation as ws"
+        [disabled]="!nextWorkstation || switchingWorkstation"
+        (click)="switchToNext()"
+        [title]="ws.name + ' (' + ws.code + ')' + (nextWorkstation ? ' · click to switch · Ctrl+Shift+W' : '')"
+      >{{ ws.name.charAt(0).toUpperCase() }}</button>
+      <div class="ws-confirm" *ngIf="confirmSwitchTo && !sidebarCollapsed" role="alertdialog" aria-label="Confirm workstation switch">
+        <p>{{ confirmSwitchReason }}. Switch to <strong>{{ confirmSwitchTo.name }}</strong> anyway?</p>
+        <div><button type="button" class="ws-confirm-no" (click)="cancelSwitch()">Stay</button><button type="button" class="ws-confirm-yes" (click)="confirmSwitch()">Switch</button></div>
+      </div>
+      <div class="ws-notice" *ngIf="(switchNotice || switchError) && !sidebarCollapsed" [class.error]="switchError" role="status">{{ switchError || switchNotice }}</div>
 
       <nav class="sidebar-nav">
         <a
@@ -66,7 +92,7 @@
     </button>
 
     <section class="workspace">
-      <router-outlet></router-outlet>
+      <router-outlet *ngIf="workspaceVisible"></router-outlet>
     </section>
   </main>
 </ng-container>

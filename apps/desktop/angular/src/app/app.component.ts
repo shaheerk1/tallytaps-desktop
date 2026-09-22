@@ -5,6 +5,7 @@ import { Subscription } from 'rxjs';
 import { SessionService } from './services/session.service';
 import { ShellMenuService, MenuEntry } from './services/shell-menu.service';
 import { UiPreferencesService, UiPreferences } from './services/ui-preferences.service';
+import { SwitchableWorkstation, WorkstationSwitchService } from './services/workstation-switch.service';
 
 @Component({
   selector: 'pos-root',
@@ -18,6 +19,17 @@ export class AppComponent implements OnInit, OnDestroy {
   userRole = '';
   isReady = false;
   showSidebar = false;
+
+  // ── Workstation pill ──────────────────────────────────
+  workstations: SwitchableWorkstation[] = [];
+  switchingWorkstation = false;
+  /** Swapped off and on to rebuild the open page on the new workstation. */
+  workspaceVisible = true;
+  switchNotice = '';
+  switchError = '';
+  confirmSwitchTo: SwitchableWorkstation | null = null;
+  confirmSwitchReason = '';
+  private noticeTimer: ReturnType<typeof setTimeout> | null = null;
 
   // ── Sidebar state ─────────────────────────────────────
   sidebarMode: 'wide' | 'compact' = 'wide';
@@ -44,7 +56,8 @@ export class AppComponent implements OnInit, OnDestroy {
     private session: SessionService,
     private router: Router,
     private shellMenu: ShellMenuService,
-    private uiPrefs: UiPreferencesService
+    private uiPrefs: UiPreferencesService,
+    private workstationSwitch: WorkstationSwitchService
   ) {}
 
   async ngOnInit(): Promise<void> {
@@ -112,8 +125,80 @@ export class AppComponent implements OnInit, OnDestroy {
 
     this.coreMenu = this.shellMenu.coreMenu;
     this.allMenu = this.shellMenu.allMenu;
+    this.workstations = await this.workstationSwitch.list();
 
     this.isReady = true;
+  }
+
+  // ── Workstation pill ──────────────────────────────────
+
+  get currentWorkstation(): { name: string; code: string } | null {
+    const ws = this.session.getWorkstationSession();
+    return ws ? { name: ws.workstationName, code: `${ws.locationCode} / ${ws.machineCode}` } : null;
+  }
+
+  get nextWorkstation(): SwitchableWorkstation | null {
+    return this.workstationSwitch.next(this.workstations, this.session.getWorkstationSession()?.workstationId ?? null);
+  }
+
+  /** Ctrl+Shift+W moves to the next workstation, like the switch button. */
+  @HostListener('window:keydown', ['$event'])
+  onSwitchHotkey(event: KeyboardEvent): void {
+    if (!(event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'w') || event.repeat || !this.session.isLoggedIn()) return;
+    event.preventDefault();
+    void this.switchToNext();
+  }
+
+  async switchToNext(): Promise<void> {
+    if (this.switchingWorkstation) return;
+    this.workstations = await this.workstationSwitch.list();
+    const target = this.nextWorkstation;
+    if (!target) return;
+    // A screen with work in progress (a bill being built) is asked first.
+    const reason = this.workstationSwitch.unsavedWork();
+    if (reason) {
+      this.confirmSwitchTo = target;
+      this.confirmSwitchReason = reason;
+      return;
+    }
+    await this.switchTo(target);
+  }
+
+  cancelSwitch(): void {
+    this.confirmSwitchTo = null;
+    this.confirmSwitchReason = '';
+  }
+
+  async confirmSwitch(): Promise<void> {
+    const target = this.confirmSwitchTo;
+    this.cancelSwitch();
+    if (target) await this.switchTo(target);
+  }
+
+  private async switchTo(target: SwitchableWorkstation): Promise<void> {
+    this.switchingWorkstation = true;
+    this.switchError = '';
+    const result = await this.workstationSwitch.switchTo(target.id);
+    this.switchingWorkstation = false;
+    if (!result.success) {
+      this.switchError = result.error || 'Could not switch workstation.';
+      this.flashNotice();
+      return;
+    }
+    // Menus and the open page are rebuilt for the new workstation, so nothing
+    // shown or held on screen still belongs to the old one.
+    await this.shellMenu.prepare();
+    this.coreMenu = this.shellMenu.coreMenu;
+    this.allMenu = this.shellMenu.allMenu;
+    this.workspaceVisible = false;
+    setTimeout(() => { this.workspaceVisible = true; });
+    this.switchNotice = `Now on ${target.name} (${target.locationCode} / ${target.machineCode})`;
+    this.flashNotice();
+  }
+
+  private flashNotice(): void {
+    if (this.noticeTimer) clearTimeout(this.noticeTimer);
+    this.noticeTimer = setTimeout(() => { this.switchNotice = ''; this.switchError = ''; this.noticeTimer = null; }, 6000);
   }
 
   /**
@@ -210,6 +295,8 @@ export class AppComponent implements OnInit, OnDestroy {
     this.allMenu = [];
     this.userName = '';
     this.userRole = '';
+    this.workstations = [];
+    this.cancelSwitch();
     this.showSidebar = false;
     this.sidebarMode = 'wide';
     this.sidebarHidden = false;

@@ -1776,12 +1776,13 @@ export interface PosApi {
     delete: (id: number, actor?: ActorContext | null) => Promise<IpcResult<{ deleted: boolean }>>;
     activeSession: (userId: number) => Promise<IpcResult<WorkstationSession | null>>;
     openSession: (payload: {
-      userId: number;
-      workstationId?: number;
+      targetWorkstationId?: number;
       billingDate?: string;
       openingBalance?: number;
     }) => Promise<IpcResult<WorkstationSession>>;
     closeSession: (userId: number) => Promise<IpcResult<{ closed: boolean }>>;
+    /** Sign-out and sign-in on another workstation, without the password; open cash shifts are left as they are. */
+    switchTo: (targetWorkstationId: number, billingDate?: string) => Promise<IpcResult<WorkstationSession>>;
     updateSessionDate: (
       userId: number,
       billingDate: string,

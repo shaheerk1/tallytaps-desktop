@@ -3,6 +3,7 @@ import { ActivatedRoute, Router } from '@angular/router';
 import { Subscription } from 'rxjs';
 import { PageLinksService, readBillingCopyLink } from '../services/page-links.service';
 import { SessionService } from '../services/session.service';
+import { WorkstationSwitchService } from '../services/workstation-switch.service';
 import { PrintingService } from '../services/printing.service';
 import { ItemMeasureSummary, itemMeasureSummaryText, summarizeItemMeasures } from '../services/item-measure-summary';
 import type {
@@ -296,13 +297,19 @@ export class BillingComponent implements OnInit, OnDestroy {
 
   constructor(
     private session: SessionService,
+    private workstationSwitch: WorkstationSwitchService,
     private router: Router,
     private printing: PrintingService,
     private route: ActivatedRoute,
     private pageLinks: PageLinksService
   ) {}
 
+  private releaseSwitchCheck: (() => void) | null = null;
+
   async ngOnInit(): Promise<void> {
+    // A bill being built belongs to this workstation; switching asks first.
+    this.releaseSwitchCheck = this.workstationSwitch.registerUnsavedWork(() =>
+      this.billItems.length ? `A bill with ${this.billItems.length} item${this.billItems.length === 1 ? '' : 's'} is open on Billing` : null);
     this.loadSessionInfo();
     await this.loadProducts();
     await this.loadSettings();
@@ -319,6 +326,7 @@ export class BillingComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.releaseSwitchCheck?.();
     this.linkSubscription?.unsubscribe();
     if (this.pendingBillAnimationTimer) clearTimeout(this.pendingBillAnimationTimer);
     if (this.itemPickerSearchTimer) clearTimeout(this.itemPickerSearchTimer);

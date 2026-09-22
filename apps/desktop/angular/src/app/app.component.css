@@ -370,3 +370,24 @@
 .sidebar-tab:hover {
   background: var(--ui-primary);
 }
+
+/* ── Current workstation ─────────────────────────────── */
+.sidebar-header.has-workstation { gap: 8px; padding: 10px 10px 10px 12px; }
+.ws-pill { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; padding: 6px 6px 6px 10px; border: 1px solid #2f5d50; border-radius: 8px; background: linear-gradient(135deg, #12322b, #1b2a33); }
+.ws-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: #34d399; box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.18); }
+.ws-text { display: grid; min-width: 0; line-height: 1.15; }
+.ws-text strong { overflow: hidden; font-size: 13px; font-weight: 700; white-space: nowrap; text-overflow: ellipsis; }
+.ws-text small { color: #9fb3ad; font-size: 10.5px; letter-spacing: 0.04em; white-space: nowrap; }
+.ws-switch { flex: 0 0 28px; display: grid; place-items: center; box-sizing: border-box; width: 28px; height: 28px; min-width: 28px; min-height: 28px; aspect-ratio: 1; padding: 0; line-height: 1; margin-left: auto; border: 1px solid #3b6b5e; border-radius: 50%; background: #1f3d35; color: #d1fae5; font-size: 14px; cursor: pointer; }
+.ws-switch:hover:not(:disabled) { background: #2b5a4d; border-color: #34d399; }
+.ws-switch:disabled { opacity: 0.6; cursor: wait; }
+.ws-compact { display: grid; place-items: center; box-sizing: border-box; width: 34px; height: 34px; aspect-ratio: 1; padding: 0; line-height: 1; margin: 8px auto 0; border: 1px solid #2f5d50; border-radius: 50%; background: #12322b; color: #d1fae5; font-weight: 800; cursor: pointer; }
+.ws-compact:disabled { cursor: default; }
+.ws-confirm { margin: 8px 10px 0; padding: 10px; border: 1px solid #7c5b1b; border-radius: 10px; background: #2a2314; font-size: 12px; }
+.ws-confirm p { margin: 0 0 8px; color: #f5e6c4; line-height: 1.4; }
+.ws-confirm div { display: flex; justify-content: flex-end; gap: 6px; }
+.ws-confirm button { padding: 5px 10px; border-radius: 6px; font: inherit; font-weight: 700; cursor: pointer; }
+.ws-confirm-no { border: 1px solid #4b5563; background: transparent; color: #d8dde3; }
+.ws-confirm-yes { border: 1px solid #d97706; background: #b45309; color: #fff; }
+.ws-notice { margin: 8px 10px 0; padding: 7px 10px; border-radius: 8px; background: #12322b; color: #a7f3d0; font-size: 12px; line-height: 1.35; }
+.ws-notice.error { background: #3b1717; color: #fecaca; }

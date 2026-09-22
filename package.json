@@ -40,6 +40,7 @@
     "verify:supplier-cheques": "node tools/e2e-verify/supplier-cheque-invariants.js",
     "verify:grn-removal": "node tools/e2e-verify/grn-removal-invariants.js",
     "verify:cash-carry": "node tools/e2e-verify/cash-carry-invariants.js",
+    "verify:workstation-switch": "node tools/e2e-verify/workstation-switch-invariants.js",
     "verify:register-isolation": "node tools/e2e-verify/register-isolation-invariants.js",
     "verify:workstation-isolation": "node tools/e2e-verify/workstation-isolation-invariants.js",
     "verify:ipc-gate": "node tools/e2e-verify/ipc-gate-invariants.js",
