@@ -1,3 +1,5 @@
+const requestContext = require('../../core/security/request-context');
+
 function createIssuedChequeRepository({ database, documentSequenceRepository, businessDayRepository }) {
   if (!database || !documentSequenceRepository || !businessDayRepository) {
     throw new Error('Issued cheque repository requires database, document sequence, and business-day repositories.');
@@ -54,11 +56,14 @@ function createIssuedChequeRepository({ database, documentSequenceRepository, bu
   }
 
   async function listBankAccounts(includeInactive = false) {
+    // Each location banks in its own accounts.
+    const scope = requestContext.scopedLocation();
     return database.withConnection(async (connection) => {
       const [rows] = await connection.execute(
         `SELECT * FROM business_bank_accounts
          WHERE (? = 1 OR is_active = 1)
-         ORDER BY is_active DESC, bank_name, account_name, id`, [includeInactive ? 1 : 0]
+           AND (? IS NULL OR loc_code = ?)
+         ORDER BY is_active DESC, bank_name, account_name, id`, [includeInactive ? 1 : 0, scope, scope]
       );
       return rows.map((row) => ({ ...row, is_active: Boolean(row.is_active) }));
     });
@@ -76,6 +81,8 @@ function createIssuedChequeRepository({ database, documentSequenceRepository, bu
         if (id) {
           const [[existing]] = await connection.execute('SELECT fund_account_id, loc_code FROM business_bank_accounts WHERE id = ? FOR UPDATE', [id]);
           if (!existing) throw new Error('Business bank account was not found.');
+          const scope = requestContext.scopedLocation();
+          if (scope && existing.loc_code !== scope) throw new Error('This bank account belongs to another location.');
           const [result] = await connection.execute(
             `UPDATE business_bank_accounts
              SET bank_name = ?, branch_name = ?, account_name = ?, account_number = ?, is_active = ?, notes = ?
@@ -199,6 +206,7 @@ function createIssuedChequeRepository({ database, documentSequenceRepository, bu
   }
 
   async function listIssuedCheques(filters = {}) {
+    const scope = requestContext.scopedLocation(filters);
     return database.withConnection(async (connection) => {
       const term = String(filters.term || '').trim();
       const like = `%${term}%`;
@@ -213,20 +221,22 @@ function createIssuedChequeRepository({ database, documentSequenceRepository, bu
          LEFT JOIN suppliers s ON s.id = c.supplier_id
          LEFT JOIN supplier_settlements st ON st.id = c.supplier_settlement_id
          LEFT JOIN parties p ON p.id = c.payee_party_id
-         WHERE (? = '' OR c.cheque_number LIKE ? OR c.payee_name_snapshot LIKE ? OR ba.bank_name LIKE ?
+         WHERE (? IS NULL OR c.loc_code = ?)
+           AND (? = '' OR c.cheque_number LIKE ? OR c.payee_name_snapshot LIKE ? OR ba.bank_name LIKE ?
                 OR ba.account_number LIKE ? OR s.supplier_code LIKE ? OR s.name LIKE ? OR c.reference LIKE ?)
            AND (? IS NULL OR c.status = ?)
            AND (? IS NULL OR c.cheque_date >= ?)
            AND (? IS NULL OR c.cheque_date <= ?)
          ORDER BY CASE c.status WHEN 'prepared' THEN 1 WHEN 'issued' THEN 2 ELSE 3 END,
                   c.cheque_date, c.id DESC LIMIT 250`,
-        [term, like, like, like, like, like, like, like, status, status, fromDate, fromDate, toDate, toDate]
+        [scope, scope, term, like, like, like, like, like, like, like, status, status, fromDate, fromDate, toDate, toDate]
       );
       return rows.map((row) => ({ ...row, amount: Number(row.amount || 0) }));
     });
   }
 
   async function getIssuedCheque(chequeId) {
+    const scope = requestContext.scopedLocation();
     return database.withConnection(async (connection) => {
       const [rows] = await connection.execute(
         `SELECT c.*, ba.account_code, ba.bank_name, ba.branch_name, ba.account_name, ba.account_number,
@@ -236,7 +246,7 @@ function createIssuedChequeRepository({ database, documentSequenceRepository, bu
          LEFT JOIN suppliers s ON s.id = c.supplier_id
          LEFT JOIN supplier_settlements st ON st.id = c.supplier_settlement_id
          LEFT JOIN parties p ON p.id = c.payee_party_id
-         WHERE c.id = ? LIMIT 1`, [chequeId]
+         WHERE c.id = ? AND (? IS NULL OR c.loc_code = ?) LIMIT 1`, [chequeId, scope, scope]
       );
       if (!rows.length) return null;
       const [events] = await connection.execute(
@@ -291,6 +301,7 @@ function createIssuedChequeRepository({ database, documentSequenceRepository, bu
       try {
         const [rows] = await connection.execute(`SELECT * FROM issued_cheques WHERE id = ? FOR UPDATE`, [payload.chequeId]);
         if (!rows.length) throw new Error('Issued cheque was not found.');
+        if (rows[0].loc_code !== origin.locCode) throw new Error('This cheque belongs to another location.');
         const cheque = rows[0];
         if (!transitions[cheque.status]?.has(nextStatus)) throw new Error(`Issued cheque cannot move from ${cheque.status} to ${nextStatus}.`);
         const terminal = ['cancelled', 'stopped', 'returned_unpaid'].includes(nextStatus);

@@ -1,3 +1,5 @@
+const { recordFundMovementWithConnection } = require('./fund-movement');
+
 function createCustomerAdvanceRepository({ database, documentSequenceRepository, businessDayRepository }) {
   if (!database) throw new Error('Customer advance repository requires a database instance.');
   if (!documentSequenceRepository || !businessDayRepository) throw new Error('Customer advances require document numbering and business-day control.');
@@ -135,13 +137,20 @@ function createCustomerAdvanceRepository({ database, documentSequenceRepository,
         let paymentNo = 0;
         for (const payment of payments) {
           paymentNo += 1;
-          await connection.execute(
+          const [paymentResult] = await connection.execute(
             `INSERT INTO customer_advance_payments
                (advance_receipt_id, payment_no, method, fund_account_id, amount, provider_ref, details)
              VALUES (?, ?, ?, ?, ?, ?, CAST(? AS JSON))`,
             [result.insertId, paymentNo, payment.method, Number(payment.fundAccountId) || null,
               money(payment.amount), payment.providerRef || null, JSON.stringify(payment.details || {})]
           );
+          await recordFundMovementWithConnection(connection, {
+            fundAccountId: payment.fundAccountId, businessDayId: day.id,
+            locCode: origin.locCode, macCode: origin.macCode, txnDate: origin.txnDate,
+            direction: 'in', amount: payment.amount, sourceType: 'advance_receipt_payment',
+            sourceId: paymentResult.insertId, reason: `Customer advance ${advanceNumber}`, userId,
+            metadata: { advanceReceiptId: Number(result.insertId), advanceNumber, customerAccountId: Number(customerAccountId), method: payment.method }
+          });
         }
         await connection.execute(
           `INSERT INTO customer_advance_entries

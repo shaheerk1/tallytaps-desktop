@@ -1,4 +1,6 @@
 const { createInventoryLedgerRepository } = require('./inventory-ledger.repository');
+const { recordFundMovementWithConnection } = require('./fund-movement');
+const requestContext = require('../../core/security/request-context');
 
 function createBillingRepository({ database, businessDayRepository, documentSequenceRepository, inventoryLedgerRepository, customerAdvanceRepository = null }) {
   if (!database) {
@@ -462,6 +464,10 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
             txnDate: businessDate, documentType: 'collection', documentNo: collectionNo, paymentNo,
             customerAccountId: invoice.customer_account_id, payment, userId
           });
+          // Stored advance settles from money the customer already handed over, so it
+          // moves between documents and no fund changes. Every other tender is real
+          // money reaching or leaving the account it named, and has to show there as
+          // the payment is taken rather than when the books are next refreshed.
           if (payment.method === 'advance') {
             if (!customerAdvanceRepository) throw new Error('Customer advance settlement is not available.');
             await customerAdvanceRepository.applyToInvoiceWithConnection(connection, {
@@ -469,6 +475,14 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
               locCode: locationCode, macCode: machineCode, txnDate: businessDate,
               invoiceId, invoiceNumber: invoice.invoice_number, paymentId: paymentResult.insertId, paymentNo,
               documentType: 'collection', documentNo: collectionNo, amount: toMoney(payment.amount), userId
+            });
+          } else {
+            await recordFundMovementWithConnection(connection, {
+              fundAccountId: payment.fundAccountId, businessDayId: businessDay.id,
+              locCode: locationCode, macCode: machineCode, txnDate: businessDate,
+              direction: 'in', amount: payment.amount, sourceType: 'customer_payment',
+              sourceId: paymentResult.insertId, reason: `Customer payment for ${invoice.invoice_number}`,
+              userId, metadata: { invoiceId, invoiceNumber: invoice.invoice_number, collectionNo, method: payment.method }
             });
           }
         }
@@ -541,11 +555,12 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
   }
 
   async function searchInvoices({ term = '', customerCode = '', locCode = '', macCode = '', txnDate = '', limit = 50, includeRefunded = true } = {}) {
+    const scope = requestContext.scopedLocation({ locCode });
     return database.withConnection(async (connection) => {
       const text = String(term || '').trim();
       const clauses = [];
       const params = [];
-      if (locCode) { clauses.push('loc_code = ?'); params.push(locCode); }
+      if (scope) { clauses.push('loc_code = ?'); params.push(scope); }
       if (macCode) { clauses.push('mac_code = ?'); params.push(macCode); }
       if (txnDate) { clauses.push('txn_date = ?'); params.push(txnDate); }
       if (customerCode) { clauses.push('customer_code LIKE ?'); params.push(`%${String(customerCode).trim()}%`); }
@@ -790,6 +805,8 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
   async function getInvoiceArchive(invoiceId) {
     const invoice = await getInvoice(invoiceId);
     if (!invoice) return null;
+    const scope = requestContext.scopedLocation();
+    if (scope && invoice.loc_code !== scope) throw new Error('This bill belongs to another location.');
     const customer = invoice.customer_account_id
       ? await database.withConnection(async (connection) => {
           const [rows] = await connection.execute(
@@ -1116,12 +1133,24 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
             documentType: 'sale', documentNo: receiptNo, paymentNo,
             customerAccountId, payment: p, userId
           });
+          // Stored advance settles from money the customer already handed over, so it
+          // moves between documents and no fund changes. Every other tender is real
+          // money reaching or leaving the account it named, and has to show there as
+          // the payment is taken rather than when the books are next refreshed.
           if (p.method === 'advance') {
             if (!customerAdvanceRepository || !customerAccountId) throw new Error('A customer account is required to use advance money.');
             await customerAdvanceRepository.applyToInvoiceWithConnection(connection, {
               customerAccountId, businessDayId: businessDay.id, locCode, macCode, txnDate,
               invoiceId, invoiceNumber, paymentId: paymentResult.insertId, paymentNo,
               documentNo: receiptNo, amount: p.amount, userId
+            });
+          } else {
+            await recordFundMovementWithConnection(connection, {
+              fundAccountId: p.fundAccountId, businessDayId: businessDay.id,
+              locCode, macCode, txnDate, direction: 'in', amount: p.amount,
+              sourceType: 'customer_payment', sourceId: paymentResult.insertId,
+              reason: `Customer payment for ${invoiceNumber}`, userId,
+              metadata: { invoiceId, invoiceNumber, receiptNo, method: p.method || 'cash' }
             });
           }
         }

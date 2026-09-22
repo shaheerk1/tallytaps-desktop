@@ -7,15 +7,13 @@
  * installations safely or be rerun after an interrupted launch.
  */
 const rules = require('../../core/accounting/posting-rules');
+const { recordFundMovementWithConnection } = require('./fund-movement');
 
 function createOperationalAccountingRepository({ database, journalRepository }) {
   if (!database || !journalRepository) throw new Error('Operational accounting requires the database and journal.');
 
   const money = (value) => Math.round(Number(value || 0) * 100) / 100;
   const text = (value) => String(value || '').trim();
-  const dateOnly = (value) => value instanceof Date
-    ? `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`
-    : String(value || '').slice(0, 10);
   const json = (value) => {
     if (!value || typeof value === 'object') return value || {};
     try { return JSON.parse(value); } catch { return {}; }
@@ -27,24 +25,15 @@ function createOperationalAccountingRepository({ database, journalRepository }) 
     return rules.ACCOUNTS.BANK;
   }
 
+  // Settlements recorded before they posted their own fund movement, and any
+  // that could not (an import, a repair). The writer keys on source, so a row
+  // the settlement already wrote is found and left alone.
   async function ensureFundMovement(connection, row, { fundAccountId, direction, sourceType, sourceId, reason, userId }) {
-    if (!Number(fundAccountId)) return null;
-    const [existing] = await connection.execute(
-      'SELECT id FROM fund_movements WHERE source_type = ? AND source_id = ? LIMIT 1',
-      [sourceType, String(sourceId)]
-    );
-    if (existing[0]) return Number(existing[0].id);
-    const [result] = await connection.execute(
-      `INSERT INTO fund_movements
-         (fund_account_id, business_day_id, loc_code, mac_code, txn_date,
-          document_type, document_no, entry_no, direction, amount,
-          source_type, source_id, reason, created_by, metadata)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, CAST(? AS JSON))`,
-      [Number(fundAccountId), Number(row.business_day_id), row.loc_code, row.mac_code, dateOnly(row.txn_date),
-        sourceType.slice(0, 40), Number(row.id), direction, money(row.amount), sourceType, String(sourceId), reason,
-        Number(row.source_user_id || userId), JSON.stringify({ derivedBy: 'operational-accounting' })]
-    );
-    return Number(result.insertId);
+    return recordFundMovementWithConnection(connection, {
+      fundAccountId, businessDayId: row.business_day_id, locCode: row.loc_code, macCode: row.mac_code,
+      txnDate: row.txn_date, direction, amount: row.amount, sourceType, sourceId, reason,
+      userId: row.source_user_id || userId, metadata: { derivedBy: 'operational-accounting' }
+    });
   }
 
   async function post(connection, row, { sourceType, sourceId, documentType, documentNo, posting, userId, metadata = {} }) {

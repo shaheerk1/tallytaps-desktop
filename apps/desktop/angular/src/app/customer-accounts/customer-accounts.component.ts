@@ -149,6 +149,10 @@ export class CustomerAccountsComponent implements OnInit {
     if (!window.posApi || !this.advanceEditor || !this.account?.customer?.id || this.saving) return;
     const ws = this.session.getWorkstationSession(); const user = this.session.getUser();
     if (!ws || !user) { this.error = 'An active workstation session and cash shift are required.'; return; }
+    if (this.advanceNeedsFund && this.advanceFunds.length && !this.advanceEditor.fundAccountId) {
+      this.error = 'Choose the bank or business account this money moves through.';
+      return;
+    }
     this.saving = true; this.error = '';
     const mode = this.advanceEditor.mode;
     const base = { customerAccountId: this.account.customer.id, sessionId: ws.sessionId, userId: user.id,

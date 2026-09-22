@@ -153,8 +153,11 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
     const page = pageSize ? Math.max(1, Number(filters.page || 1)) : 1;
     const limit = pageSize || Math.max(1, Math.min(Number(filters.limit || 500), 2000));
     const offset = pageSize ? (page - 1) * pageSize : 0;
+    // A statement is built from its own location's sales and nothing else.
+    const locCode = requestContext.scopedLocation(filters);
     const where = ["i.inv_stat = 'active'", "ii.inv_stat = 'active'", "i.status IN ('paid','partial')"];
     const params = [currentStatementId, currentStatementId, currentStatementId, currentStatementId];
+    if (locCode) { where.push('ii.loc_code = ?'); params.push(locCode); }
     if (fromDate) { where.push('i.txn_date >= ?'); params.push(fromDate); }
     if (toDate) { where.push('i.txn_date <= ?'); params.push(toDate); }
     if (scope === 'supplier' && supplierId) { where.push('COALESCE(attr.supplier_id, lot_supplier.supplier_id, source_supplier.id) = ?'); params.push(supplierId); }
@@ -281,7 +284,9 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
 
   async function listCandidateGrns({ supplierId, fromDate = null, toDate = null, term = '', statementId = null, includeIds = [] } = {}) {
     if (!supplierId) return [];
+    const locCode = requestContext.scopedLocation();
     const where = ["g.status = 'finalized'", 'g.supplier_id = ?']; const params = [supplierId];
+    if (locCode) { where.push('g.loc_code = ?'); params.push(locCode); }
     // The date range and search keep the list short as history grows; GRNs
     // already chosen for this statement stay listed whatever the filter.
     const filters = []; const filterParams = [];
@@ -492,6 +497,11 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
     });
   }
 
+  function assertInScope(statement) {
+    const scope = requestContext.scopedLocation();
+    if (scope && statement.loc_code !== scope) throw new Error('This supplier sales statement belongs to another location.');
+  }
+
   async function getStatement(statementId, connection = null) {
     const run = async (db) => {
       const [headers] = await db.execute(`SELECT st.*, COALESCE(NULLIF(st.supplier_code_snapshot, ''), s.supplier_code) AS supplier_code,
@@ -499,6 +509,8 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
                                                 s.phone, s.mobile, s.address
                                          FROM supplier_sale_statements st JOIN suppliers s ON s.id = st.supplier_id WHERE st.id = ?`, [statementId]);
       if (!headers.length) return null;
+      const scope = requestContext.scopedLocation();
+      if (scope && headers[0].loc_code !== scope) return null;
       const [allocations] = await db.execute('SELECT * FROM supplier_sale_statement_allocations WHERE statement_id = ? ORDER BY line_no', [statementId]);
       const [manualLines] = await db.execute('SELECT * FROM supplier_sale_statement_manual_lines WHERE statement_id = ? ORDER BY line_no', [statementId]);
       const [adjustments] = await db.execute('SELECT * FROM supplier_sale_statement_adjustments WHERE statement_id = ? ORDER BY line_no', [statementId]);
@@ -556,7 +568,7 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
     if (!unique.size) return [];
     const ids = [...unique.keys()];
     await connection.query(`SELECT id FROM invoice_items WHERE id IN (${ids.map(() => '?').join(',')}) FOR UPDATE`, ids);
-    const candidateResult = await queryCandidates(connection, { scope: 'all', statementId: statement.id, invoiceItemIds: ids, limit: ids.length });
+    const candidateResult = await queryCandidates(connection, { scope: 'all', locCode: statement.loc_code, statementId: statement.id, invoiceItemIds: ids, limit: ids.length });
     const byId = new Map(candidateResult.rows.map((row) => [row.invoiceItemId, row]));
     const output = [];
     let lineNo = 0;
@@ -871,7 +883,7 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
     if (!stored.length) return;
     const ids = stored.map((row) => Number(row.invoice_item_id));
     await connection.query(`SELECT id FROM invoice_items WHERE id IN (${ids.map(() => '?').join(',')}) FOR UPDATE`, ids);
-    const candidateResult = await queryCandidates(connection, { scope: 'all', statementId: statement.id, invoiceItemIds: ids, limit: ids.length });
+    const candidateResult = await queryCandidates(connection, { scope: 'all', locCode: statement.loc_code, statementId: statement.id, invoiceItemIds: ids, limit: ids.length });
     const byId = new Map(candidateResult.rows.map((row) => [row.invoiceItemId, row]));
     for (const row of stored) {
       const source = byId.get(Number(row.invoice_item_id));
@@ -895,6 +907,7 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
         const [rows] = await connection.execute(`SELECT * FROM supplier_sale_statements WHERE id = ? AND status = ? FOR UPDATE`, [statementId, fromStatus]);
         if (!rows.length) throw new Error(`Only a ${fromStatus} supplier sales statement can be ${eventType}.`);
         const statement = rows[0];
+        assertInScope(statement);
         if (eventType === 'reviewed' || eventType === 'finalized') {
           await validateStoredAllocations(connection, statement);
           await validateStoredPurchaseLines(connection, statement);
@@ -931,6 +944,7 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
         const [rows] = await connection.execute("SELECT * FROM supplier_sale_statements WHERE id = ? AND status <> 'void' FOR UPDATE", [statementId]);
         if (!rows.length) throw new Error('This supplier sales statement is already void or does not exist.');
         const statement = rows[0];
+        assertInScope(statement);
         await connection.execute("UPDATE supplier_sale_statements SET status = 'void', voided_by = ?, voided_at = NOW(), void_reason = ? WHERE id = ?", [userId || null, text(reason), statementId]);
         await appendEvent(connection, statement, 'voided', userId, text(reason));
         await connection.commit();
@@ -949,6 +963,8 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
            FROM invoice_items ii JOIN invoices i ON i.id = ii.invoice_id WHERE ii.id = ? FOR UPDATE`, [invoiceItemId]
         );
         if (!items.length || !['paid', 'partial'].includes(items[0].invoice_status) || items[0].invoice_state !== 'active') throw new Error('Only a finalized active sale line can be re-attributed.');
+        const scope = requestContext.scopedLocation();
+        if (scope && items[0].loc_code !== scope) throw new Error('This sale line belongs to another location.');
         const item = items[0];
         const [suppliers] = await connection.execute(
           'SELECT id, supplier_code, name FROM suppliers WHERE id = ? AND is_active = 1 AND loc_code = ? FOR UPDATE', [supplierId, item.loc_code]

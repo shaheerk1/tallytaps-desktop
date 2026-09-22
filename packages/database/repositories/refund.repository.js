@@ -1,4 +1,5 @@
 const { createInventoryLedgerRepository } = require('./inventory-ledger.repository');
+const { recordFundMovementWithConnection } = require('./fund-movement');
 
 function createRefundRepository({ database, documentSequenceRepository, businessDayRepository, inventoryLedgerRepository, customerAdvanceRepository = null }) {
   if (!database) {
@@ -719,6 +720,10 @@ function createRefundRepository({ database, documentSequenceRepository, business
             [refundId, draft.loc_code, draft.mac_code, draft.txn_date, draft.refund_no, refundPaymentNo, payment.method,
               Number(payment.fundAccountId) || null, payment.amount, payment.providerRef || null]
           );
+          // Stored advance settles from money the customer already handed over, so it
+          // moves between documents and no fund changes. Every other tender is real
+          // money reaching or leaving the account it named, and has to show there as
+          // the payment is taken rather than when the books are next refreshed.
           if (payment.method === 'advance') {
             if (!customerAdvanceRepository || !draft.source_customer_account_id) throw new Error('This refund cannot restore customer advance without the original customer account.');
             await customerAdvanceRepository.restoreFromRefundWithConnection(connection, {
@@ -727,6 +732,15 @@ function createRefundRepository({ database, documentSequenceRepository, business
               sourceInvoiceId: draft.source_invoice_id, refundId, refundNumber,
               refundPaymentId: refundPaymentResult.insertId, paymentNo: refundPaymentNo,
               documentNo: draft.refund_no, amount: payment.amount, userId: userId || draft.user_id
+            });
+          } else {
+            await recordFundMovementWithConnection(connection, {
+              fundAccountId: payment.fundAccountId, businessDayId: businessDay.id,
+              locCode: draft.loc_code, macCode: draft.mac_code, txnDate: draft.txn_date,
+              direction: 'out', amount: payment.amount, sourceType: 'refund_payment',
+              sourceId: refundPaymentResult.insertId, reason: `Refund payment ${refundNumber}`,
+              userId: userId || draft.user_id,
+              metadata: { refundId, refundNumber, sourceInvoiceId: draft.source_invoice_id, method: payment.method }
             });
           }
         }

@@ -998,6 +998,7 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
   }
 
   async function getGoodsReceipt(goodsReceiptId) {
+    const scope = scopeLoc();
     return database.withConnection(async (connection) => {
       const [receipts] = await connection.execute(
         `SELECT gr.*, s.supplier_code, s.name AS supplier_name, s.phone, s.mobile, s.address,
@@ -1007,6 +1008,7 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
         [goodsReceiptId]
       );
       if (!receipts.length) throw new Error('Goods receipt was not found.');
+      if (scope && receipts[0].loc_code !== scope) throw new Error('This GRN does not belong to this location.');
       receipts[0].ownership_model = receiptOwnership(receipts[0], { ownership_model: receipts[0].agreement_ownership_model });
       const [lines] = await connection.execute(
         `SELECT grl.*, p.sku, p.name AS product_name, l.id AS inventory_lot_id
@@ -1414,9 +1416,9 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
                   SUM(remaining_handling_quantity > 0 OR COALESCE(remaining_base_quantity, 0) > 0) AS active_lots
            FROM inventory_lots WHERE loc_code = ? GROUP BY product_id
          ) l ON l.product_id = p.id
-         WHERE p.is_active = 1
+         WHERE p.is_active = 1 AND p.loc_code = ?
          ORDER BY p.name`,
-        [String(locCode).trim(), String(locCode).trim()]
+        [String(locCode).trim(), String(locCode).trim(), String(locCode).trim()]
       );
       return rows;
     });

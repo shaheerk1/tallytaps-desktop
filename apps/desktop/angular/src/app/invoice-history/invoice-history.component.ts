@@ -275,6 +275,10 @@ export class InvoiceHistoryComponent implements OnInit, OnDestroy {
         : `Collection exceeds the outstanding balance (${this.money(Number(this.invoice.balance || 0))}).`;
       return;
     }
+    if (this.collectionNeedsFund && this.settlementFunds.length && !this.collectionFundAccountId) {
+      this.error = 'Choose the bank or business account that received this payment.';
+      return;
+    }
     this.collecting = true; this.error = ''; this.info = '';
     try {
       const result = await window.posApi.billing.collectInvoiceBalance({

@@ -121,6 +121,16 @@ function createPartyRepository({ database, businessDayRepository }) {
     });
   }
 
+  /** A cheque is read and changed only at the location that took it in. */
+  async function assertChequeInScope(connection, chequeId) {
+    const scope = requestContext.scopedLocation();
+    if (!scope) return;
+    const [rows] = await connection.execute(
+      'SELECT id FROM cheques WHERE id = ? AND loc_code = ? LIMIT 1', [Number(chequeId), scope]
+    );
+    if (!rows.length) throw new Error('This cheque belongs to another location.');
+  }
+
   /** A customer can only be read or changed from the location that owns it. */
   async function assertCustomerInScope(connection, customerAccountId) {
     const scope = requestContext.scopedLocation();
@@ -425,6 +435,8 @@ function createPartyRepository({ database, businessDayRepository }) {
   }
 
   async function listCheques(filters = {}) {
+    // Each location keeps its own cheque register.
+    const scope = requestContext.scopedLocation(filters);
     return database.withConnection(async (connection) => {
       const term = String(filters.term || '').trim();
       const like = `%${term}%`;
@@ -441,20 +453,22 @@ function createPartyRepository({ database, businessDayRepository }) {
          LEFT JOIN customer_accounts ca ON ca.id = c.received_from_customer_account_id
          LEFT JOIN parties cp ON cp.id = ca.party_id
          LEFT JOIN parties dp ON dp.id = c.drawer_party_id
-         WHERE (? = '' OR c.cheque_number LIKE ? OR c.bank_name LIKE ? OR c.drawer_name_snapshot LIKE ?
+         WHERE (? IS NULL OR c.loc_code = ?)
+           AND (? = '' OR c.cheque_number LIKE ? OR c.bank_name LIKE ? OR c.drawer_name_snapshot LIKE ?
                 OR cp.display_name LIKE ? OR dp.display_name LIKE ? OR i.invoice_number LIKE ? OR i.customer_code LIKE ?)
            AND (? = '' OR c.status = ?)
            AND (? IS NULL OR c.cheque_date >= ?)
            AND (? IS NULL OR c.cheque_date <= ?)
          ORDER BY CASE c.status WHEN 'received' THEN 1 WHEN 'deposited' THEN 2 ELSE 3 END,
                   COALESCE(c.cheque_date, c.txn_date), c.id DESC LIMIT 250`,
-        [term, like, like, like, like, like, like, like, status, status, fromDate, fromDate, toDate, toDate]
+        [scope, scope, term, like, like, like, like, like, like, like, status, status, fromDate, fromDate, toDate, toDate]
       );
       return rows.map((row) => ({ ...row, amount: Number(row.amount || 0) }));
     });
   }
 
   async function getCheque(chequeId) {
+    const scope = requestContext.scopedLocation();
     return database.withConnection(async (connection) => {
       const [rows] = await connection.execute(
         `SELECT c.*, i.invoice_number, i.customer_code,
@@ -464,7 +478,7 @@ function createPartyRepository({ database, businessDayRepository }) {
          LEFT JOIN suppliers ps ON ps.id = c.passed_to_supplier_id
          LEFT JOIN customer_accounts ca ON ca.id = c.received_from_customer_account_id
          LEFT JOIN parties cp ON cp.id = ca.party_id LEFT JOIN parties dp ON dp.id = c.drawer_party_id
-         WHERE c.id = ? LIMIT 1`, [chequeId]
+         WHERE c.id = ? AND (? IS NULL OR c.loc_code = ?) LIMIT 1`, [chequeId, scope, scope]
       );
       if (!rows.length) return null;
       const [events] = await connection.execute(
@@ -510,6 +524,7 @@ function createPartyRepository({ database, businessDayRepository }) {
     return database.withConnection(async (connection) => {
       await connection.beginTransaction();
       try {
+        await assertChequeInScope(connection, chequeId);
         const [rows] = await connection.execute(
           `SELECT c.*, p.method AS payment_method
            FROM cheques c JOIN payments p ON p.id = c.payment_id
@@ -580,6 +595,7 @@ function createPartyRepository({ database, businessDayRepository }) {
     return database.withConnection(async (connection) => {
       await connection.beginTransaction();
       try {
+        await assertChequeInScope(connection, chequeId);
         const [rows] = await connection.execute(
           `SELECT c.*, i.business_day_id AS invoice_business_day_id, i.customer_account_id, i.balance,
                   i.grand_total, i.paid_total
@@ -683,6 +699,7 @@ function createPartyRepository({ database, businessDayRepository }) {
     return database.withConnection(async (connection) => {
       await connection.beginTransaction();
       try {
+        await assertChequeInScope(connection, chequeId);
         const [rows] = await connection.execute(`SELECT id, status FROM cheques WHERE id = ? FOR UPDATE`, [chequeId]);
         if (!rows.length) throw new Error('Cheque not found.');
         if (drawerPartyId) {
