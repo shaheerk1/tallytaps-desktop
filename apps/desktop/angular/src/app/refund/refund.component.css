@@ -31,3 +31,9 @@ input, select { min-width: 0; padding: 9px 10px; border: 1px solid var(--ui-bord
 .settlement-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 18px; padding: 14px 16px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius); background: var(--ui-primary-soft); }.settlement-summary span { display: block; color: var(--ui-ink-muted); font-size: 12px; }.settlement-summary strong { display: block; margin-top: 3px; font-size: 17px; color: var(--ui-primary); }.debt-note { color: var(--ui-success); font-weight: 700; }
 .alert { padding: 11px 14px; border-radius: var(--ui-radius); }.alert.error { color: var(--ui-danger); background: var(--ui-danger-soft); }.alert.success { color: var(--ui-success); background: var(--ui-success-soft); }
 @media (max-width: 950px) { .refund-page { padding: 18px; }.refund-grid { grid-template-columns: 1fr; }.draft-row { grid-template-columns: 1fr 120px 150px; }.draft-row > :nth-child(4), .draft-row > :nth-child(5), .draft-row > :nth-child(6) { grid-column: auto; }.source-summary { flex-wrap: wrap; }.settlement-summary { grid-template-columns: 1fr; }.refund-header { align-items: flex-start; flex-direction: column; } }
+
+/* Both measures of a dual-unit line come back separately */
+.measure-inputs { display:grid; gap:6px; }
+.measure-inputs label { display:grid; grid-template-columns:auto 1fr; align-items:center; gap:6px; font-size:12px; }
+.measure-inputs input { width:88px; }
+.measure-inputs small { grid-column:1 / -1; color:var(--ui-ink-muted); font-size:10.5px; }

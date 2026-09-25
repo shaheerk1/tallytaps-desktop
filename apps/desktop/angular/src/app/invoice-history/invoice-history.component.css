@@ -94,3 +94,13 @@ aside, .invoice-detail, .detail-empty { background:var(--ui-warm-surface); box-s
 /* A bill started from another one names its source, and opens it. */
 .copy-tag { margin-left:.45rem; padding:1px 7px; border:1px solid var(--ui-border-strong); border-radius:999px; background:var(--ui-primary-soft); color:var(--ui-primary); font-size:.68rem; font-weight:700; vertical-align:middle; cursor:pointer; }
 .copy-tag:hover { border-color:var(--ui-primary); }
+
+/* What a return took back, under the line it came from */
+.archive-return-line { display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:8px; margin:2px 0 6px; padding:5px 8px; border-left:3px solid #b45309; border-radius:0 6px 6px 0; background:#fff7ed; }
+.archive-return-tag { padding:1px 7px; border-radius:999px; background:#b45309; color:#fff; font-size:10px; font-weight:800; letter-spacing:.03em; text-transform:uppercase; }
+.archive-return-detail { color:#7c2d12; font-size:11.5px; }
+.archive-return-detail em { margin-left:6px; color:#9a6b4f; font-style:normal; }
+.archive-return-value { color:#b45309; }
+.totals .totals-return { color:#b45309; }
+.totals .totals-return em { font-style:normal; opacity:.85; }
+.totals .totals-return i { display:block; font-style:normal; font-size:10.5px; opacity:.8; }

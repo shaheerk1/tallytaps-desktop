@@ -1,15 +1,41 @@
 const requestContext = require('../security/request-context');
 
 /**
- * Drops any sale line that a completed refund has returned. It is line-level on
- * purpose: a partly returned bill keeps the lines that were genuinely sold
- * instead of the whole bill disappearing from the figures.
+ * What came back against each sale line, in both measures and in money.
+ * Joined to the sale so a report can show the real sale: a line returned in
+ * part keeps what was kept, and a line returned in full falls to nothing.
  */
-const REFUNDED_LINE_EXCLUSION = `NOT EXISTS (
-  SELECT 1 FROM refund_items ri
-  JOIN refunds r ON r.id = ri.refund_id
-  WHERE ri.source_invoice_item_id = ii.id AND r.status = 'completed'
+const RETURNS_PER_LINE = `LEFT JOIN (
+  SELECT ri.source_invoice_item_id AS invoice_item_id,
+         SUM(COALESCE(ri.return_handling_quantity, ri.return_quantity, 0)) AS quantity,
+         SUM(COALESCE(ri.return_base_quantity, ri.return_kilos, 0)) AS kilos,
+         SUM(ri.merchandise_total) AS merchandise_total,
+         SUM(ri.bag_charge_total) AS bag_charge_total,
+         SUM(ri.wage_charge_total) AS wage_charge_total,
+         SUM(ri.total) AS total
+  FROM refund_items ri JOIN refunds r ON r.id = ri.refund_id
+  WHERE r.status = 'completed'
+  GROUP BY ri.source_invoice_item_id
+) rr ON rr.invoice_item_id = ii.id`;
+
+/** A line whose goods and money all came back is not a sale at all. */
+const FULLY_RETURNED_LINE = `(
+  COALESCE(rr.quantity, 0) >= ii.quantity - 0.0005
+  AND COALESCE(rr.total, 0) >= ii.total - 0.005
 )`;
+
+/** Each sale amount less what was returned against it, or the amount as sold. */
+function netColumns(net) {
+  const less = (column, returned) => (net ? `GREATEST(${column} - COALESCE(rr.${returned}, 0), 0)` : column);
+  return {
+    quantity: less('ii.quantity', 'quantity'),
+    kilos: less('COALESCE(ii.kilos, 0)', 'kilos'),
+    merchandise: less('ii.merchandise_total', 'merchandise_total'),
+    bag: less('ii.bag_charge_total', 'bag_charge_total'),
+    wage: less('ii.wage_charge_total', 'wage_charge_total'),
+    total: less('ii.total', 'total')
+  };
+}
 
 function createReportService({ database }) {
   if (!database) {
@@ -110,9 +136,10 @@ function createReportService({ database }) {
     const itemTerm = String(filters.itemTerm || '').trim();
     const itemCodes = Array.isArray(filters.itemCodes) ? [...new Set(filters.itemCodes.map((code) => String(code || '').trim()).filter(Boolean))] : null;
     const finalizedOnly = filters.finalizedOnly !== false;
-    // A returned line is not a sale. Excluding it by default keeps corrected
-    // and cancelled bills out of the sales figures; untick to see everything.
-    const excludeRefunded = filters.excludeRefunded !== false;
+    // Returns are taken off by default, so the report shows the real sale: a
+    // line returned in part keeps what the customer kept, and one returned in
+    // full drops out. Untick to see every line at what it was sold for.
+    const netOfReturns = filters.excludeRefunded !== false;
     const groupBy = ['line', 'item', 'date', 'supplier', 'customer', 'price'].includes(filters.groupBy) ? filters.groupBy : 'item';
     const sortBy = String(filters.sortBy || 'date');
     const sortDir = String(filters.sortDir || 'desc').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
@@ -131,9 +158,10 @@ function createReportService({ database }) {
       if (itemCodes.length === 0) where.push('1 = 0');
       else { where.push(`ii.item_code IN (${itemCodes.map(() => '?').join(', ')})`); params.push(...itemCodes); }
     }
-    if (excludeRefunded) where.push(REFUNDED_LINE_EXCLUSION);
+    if (netOfReturns) where.push(`NOT ${FULLY_RETURNED_LINE}`);
     const scope = requestContext.scopedLocation(filters);
     if (scope) { where.push('ii.loc_code = ?'); params.push(scope); }
+    const net = netColumns(netOfReturns);
 
     const grouping = {
       // No grouping order: every line follows the chosen sort. MySQL reads
@@ -147,7 +175,7 @@ function createReportService({ database }) {
     }[groupBy];
     const orderBy = {
       date: saleDate, time: saleTime, item: 'ii.item_code', supplier: 'ii.supplier_code', customer: saleCustomer,
-      quantity: 'ii.quantity', kilos: 'COALESCE(ii.kilos, 0)', price: 'ii.unit_price', merchandise: 'ii.merchandise_total', bag: 'ii.bag_charge_total', wage: 'ii.wage_charge_total', total: 'ii.total', lines: 'ii.id'
+      quantity: net.quantity, kilos: net.kilos, price: 'ii.unit_price', merchandise: net.merchandise, bag: net.bag, wage: net.wage, total: net.total, lines: 'ii.id'
     }[sortBy] || 'i.txn_date';
 
     return database.withConnection(async (connection) => {
@@ -157,9 +185,13 @@ function createReportService({ database }) {
                 ii.item_code, ii.description, ii.supplier_code, ${saleCustomer} AS customer_code,
                 CASE WHEN ii.invoice_id IS NULL THEN 'Pending' ELSE 'Finalized' END AS status,
                 1 AS line_count, 1 AS invoice_count,
-                ii.quantity, COALESCE(ii.kilos, 0) AS kilos, ii.unit_price,
-                ii.merchandise_total, ii.bag_charge_total, ii.wage_charge_total, ii.total
+                ${net.quantity} AS quantity, ${net.kilos} AS kilos, ii.unit_price,
+                ${net.merchandise} AS merchandise_total, ${net.bag} AS bag_charge_total,
+                ${net.wage} AS wage_charge_total, ${net.total} AS total,
+                COALESCE(rr.total, 0) AS returned_total,
+                COALESCE(rr.quantity, 0) AS returned_quantity, COALESCE(rr.kilos, 0) AS returned_kilos
          FROM invoice_items ii LEFT JOIN invoices i ON i.id = ii.invoice_id
+         ${RETURNS_PER_LINE}
          WHERE ${where.join(' AND ')}
          ORDER BY ${grouping.order}, ${orderBy} ${sortDir}, ii.id ASC
          LIMIT ${limit}`,
@@ -167,25 +199,30 @@ function createReportService({ database }) {
       );
       const [summaryRows] = await connection.execute(
         `SELECT COUNT(*) AS line_count, COUNT(DISTINCT i.id) AS invoice_count,
-                COALESCE(SUM(ii.quantity), 0) AS quantity, COALESCE(SUM(ii.kilos), 0) AS kilos,
-                COALESCE(SUM(ii.merchandise_total), 0) AS merchandise_total,
-                COALESCE(SUM(ii.bag_charge_total), 0) AS bag_charge_total,
-                COALESCE(SUM(ii.wage_charge_total), 0) AS wage_charge_total,
-                COALESCE(SUM(ii.total), 0) AS total
+                COALESCE(SUM(${net.quantity}), 0) AS quantity, COALESCE(SUM(${net.kilos}), 0) AS kilos,
+                COALESCE(SUM(${net.merchandise}), 0) AS merchandise_total,
+                COALESCE(SUM(${net.bag}), 0) AS bag_charge_total,
+                COALESCE(SUM(${net.wage}), 0) AS wage_charge_total,
+                COALESCE(SUM(${net.total}), 0) AS total,
+                COALESCE(SUM(COALESCE(rr.total, 0)), 0) AS returned_total
          FROM invoice_items ii LEFT JOIN invoices i ON i.id = ii.invoice_id
+         ${RETURNS_PER_LINE}
          WHERE ${where.join(' AND ')}`,
         params
       );
       const mapped = rows.map((row) => ({
-        groupLabel: row.group_label, txnDate: dateText(row.txn_date), txnTime: row.txn_time || '', itemCode: row.item_code || '', description: row.description || '', supplierCode: row.supplier_code || '', customerCode: row.customer_code || '', status: row.status || 'Finalized',
+        groupLabel: row.group_label, txnDate: dateText(row.txn_date), txnTime: row.txn_time || '', itemCode: row.item_code || '', description: row.description || '', supplierCode: row.supplier_code || '', customerCode: row.customer_code || '',
+        status: Number(row.returned_total || 0) > 0.005 ? 'Part returned' : (row.status || 'Finalized'),
+        returnedTotal: money(row.returned_total), returnedQuantity: Number(row.returned_quantity || 0), returnedKilos: Number(row.returned_kilos || 0),
         lineCount: Number(row.line_count || 0), invoiceCount: Number(row.invoice_count || 0), quantity: Number(row.quantity || 0), kilos: Number(row.kilos || 0), unitPrice: money(row.unit_price), merchandiseTotal: money(row.merchandise_total), bagChargeTotal: money(row.bag_charge_total), wageChargeTotal: money(row.wage_charge_total), total: money(row.total)
       }));
       const summary = summaryRows[0] || {};
       const totals = {
         lineCount: Number(summary.line_count || 0), invoiceCount: Number(summary.invoice_count || 0), quantity: Number(summary.quantity || 0), kilos: Number(summary.kilos || 0),
-        merchandiseTotal: money(summary.merchandise_total), bagChargeTotal: money(summary.bag_charge_total), wageChargeTotal: money(summary.wage_charge_total), total: money(summary.total)
+        merchandiseTotal: money(summary.merchandise_total), bagChargeTotal: money(summary.bag_charge_total), wageChargeTotal: money(summary.wage_charge_total), total: money(summary.total),
+        returnedTotal: money(summary.returned_total)
       };
-      return { rows: mapped, totals: Object.fromEntries(Object.entries(totals).map(([key, value]) => [key, money(value)])), groupBy, fromDate, toDate };
+      return { rows: mapped, totals: Object.fromEntries(Object.entries(totals).map(([key, value]) => [key, money(value)])), groupBy, fromDate, toDate, netOfReturns };
     });
   }
 
@@ -197,13 +234,14 @@ function createReportService({ database }) {
     const params = [];
     if (fromDate) { where.push(`${saleDate} >= ?`); params.push(fromDate); }
     if (toDate) { where.push(`${saleDate} <= ?`); params.push(toDate); }
-    if (excludeRefunded !== false) where.push(REFUNDED_LINE_EXCLUSION);
+    if (excludeRefunded !== false) where.push(`NOT ${FULLY_RETURNED_LINE}`);
     const scope = requestContext.scopedLocation();
     if (scope) { where.push('ii.loc_code = ?'); params.push(scope); }
     return database.withConnection(async (connection) => {
       const [rows] = await connection.execute(
         `SELECT ii.item_code, MAX(ii.description) AS description, COUNT(*) AS sales_count
          FROM invoice_items ii LEFT JOIN invoices i ON i.id = ii.invoice_id
+         ${RETURNS_PER_LINE}
          WHERE ${where.join(' AND ')}
          GROUP BY ii.item_code
          ORDER BY ii.item_code ASC`,

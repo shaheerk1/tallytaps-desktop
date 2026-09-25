@@ -5,7 +5,7 @@ import type { PrintDocument } from '../../../../../../packages/shared/ipc/pos-ap
 
 type SalesRow = { groupLabel: string; txnDate: string; txnTime: string; itemCode: string; description: string; supplierCode: string; customerCode: string; status: string; lineCount: number; invoiceCount: number; quantity: number; kilos: number; unitPrice: number; merchandiseTotal: number; bagChargeTotal: number; wageChargeTotal: number; total: number };
 type SalesTotals = { lineCount: number; invoiceCount: number; quantity: number; kilos: number; merchandiseTotal: number; bagChargeTotal: number; wageChargeTotal: number; total: number };
-type SalesResult = { rows: SalesRow[]; totals: SalesTotals; groupBy: string; fromDate: string | null; toDate: string | null };
+type SalesResult = { rows: SalesRow[]; totals: SalesTotals & { returnedTotal?: number }; groupBy: string; fromDate: string | null; toDate: string | null };
 type Column = { key: string; label: string; numeric?: boolean; money?: boolean; selected: boolean };
 type SalesItemOption = { itemCode: string; description: string; salesCount: number };
 

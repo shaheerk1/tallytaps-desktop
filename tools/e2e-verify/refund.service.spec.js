@@ -73,9 +73,10 @@ async function run() {
   assert.strictEqual(savedItem.metadata.kilos, 5, 'return metadata carries the selected kilos');
   assert.strictEqual(savedItem.metadata.refundSource.pricingMode, 'source-prorated');
 
+  // More than the line holds is refused, and the reason names what is left.
   await assert.rejects(
     () => service.addSourceItem({ draftId: 77, sourceInvoiceId: 10, sourceItemId: 99, kilos: 11 }),
-    /invalid/
+    /remain refundable/
   );
   await assert.rejects(
     () => service.finalize({ draftId: 77, payments: [{ method: 'cash', amount: 277.5 }], userId: 1, reason: '' }),

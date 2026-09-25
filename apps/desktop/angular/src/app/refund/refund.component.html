@@ -109,7 +109,7 @@
           <div class="draft-title">
             <div>
               <span>2. Refund draft #{{ draft.refundNo }}</span>
-              <small>Amounts are derived from the original sale values.</small>
+              <small>Amounts follow the sale: goods by their pricing measure, packaging by the unit count, the wage by whatever it was charged on.</small>
             </div>
             <label>Reason <input [(ngModel)]="reason" placeholder="Required at completion" /></label>
           </div>
@@ -117,18 +117,20 @@
             <div class="draft-row heading"><span>Item</span><span>Return Qty</span><span>Charge refund</span><span>Disposition</span><span>Total</span><span></span></div>
             <div class="draft-row" *ngFor="let item of draft.items">
               <span><strong>{{ itemCode(item) }} {{ item.description }}</strong><small>Source item #{{ item.source_invoice_item_id }}</small><small class="plugin-value" *ngFor="let value of pluginValues(item)">{{ value.label }}: {{ value.value }}</small></span>
-              <span *ngIf="item.returnKilos !== null"><input type="number" min="0.001" step="0.001" [(ngModel)]="item.returnKilos" (change)="updateItem(item)" /> {{ item.baseUom || 'measured units' }} <small>Measured Qty</small></span>
-              <span *ngIf="item.returnKilos === null"><input type="number" min="0.001" step="0.001" [(ngModel)]="item.returnQuantity" (change)="updateItem(item)" /> {{ item.handlingUom || 'units' }} <small>Unit Count</small></span>
+              <span class="measure-inputs">
+                <label><input type="number" min="0" step="0.001" [(ngModel)]="item.returnQuantity" (change)="updateItem(item)" /> {{ item.handlingUom || 'units' }}<small>Unit Count · {{ remainingText(item, 'qty') }}</small></label>
+                <label *ngIf="isDualMeasure(item)"><input type="number" min="0" step="0.001" [(ngModel)]="item.returnKilos" (change)="updateItem(item)" /> {{ item.baseUom || 'measured units' }}<small>Measured Qty · {{ remainingText(item, 'kilos') }}</small></label>
+              </span>
               <span class="charge-controls">
                 <label *ngIf="hasBagCharge(item)">Packaging
                   <select [(ngModel)]="item.bagChargeMode" (change)="updateItem(item)"><option value="proportional">Proportional</option><option value="exclude">Do not refund</option><option value="custom">Custom</option></select>
                   <input *ngIf="item.bagChargeMode === 'custom'" type="number" min="0" step="0.01" [(ngModel)]="item.bagChargeTotal" (change)="updateItem(item)" />
-                  <small>{{ item.bagChargeTotal | number:'1.2-2' }}</small>
+                  <small>{{ item.bagChargeTotal | number:'1.2-2' }}<ng-container *ngIf="item.bagChargeMode === 'proportional'"> · {{ chargeBasisText(item, 'bag') }}</ng-container></small>
                 </label>
                 <label *ngIf="hasWageCharge(item)">Wage
                   <select [(ngModel)]="item.wageChargeMode" (change)="updateItem(item)"><option value="proportional">Proportional</option><option value="exclude">Do not refund</option><option value="custom">Custom</option></select>
                   <input *ngIf="item.wageChargeMode === 'custom'" type="number" min="0" step="0.01" [(ngModel)]="item.wageChargeTotal" (change)="updateItem(item)" />
-                  <small>{{ item.wageChargeTotal | number:'1.2-2' }}</small>
+                  <small>{{ item.wageChargeTotal | number:'1.2-2' }}<ng-container *ngIf="item.wageChargeMode === 'proportional'"> · {{ chargeBasisText(item, 'wage') }}</ng-container></small>
                 </label>
                 <small *ngIf="!hasBagCharge(item) && !hasWageCharge(item)">No packaging or wage charge</small>
               </span>
@@ -143,7 +145,8 @@
             <div><span>Actual payout due</span><strong>{{ payoutDue | number:'1.2-2' }}</strong></div>
           </div>
           <div class="complete-row">
-            <label *ngIf="payoutDue > 0.005">Refund method <select [(ngModel)]="payoutMethod"><option *ngFor="let mode of availableRefundModes" [value]="mode.id">{{ refundModeName(mode) }}</option></select><small *ngIf="payoutMethod === 'advance'">Restores the {{ payoutDue | number:'1.2-2' }} originally paid from this invoice's advance; no cash leaves the drawer.</small></label>
+            <label *ngIf="payoutDue > 0.005">Refund method <select [(ngModel)]="payoutMethod" (ngModelChange)="payoutMethodChanged()"><option *ngFor="let mode of availableRefundModes" [value]="mode.id">{{ refundModeName(mode) }}</option></select><small *ngIf="payoutMethod === 'advance'">Restores the {{ payoutDue | number:'1.2-2' }} originally paid from this invoice's advance; no cash leaves the drawer.</small><small *ngIf="originalPaymentHint">Paid on the bill: {{ originalPaymentHint }}</small></label>
+            <label *ngIf="payoutNeedsFund">Paid from <select [(ngModel)]="payoutFundId"><option [ngValue]="null">Choose account</option><option *ngFor="let fund of payoutFunds" [ngValue]="fund.id">{{ fundLabel(fund) }}</option></select><small>The money leaves this account, the way the sale put it there.<ng-container *ngIf="!payoutFunds.length"> No bank or safe account exists yet; add one in Money.</ng-container></small></label>
             <div *ngIf="payoutDue <= 0.005" class="debt-note">No cash payout: this return reduces the outstanding customer balance.</div>
             <div><span>Refund Total</span><strong>{{ grandTotal | number:'1.2-2' }}</strong></div>
             <button class="btn complete" (click)="complete()" [disabled]="isFinalizing || grandTotal <= 0">{{ isFinalizing ? 'Completing...' : 'Complete Refund' }}</button>

@@ -839,7 +839,9 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
       if (!headers.length) return [];
       const [lines] = await connection.query(
         `SELECT refund_id, source_invoice_item_id, item_code, description,
-                return_quantity, return_kilos, merchandise_total, total
+                return_quantity, return_handling_quantity, return_kilos, return_base_quantity,
+                handling_uom_snapshot, base_uom_snapshot,
+                merchandise_total, bag_charge_mode, bag_charge_total, wage_charge_mode, wage_charge_total, total
          FROM refund_items WHERE refund_id IN (?) ORDER BY refund_id, line_no`,
         [headers.map((row) => row.id)]
       );
@@ -857,9 +859,16 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
           sourceInvoiceItemId: line.source_invoice_item_id == null ? null : Number(line.source_invoice_item_id),
           itemCode: line.item_code,
           description: line.description,
-          returnQuantity: toMoney(line.return_quantity),
-          returnKilos: line.return_kilos == null ? null : toKilos(line.return_kilos),
+          returnQuantity: toKilos(line.return_handling_quantity ?? line.return_quantity),
+          returnKilos: line.return_base_quantity == null && line.return_kilos == null
+            ? null : toKilos(line.return_base_quantity ?? line.return_kilos),
+          handlingUom: line.handling_uom_snapshot || null,
+          baseUom: line.base_uom_snapshot || null,
           merchandiseTotal: toMoney(line.merchandise_total),
+          bagChargeMode: line.bag_charge_mode || 'proportional',
+          bagChargeTotal: toMoney(line.bag_charge_total),
+          wageChargeMode: line.wage_charge_mode || 'proportional',
+          wageChargeTotal: toMoney(line.wage_charge_total),
           total: toMoney(line.total)
         }))
       }));
@@ -869,10 +878,12 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
       for (const line of refund.items) {
         if (line.sourceInvoiceItemId == null) continue;
         const running = refundedByItem.get(line.sourceInvoiceItemId)
-          || { quantity: 0, kilos: 0, merchandiseTotal: 0, total: 0 };
+          || { quantity: 0, kilos: 0, merchandiseTotal: 0, bagChargeTotal: 0, wageChargeTotal: 0, total: 0 };
         running.quantity += line.returnQuantity;
         running.kilos += line.returnKilos || 0;
         running.merchandiseTotal += line.merchandiseTotal;
+        running.bagChargeTotal += line.bagChargeTotal;
+        running.wageChargeTotal += line.wageChargeTotal;
         running.total += line.total;
         refundedByItem.set(line.sourceInvoiceItemId, running);
       }
@@ -901,15 +912,19 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
       refunds,
       refundedTotal: toMoney(refunds.reduce((sum, refund) => sum + refund.grandTotal, 0)),
       refundedMerchandiseTotal: toMoney(refunds.reduce((sum, refund) => sum + refund.merchandiseTotal, 0)),
+      refundedBagChargeTotal: toMoney(refunds.reduce((sum, refund) => sum + refund.bagChargeTotal, 0)),
+      refundedWageChargeTotal: toMoney(refunds.reduce((sum, refund) => sum + refund.wageChargeTotal, 0)),
       items: invoice.items.map((item) => {
         const metadata = hydrateLineMetadata(parse(item.metadata), item.kilos);
         const returned = refundedByItem.get(Number(item.id)) || null;
         return {
           ...item,
           refunded: returned ? {
-            quantity: toMoney(returned.quantity),
+            quantity: toKilos(returned.quantity),
             kilos: returned.kilos ? toKilos(returned.kilos) : null,
             merchandiseTotal: toMoney(returned.merchandiseTotal),
+            bagChargeTotal: toMoney(returned.bagChargeTotal),
+            wageChargeTotal: toMoney(returned.wageChargeTotal),
             total: toMoney(returned.total)
           } : null,
           qty: toMoney(item.quantity),

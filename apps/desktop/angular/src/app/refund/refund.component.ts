@@ -1,6 +1,7 @@
 import { Component, OnInit } from '@angular/core';
 import { SessionService } from '../services/session.service';
 import { PrintingService } from '../services/printing.service';
+import type { FundAccount } from '../../../../../../packages/shared/ipc/pos-api';
 import type {
   PaymentLine,
   PaymentMode,
@@ -44,6 +45,8 @@ export class RefundComponent implements OnInit {
   pluginFields: PluginField[] = [];
   billHeaderFields: PluginField[] = [];
   payoutMethod = 'cash';
+  payoutFunds: FundAccount[] = [];
+  payoutFundId: number | null = null;
   reason = '';
   error = '';
   info = '';
@@ -60,12 +63,23 @@ export class RefundComponent implements OnInit {
     this.searchLocation = context.locCode;
     this.searchMachine = context.macCode;
     this.searchDate = String(context.txnDate).slice(0, 10);
-    await Promise.all([this.search(), this.loadPaymentModes(), this.loadActiveDrafts()]);
+    await Promise.all([this.search(), this.loadPaymentModes(), this.loadActiveDrafts(), this.loadPayoutFunds()]);
     await this.resumeSingleOpenDraft();
   }
 
   private actor() {
     return this.session.getActor() || undefined;
+  }
+
+  /** Where money can be handed back from: the same accounts a sale can be paid into. */
+  private async loadPayoutFunds(): Promise<void> {
+    const context = this.context();
+    if (!window.posApi || !context.locCode) return;
+    const result = await window.posApi.funds.list(context.locCode, false, this.actor());
+    this.payoutFunds = result.success
+      ? (result.data || []).filter((fund) => fund.fundKind === 'bank' || fund.fundKind === 'cash_safe')
+      : [];
+    this.payoutMethodChanged();
   }
 
   private context() {
@@ -86,6 +100,39 @@ export class RefundComponent implements OnInit {
 
   get debtReduction(): number {
     return Math.min(this.grandTotal, Number(this.source?.balance || 0));
+  }
+
+  /** Card or transfer hands money out of a real account; cash, cheque and advance do not. */
+  get payoutNeedsFund(): boolean {
+    return this.payoutDue > 0.005 && !['cash', 'cheque', 'advance'].includes(this.payoutMethod);
+  }
+
+  /** The account the same method reached on the original sale, if it named one. */
+  private originalFundIdFor(method: string): number | null {
+    const match = (this.source?.payments || []).find(
+      (payment) => String(payment.method || '').toLowerCase() === method && payment.fundAccountId
+    );
+    return match?.fundAccountId ?? null;
+  }
+
+  /** Keeps the chosen account sensible whenever the payout method changes. */
+  payoutMethodChanged(): void {
+    if (!this.payoutNeedsFund) { this.payoutFundId = null; return; }
+    const original = this.originalFundIdFor(this.payoutMethod);
+    if (original && this.payoutFunds.some((fund) => fund.id === original)) { this.payoutFundId = original; return; }
+    if (this.payoutFundId && this.payoutFunds.some((fund) => fund.id === this.payoutFundId)) return;
+    this.payoutFundId = this.payoutFunds.find((fund) => fund.fundKind === 'bank')?.id ?? this.payoutFunds[0]?.id ?? null;
+  }
+
+  fundLabel(fund: FundAccount): string {
+    return `${fund.name} · ${Number(fund.balance || 0).toFixed(2)}`;
+  }
+
+  /** Where the original money went, shown so the cashier hands it back the same way. */
+  get originalPaymentHint(): string {
+    const paid = (this.source?.payments || []).filter((payment) => Number(payment.amount || 0) > 0);
+    if (!paid.length) return '';
+    return paid.map((payment) => `${payment.method}${payment.fundName ? ` into ${payment.fundName}` : ''} ${Number(payment.amount).toFixed(2)}`).join(' · ');
   }
 
   get payoutDue(): number {
@@ -178,6 +225,8 @@ export class RefundComponent implements OnInit {
     this.source = result.data;
     this.draft = null;
     this.reason = '';
+    // Hand the money back the way it came in, unless the cashier says otherwise.
+    this.payoutMethodChanged();
   }
 
   cancelSourceSwitch(): void {
@@ -240,7 +289,8 @@ export class RefundComponent implements OnInit {
       draftId: this.draft.id,
       sourceInvoiceId: this.source.id,
       sourceItemId: item.id,
-      quantity: isWeighted ? undefined : item.remainingQuantity,
+      // A dual-unit line comes back in both measures; they do not move together.
+      quantity: item.remainingQuantity,
       kilos: isWeighted ? item.remainingKilos || undefined : undefined,
       stockDisposition: 'sellable'
     }, this.actor());
@@ -270,6 +320,34 @@ export class RefundComponent implements OnInit {
     return this.source?.items.find((item) => item.id === sourceItemId);
   }
 
+  /** True when the line was sold in two measures, such as bags and kilos. */
+  isDualMeasure(item: { returnKilos: number | null }): boolean {
+    return item.returnKilos !== null;
+  }
+
+  /** What is still returnable on the sale line behind a draft line. */
+  remainingText(item: { source_invoice_item_id: number }, measure: 'qty' | 'kilos'): string {
+    const source = this.sourceItem(item.source_invoice_item_id);
+    if (!source) return '';
+    const value = measure === 'kilos' ? source.remainingKilos : source.remainingQuantity;
+    if (value == null) return '';
+    const unit = measure === 'kilos' ? (source.baseUom || 'measured units') : (source.handlingUom || 'units');
+    return `${this.formatMeasure(value)} ${unit} left`;
+  }
+
+  /** What a proportional charge refund follows, said plainly under the choice. */
+  chargeBasisText(item: { source_invoice_item_id: number }, charge: 'bag' | 'wage'): string {
+    const source = this.sourceItem(item.source_invoice_item_id);
+    if (!source) return '';
+    const unitName = source.handlingUom || 'units';
+    const baseName = source.baseUom || 'measured units';
+    if (charge === 'bag') return `Charged per ${unitName}, so it follows the unit count.`;
+    const basis = (source as unknown as { wageBasis?: string }).wageBasis;
+    if (basis === 'kilos') return `Charged per ${baseName}, so it follows the measured amount.`;
+    if (basis === 'qty') return `Charged per ${unitName}, so it follows the unit count.`;
+    return 'Follows the amount of goods returned.';
+  }
+
   async updateItem(item: RefundDraft['items'][number]): Promise<void> {
     const sourceItem = this.sourceItem(item.source_invoice_item_id);
     if (!window.posApi || !this.source || !this.draft || !sourceItem) return;
@@ -277,7 +355,7 @@ export class RefundComponent implements OnInit {
       draftId: this.draft.id,
       sourceInvoiceId: this.source.id,
       sourceItemId: sourceItem.id,
-      quantity: sourceItem.remainingKilos === null ? item.returnQuantity : undefined,
+      quantity: item.returnQuantity,
       kilos: sourceItem.remainingKilos === null ? undefined : item.returnKilos || undefined,
       stockDisposition: item.stock_disposition,
       bagChargeMode: item.bagChargeMode,
@@ -407,8 +485,13 @@ export class RefundComponent implements OnInit {
     }
     this.isFinalizing = true;
     try {
+      if (this.payoutNeedsFund && !this.payoutFundId) {
+        this.error = 'Choose the account this refund is paid from.';
+        this.isFinalizing = false;
+        return;
+      }
       const payments: PaymentLine[] = this.payoutDue > 0.005
-        ? [{ method: this.payoutMethod, amount: this.payoutDue }]
+        ? [{ method: this.payoutMethod, amount: this.payoutDue, fundAccountId: this.payoutNeedsFund ? this.payoutFundId : null }]
         : [];
       const result = await window.posApi.refunds.finalize({
         draftId: this.draft.id,

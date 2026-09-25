@@ -1259,6 +1259,10 @@ export type RefundSourceItem = {
   handlingUom?: string;
   baseUom?: string | null;
   unitPrice: number;
+  pricingBasis?: 'qty' | 'kilos';
+  bagChargeRate?: number;
+  wageChargeRate?: number;
+  wageBasis?: 'qty' | 'kilos' | 'none';
   discount: number;
   tax: number;
   supplierCode?: string;
@@ -1297,7 +1301,11 @@ export type RefundSourceInvoice = {
   metadata: Record<string, unknown>;
   billHeader?: Record<string, Record<string, unknown>>;
   customer?: { id: number; customerCode: string | null; name: string; outstandingBalance: number } | null;
-  payments: Array<{ method: string; amount: number; providerRef?: string | null; status: string }>;
+  payments: Array<{
+    method: string; amount: number; providerRef?: string | null; status: string;
+    /** The account this payment reached, when it was not cash. */
+    fundAccountId?: number | null; fundName?: string | null; fundKind?: string | null;
+  }>;
   items: RefundSourceItem[];
 };
 

@@ -364,10 +364,53 @@ export class InvoiceHistoryComponent implements OnInit, OnDestroy {
     const measure = returned.kilos !== undefined && returned.kilos !== null && returned.kilos !== ''
       ? `${this.formatMeasure(returned.quantity)} qty / ${this.formatMeasure(returned.kilos)} kg`
       : `${this.formatMeasure(returned.quantity)} qty`;
-    return [{ label: 'Returned', value: `${measure}  -${this.money(returned.merchandiseTotal)}` }];
+    const extras = [{ label: 'Returned', value: `${measure}  -${this.money(returned.merchandiseTotal)}` }];
+    // The charges are refunded separately from the goods, so the paper has to
+    // say which part of the money came back.
+    const charges = [
+      Number(returned.bagChargeTotal || 0) > 0 ? `pkg -${this.money(returned.bagChargeTotal)}` : '',
+      Number(returned.wageChargeTotal || 0) > 0 ? `wage -${this.money(returned.wageChargeTotal)}` : ''
+    ].filter(Boolean);
+    if (charges.length) extras.push({ label: 'Returned charges', value: charges.join('  ') });
+    return extras;
   }
   get refunds(): any[] { return this.invoice?.refunds || []; }
   get refundedTotal(): number { return Number(this.invoice?.refundedTotal || 0); }
+  get refundedBagChargeTotal(): number { return Number(this.invoice?.refundedBagChargeTotal || 0); }
+  get refundedWageChargeTotal(): number { return Number(this.invoice?.refundedWageChargeTotal || 0); }
+  get netAfterReturns(): number { return Number(this.invoice?.grandTotal || 0) - this.refundedTotal; }
+
+  /** What came back on a returned line, in the measures it was sold in. */
+  returnedMeasureText(line: any): string {
+    const parts = [`${this.formatMeasure(line.returnQuantity)} ${line.handlingUom || 'units'}`];
+    if (line.returnKilos !== null && line.returnKilos !== undefined) {
+      parts.push(`${this.formatMeasure(line.returnKilos)} ${line.baseUom || 'measured'}`);
+    }
+    return parts.join(' · ');
+  }
+
+  /** Where a returned line's money went back: goods, packaging, wage. */
+  returnedBreakdown(line: any): string {
+    const parts = [`goods ${this.money(line.merchandiseTotal)}`];
+    if (Number(line.bagChargeTotal || 0) > 0) parts.push(`packaging ${this.money(line.bagChargeTotal)}`);
+    if (Number(line.wageChargeTotal || 0) > 0) parts.push(`wage ${this.money(line.wageChargeTotal)}`);
+    const skipped = [
+      line.bagChargeMode === 'exclude' ? 'packaging kept' : '',
+      line.wageChargeMode === 'exclude' ? 'wage kept' : ''
+    ].filter(Boolean);
+    return [...parts, ...skipped].join(' · ');
+  }
+
+  /** The sale line a returned line came from, so the screen can show it under that line. */
+  returnsForItem(item: any): any[] {
+    const lines: any[] = [];
+    for (const refund of this.refunds) {
+      for (const line of refund.items || []) {
+        if (Number(line.sourceInvoiceItemId) === Number(item.id)) lines.push({ ...line, txnDate: refund.txnDate, refundNumber: refund.refundNumber });
+      }
+    }
+    return lines;
+  }
   get itemMeasureSummaries(): ItemMeasureSummary[] {
     return summarizeItemMeasures(this.invoice?.items || []);
   }
@@ -443,10 +486,20 @@ export class InvoiceHistoryComponent implements OnInit, OnDestroy {
         // Returns sit between the total and the money taken, because that is the
         // order the amounts happened in and the only way the pending balance on
         // the paper adds up.
-        ...this.refunds.map((refund: any) => ({
-          label: `Returned ${String(refund.txnDate || '').slice(0, 10)}`,
-          value: `-${this.money(refund.grandTotal)}`
-        })),
+        ...this.refunds.flatMap((refund: any) => [
+          {
+            label: `Returned ${String(refund.txnDate || '').slice(0, 10)}`,
+            value: `-${this.money(refund.grandTotal)}`
+          },
+          ...(Number(refund.bagChargeTotal || 0) > 0 || Number(refund.wageChargeTotal || 0) > 0
+            ? [{
+              label: `  of which goods ${this.money(refund.merchandiseTotal)}`
+                + (Number(refund.bagChargeTotal || 0) > 0 ? `, pkg ${this.money(refund.bagChargeTotal)}` : '')
+                + (Number(refund.wageChargeTotal || 0) > 0 ? `, wage ${this.money(refund.wageChargeTotal)}` : ''),
+              value: ''
+            }]
+            : [])
+        ]),
         ...(this.refundedTotal > 0
           ? [{ label: 'Net After Returns', value: this.money(Number(i.grandTotal) - this.refundedTotal), bold: true }]
           : []),

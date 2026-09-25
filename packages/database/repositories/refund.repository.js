@@ -117,6 +117,7 @@ function createRefundRepository({ database, documentSequenceRepository, business
       const [items] = await connection.execute(
         `SELECT ii.id, ii.seq_no, ii.product_id, ii.item_code, ii.supplier_code, ii.description,
                 ii.quantity, ii.kilos, ii.handling_uom_snapshot, ii.base_uom_snapshot, ii.unit_price, ii.discount, ii.tax,
+                ii.pricing_basis, ii.bag_charge_rate, ii.wage_charge_rate, ii.wage_basis,
                 ii.merchandise_total, ii.bag_charge_total, ii.wage_charge_total, ii.total, ii.metadata,
                 COALESCE(SUM(CASE WHEN r.status = 'completed' THEN ri.return_quantity ELSE 0 END), 0) AS refunded_quantity,
                 COALESCE(SUM(CASE WHEN r.status = 'completed' THEN ri.return_kilos ELSE 0 END), 0) AS refunded_kilos,
@@ -132,8 +133,10 @@ function createRefundRepository({ database, documentSequenceRepository, business
         [invoiceId]
       );
       const [payments] = await connection.execute(
-        `SELECT method, amount, provider_ref AS providerRef, status
-         FROM payments WHERE invoice_id = ? ORDER BY id ASC`,
+        `SELECT p.method, p.amount, p.provider_ref AS providerRef, p.status,
+                p.fund_account_id, f.name AS fund_name, f.fund_kind
+         FROM payments p LEFT JOIN fund_accounts f ON f.id = p.fund_account_id
+         WHERE p.invoice_id = ? ORDER BY p.id ASC`,
         [invoiceId]
       );
       const [advanceRows] = await connection.execute(
@@ -184,7 +187,13 @@ function createRefundRepository({ database, documentSequenceRepository, business
           name: customer.display_name,
           outstandingBalance: toMoney(customer.outstanding_balance)
         } : null,
-        payments: payments.map((payment) => ({ ...payment, amount: toMoney(payment.amount) })),
+        // The account a payment reached is carried back, so a refund of that
+        // payment can be handed out of the same account by default.
+        payments: payments.map((payment) => ({
+          method: payment.method, amount: toMoney(payment.amount), providerRef: payment.providerRef, status: payment.status,
+          fundAccountId: payment.fund_account_id == null ? null : Number(payment.fund_account_id),
+          fundName: payment.fund_name || null, fundKind: payment.fund_kind || null
+        })),
         items: items.map((item) => {
           const metadata = parseJson(item.metadata);
           const kilos = item.kilos == null
@@ -205,6 +214,13 @@ function createRefundRepository({ database, documentSequenceRepository, business
             handlingUom: item.handling_uom_snapshot || 'units',
             baseUom: item.base_uom_snapshot || null,
           unitPrice: toMoney(item.unit_price),
+          // What each amount was worked out on, so a return undoes it the same way:
+          // the goods follow their pricing measure, packaging follows the unit count,
+          // and the wage follows whichever measure it was charged on.
+          pricingBasis: item.pricing_basis === 'kilos' ? 'kilos' : 'qty',
+          bagChargeRate: toMoney(item.bag_charge_rate),
+          wageChargeRate: toMoney(item.wage_charge_rate),
+          wageBasis: ['qty', 'kilos'].includes(item.wage_basis) ? item.wage_basis : 'none',
           discount: toMoney(item.discount),
           tax: toMoney(item.tax),
           supplierCode: item.supplier_code || '',

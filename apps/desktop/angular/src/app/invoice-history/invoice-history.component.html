@@ -36,7 +36,8 @@
           <div class="archive-item-row archive-item-head">
             <span>Item Code</span><span>Description</span><span>Rate</span><span>Unit Count</span><span>Measured Qty</span><span>Wage</span><span>Value</span>
           </div>
-          <div class="archive-item-row" *ngFor="let item of invoice.items">
+          <ng-container *ngFor="let item of invoice.items">
+          <div class="archive-item-row">
             <span class="archive-item-code">{{ itemCode(item) }}</span>
             <strong class="archive-item-description">{{ item.description }}</strong>
             <span class="archive-number">{{ item.unitPrice | number:'1.2-2' }}</span>
@@ -45,6 +46,12 @@
             <span class="archive-number">{{ (item.wageChargeTotal || 0) | number:'1.2-2' }}</span>
             <strong class="archive-number archive-value">{{ (item.merchandiseTotal ?? item.total) | number:'1.2-2' }}</strong>
           </div>
+          <div class="archive-return-line" *ngFor="let line of returnsForItem(item)">
+            <span class="archive-return-tag">Returned</span>
+            <span class="archive-return-detail">{{ returnedMeasureText(line) }} · {{ returnedBreakdown(line) }}<em>{{ line.txnDate }}</em></span>
+            <strong class="archive-number archive-return-value">-{{ line.total | number:'1.2-2' }}</strong>
+          </div>
+          </ng-container>
         </div>
         <section class="item-measure-summary" *ngIf="invoice.items.length" aria-label="Quantity and weight totals by item">
           <strong class="item-measure-summary-title">Item Totals</strong>
@@ -55,7 +62,7 @@
           </div>
         </section>
       </section>
-      <div class="totals"><span>Subtotal <b>{{ invoice.subtotal | number:'1.2-2' }}</b></span><span *ngIf="invoice.bag_charge_total">Packaging charge <b>{{ invoice.bag_charge_total | number:'1.2-2' }}</b></span><span *ngIf="invoice.wage_charge_total">Wage charge <b>{{ invoice.wage_charge_total | number:'1.2-2' }}</b></span><span *ngIf="invoice.discountTotal">Discount <b>-{{ invoice.discountTotal | number:'1.2-2' }}</b></span><strong>TOTAL <b>{{ invoice.grandTotal | number:'1.2-2' }}</b></strong><span *ngFor="let payment of invoice.payments">{{ paymentLabel(payment) }} <b>{{ payment.amount | number:'1.2-2' }}</b></span><span *ngIf="invoice.balance > 0">Outstanding <b>{{ invoice.balance | number:'1.2-2' }}</b></span></div>
+      <div class="totals"><span>Subtotal <b>{{ invoice.subtotal | number:'1.2-2' }}</b></span><span *ngIf="invoice.bag_charge_total">Packaging charge <b>{{ invoice.bag_charge_total | number:'1.2-2' }}</b></span><span *ngIf="invoice.wage_charge_total">Wage charge <b>{{ invoice.wage_charge_total | number:'1.2-2' }}</b></span><span *ngIf="invoice.discountTotal">Discount <b>-{{ invoice.discountTotal | number:'1.2-2' }}</b></span><strong>TOTAL <b>{{ invoice.grandTotal | number:'1.2-2' }}</b></strong><span class="totals-return" *ngFor="let refund of refunds">Returned {{ refund.txnDate }}<em *ngIf="refund.reason"> · {{ refund.reason }}</em><i>goods {{ refund.merchandiseTotal | number:'1.2-2' }}<ng-container *ngIf="refund.bagChargeTotal"> · packaging {{ refund.bagChargeTotal | number:'1.2-2' }}</ng-container><ng-container *ngIf="refund.wageChargeTotal"> · wage {{ refund.wageChargeTotal | number:'1.2-2' }}</ng-container></i> <b>-{{ refund.grandTotal | number:'1.2-2' }}</b></span><strong *ngIf="refundedTotal > 0">NET AFTER RETURNS <b>{{ netAfterReturns | number:'1.2-2' }}</b></strong><span *ngFor="let payment of invoice.payments">{{ paymentLabel(payment) }} <b>{{ payment.amount | number:'1.2-2' }}</b></span><span *ngIf="invoice.balance > 0">Outstanding <b>{{ invoice.balance | number:'1.2-2' }}</b></span></div>
       <section class="unsettle" *ngIf="canMarkUnpaid && invoice.paidTotal > 0.005 && selectedRefundStatus !== 'full'">
         <div class="unsettle-head">
           <div>
