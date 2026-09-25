@@ -31,6 +31,7 @@
     "verify:refund-visibility": "node tools/e2e-verify/refund-visibility-invariants.js",
     "verify:refund-measures": "node tools/e2e-verify/refund-measures-invariants.js",
     "verify:refund-funds": "node tools/e2e-verify/refund-fund-invariants.js",
+    "verify:stakeholder-codes": "node tools/e2e-verify/stakeholder-code-invariants.js",
     "verify:unpaid-bill": "node tools/e2e-verify/unpaid-bill-invariants.js",
     "verify:customer-refund-ledger": "node tools/e2e-verify/customer-refund-ledger-invariants.js",
     "verify:bill-copy": "node tools/e2e-verify/bill-copy-invariants.js",

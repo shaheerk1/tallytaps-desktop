@@ -123,11 +123,30 @@ function createStakeholderRepository({ database, documentSequenceRepository, bus
     }
   }
 
+  /**
+   * A code free to use, by adding -2, -3 and so on to the one asked for. Names
+   * repeat: two people called Khan, in one shop or in two, each need their own
+   * code, and neither should meet a database error.
+   */
+  async function freeCode(connection, { sql, params, code, limit }) {
+    const base = String(code).slice(0, limit - 3) || 'X';
+    for (let attempt = 1; attempt <= 50; attempt += 1) {
+      const candidate = attempt === 1 ? String(code).slice(0, limit) : `${base}-${attempt}`;
+      const [taken] = await connection.execute(sql, [...params, candidate]);
+      if (!taken.length) return candidate;
+    }
+    return `${base}-${Date.now().toString().slice(-5)}`.slice(0, limit);
+  }
+
   async function createPocket(connection, { locCode, code, name }) {
+    const fundCode = await freeCode(connection, {
+      sql: 'SELECT id FROM fund_accounts WHERE fund_code = ? LIMIT 1', params: [], limit: 60,
+      code: `POCKET-${locCode}-${code}`
+    });
     const [fund] = await connection.execute(
       `INSERT INTO fund_accounts (fund_code, name, fund_kind, loc_code, is_active, sort_order, holder_name, notes)
        VALUES (?, ?, 'stakeholder', ?, 1, 60, ?, ?)`,
-      [`POCKET-${locCode}-${code}`.slice(0, 60), `${name} (pocket)`, locCode, name,
+      [fundCode, `${name} (pocket)`, locCode, name,
         'Money this person spends for the business from their own hand.']
     );
     return Number(fund.insertId);
@@ -174,8 +193,13 @@ function createStakeholderRepository({ database, documentSequenceRepository, bus
               input.isActive === false ? 0 : 1, Number(input.sortOrder || 100), fundAccountId, stakeholderId]
           );
         } else {
-          const code = (text(input.stakeholderCode) || name).toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50)
+          const wanted = (text(input.stakeholderCode) || name).toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50)
             || `STK-${Date.now().toString().slice(-6)}`;
+          // The code belongs to this location, so the same name elsewhere is fine.
+          const code = await freeCode(connection, {
+            sql: 'SELECT id FROM stakeholders WHERE loc_code = ? AND stakeholder_code = ? LIMIT 1',
+            params: [locCode], code: wanted, limit: 60
+          });
           // Every stakeholder has a pocket, so a cost they pay personally has a
           // real place to come from: an existing unlinked pocket, or a new one.
           if (fundAccountId) {

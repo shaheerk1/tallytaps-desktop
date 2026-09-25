@@ -140,7 +140,18 @@ runVerifier('Refund measure invariants', async (app) => {
     'Unticking shows every line at what it was sold for.');
   passed.push('the report takes returns off each line, drops a line returned in full, and shows the sale as it was when unticked');
 
-  // ── 6. Nothing comes back twice ───────────────────────────
+  // ── 6. Filters take several codes ─────────────────────────
+  const bySupplyCode = await ok('reports.sales.detail', { filters: { fromDate: DATE, toDate: DATE, groupBy: 'line', excludeRefunded: false, supplierCode: 'RCE1' } });
+  assert(bySupplyCode.rows.length === 1 && bySupplyCode.rows[0].itemCode === 'RCE', `One supply code must find its line, got ${JSON.stringify(bySupplyCode.rows.map((row) => row.itemCode))}.`);
+  const bothCodes = await ok('reports.sales.detail', { filters: { fromDate: DATE, toDate: DATE, groupBy: 'line', excludeRefunded: false, supplierCode: 'RCE1, SP1' } });
+  assert(bothCodes.rows.length === 2, `Two codes separated by a comma must find both lines, got ${bothCodes.rows.length}.`);
+  const byCustomer = await ok('reports.sales.detail', { filters: { fromDate: DATE, toDate: DATE, groupBy: 'line', excludeRefunded: false, customerCode: 'NOBODY, WALKIN' } });
+  assert(byCustomer.rows.length === 2, `A customer code among several must still match, got ${byCustomer.rows.length}.`);
+  const noMatch = await ok('reports.sales.detail', { filters: { fromDate: DATE, toDate: DATE, groupBy: 'line', excludeRefunded: false, supplierCode: 'NOPE' } });
+  assert(noMatch.rows.length === 0, 'A code matching nothing finds nothing.');
+  passed.push('the supplier and customer boxes take several codes separated by commas');
+
+  // ── 7. Nothing comes back twice ───────────────────────────
   const second = await ok('refunds.createDraft', { draft: {
     sourceInvoiceId: invoiceId, sessionId: workstationSession.id, locCode: 'RFM01', macCode: 'T1', txnDate: DATE, userId, reason: 'Again'
   } });

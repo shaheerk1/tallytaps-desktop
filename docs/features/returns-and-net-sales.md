@@ -80,3 +80,11 @@ account: the fund balance stayed as if the sale still stood.
 Verify: `npm run verify:refund-funds` — a card sale into an account, the account
 shown to the refund screen, a payout refused with no account, the money leaving
 the account it names, and cash untouched.
+
+## Follow-up (2026-09-28): report filters take several codes
+
+The Supplier and Customer boxes on the sales report now read a comma-separated
+list ("SS, CC"), each piece still matching part of a code. The supplier box also
+matches the supplier whose lot the goods came out of, not only the supply code
+typed on the line, because both are fair ways to ask "what did we sell of
+theirs". Covered by `npm run verify:refund-measures` (step 6).

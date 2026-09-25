@@ -24,6 +24,45 @@ const FULLY_RETURNED_LINE = `(
   AND COALESCE(rr.total, 0) >= ii.total - 0.005
 )`;
 
+/**
+ * Several codes can be typed in one box, separated by commas: "SS, CC" reads
+ * as either of them. Each piece still matches part of a code, so half a code
+ * finds it.
+ */
+function codeTerms(value) {
+  return String(value || '')
+    .split(',')
+    .map((piece) => piece.trim())
+    .filter(Boolean)
+    .slice(0, 25);
+}
+
+/**
+ * The supplier of a sale line is asked for in two ways, because both are true:
+ * the code typed at the counter, and the supplier whose lot the goods actually
+ * came out of.
+ */
+function supplierClause(terms, params) {
+  const pieces = terms.map((term) => {
+    params.push(`%${term}%`, `%${term}%`, `%${term}%`);
+    return `(ii.supplier_code LIKE ? OR EXISTS (
+      SELECT 1 FROM lot_sale_allocations a
+      JOIN inventory_lots l ON l.id = a.inventory_lot_id
+      JOIN suppliers s ON s.id = l.supplier_id
+      WHERE a.invoice_item_id = ii.id AND (s.supplier_code LIKE ? OR s.name LIKE ?)
+    ))`;
+  });
+  return `(${pieces.join(' OR ')})`;
+}
+
+function customerClause(terms, saleCustomer, params) {
+  const pieces = terms.map((term) => {
+    params.push(`%${term}%`);
+    return `${saleCustomer} LIKE ?`;
+  });
+  return `(${pieces.join(' OR ')})`;
+}
+
 /** Each sale amount less what was returned against it, or the amount as sold. */
 function netColumns(net) {
   const less = (column, returned) => (net ? `GREATEST(${column} - COALESCE(rr.${returned}, 0), 0)` : column);
@@ -151,8 +190,10 @@ function createReportService({ database }) {
     const params = [];
     if (fromDate) { where.push(`${saleDate} >= ?`); params.push(fromDate); }
     if (toDate) { where.push(`${saleDate} <= ?`); params.push(toDate); }
-    if (supplierCode) { where.push('ii.supplier_code LIKE ?'); params.push(`%${supplierCode}%`); }
-    if (customerCode) { where.push(`${saleCustomer} LIKE ?`); params.push(`%${customerCode}%`); }
+    const supplierTerms = codeTerms(supplierCode);
+    const customerTerms = codeTerms(customerCode);
+    if (supplierTerms.length) where.push(supplierClause(supplierTerms, params));
+    if (customerTerms.length) where.push(customerClause(customerTerms, saleCustomer, params));
     if (itemTerm) { where.push('(ii.item_code LIKE ? OR ii.description LIKE ?)'); params.push(`%${itemTerm}%`, `%${itemTerm}%`); }
     if (itemCodes) {
       if (itemCodes.length === 0) where.push('1 = 0');

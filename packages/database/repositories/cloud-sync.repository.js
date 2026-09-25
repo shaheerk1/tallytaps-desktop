@@ -46,8 +46,19 @@ const STREAMS = [
   { entity: 'pos_workstation', table: 'pos_workstations', origin: { loc: 'location_code', mac: 'machine_code' } },
   { entity: 'business_day', table: 'business_days' },
   { entity: 'business_day_event', table: 'business_day_events' },
-  { entity: 'goods_receipt', table: 'goods_receipts', where: "t.status IN ('finalized','corrected')" },
-  { entity: 'goods_receipt_line', table: 'goods_receipt_lines', join: 'JOIN goods_receipts p ON p.id=t.goods_receipt_id', where: "p.status IN ('finalized','corrected')" },
+  // Drafts travel too, so the owner can see a delivery being written up as
+  // well as one already posted. A cancelled draft is nobody's business.
+  { entity: 'goods_receipt', table: 'goods_receipts', where: "t.status <> 'cancelled'" },
+  { entity: 'goods_receipt_line', table: 'goods_receipt_lines', join: 'JOIN goods_receipts p ON p.id=t.goods_receipt_id', where: "p.status <> 'cancelled'" },
+  // Who the suppliers are, and the statements and account entries behind what
+  // each of them is owed.
+  { entity: 'supplier', table: 'suppliers' },
+  { entity: 'supplier_sale_statement', table: 'supplier_sale_statements' },
+  { entity: 'supplier_statement_adjustment', table: 'supplier_sale_statement_adjustments' },
+  { entity: 'supplier_statement_allocation', table: 'supplier_sale_statement_allocations' },
+  { entity: 'supplier_statement_manual_line', table: 'supplier_sale_statement_manual_lines' },
+  { entity: 'supplier_statement_purchase_line', table: 'supplier_sale_statement_purchase_lines' },
+  { entity: 'supplier_account_entry', table: 'supplier_account_entries' },
   { entity: 'supplier_payable_entry', table: 'supplier_payable_entries' },
   { entity: 'supplier_settlement', table: 'supplier_settlements' },
   { entity: 'supplier_settlement_line', table: 'supplier_settlement_lines' },
