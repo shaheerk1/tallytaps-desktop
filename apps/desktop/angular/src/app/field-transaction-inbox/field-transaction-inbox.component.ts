@@ -2,6 +2,7 @@ import { Component, HostListener, OnInit } from '@angular/core';
 import { SessionService } from '../services/session.service';
 import { PrintingService } from '../services/printing.service';
 import type { FieldInboxMedia, FieldInboxRecord, FieldInboxRecordList, MobileInboxBill, PrintDocument, ReceiptPrintSettings } from '../../../../../../packages/shared/ipc/pos-api';
+import { receiptMoney } from '../services/receipt-money';
 
 type StatusFilter = 'all' | 'open' | 'resolved';
 
@@ -378,7 +379,7 @@ export class FieldTransactionInboxComponent implements OnInit {
   }
 
   private mobileBillDocument(bill: MobileInboxBill, cfg: ReceiptPrintSettings): PrintDocument {
-    const money = (value: number) => `${cfg.currencySymbol} ${Number(value || 0).toFixed(2)}`;
+    const money = (value: number) => receiptMoney(value, cfg.currencySymbol);
     const session = this.session.getWorkstationSession();
     const cashier = this.session.getUser()?.displayName || 'POS user';
     const label = (key: keyof ReceiptPrintSettings['labels']) => cfg.labels[key];

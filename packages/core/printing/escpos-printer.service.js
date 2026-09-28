@@ -226,13 +226,13 @@ function createEscposPrinterService({ settingsService, eventBus, receiptRasterSe
 // The billing receipt preview and supported printer profile use 80 mm paper.
 // At the printer's normal font this is a 48-character printable width.
 const WIDTH = 48;
-const ITEM_LABEL_WIDTH = 31;
-const ITEM_AMOUNT_WIDTH = 14;
+const ITEM_LABEL_WIDTH = 27;
+const ITEM_AMOUNT_WIDTH = 18;
 const ITEM_DESCRIPTION_WIDTH = WIDTH - 2;
 const MEASURE_QTY_WIDTH = 6;
 const MEASURE_KILOS_WIDTH = 8;
 const MEASURE_RATE_WIDTH = ITEM_LABEL_WIDTH - MEASURE_QTY_WIDTH - MEASURE_KILOS_WIDTH - 4;
-const TOTAL_LABEL_WIDTH = 32;
+const TOTAL_LABEL_WIDTH = 26;
 const TOTAL_AMOUNT_WIDTH = WIDTH - TOTAL_LABEL_WIDTH;
 const BOTTOM_FEED_LINES = 5;
 
@@ -574,7 +574,7 @@ function renderDocumentBody(printer, lines) {
   for (const [index, row] of (lines.totals || []).entries()) {
     printer.align('lt');
     if (row.bold) printer.text('='.repeat(WIDTH));
-    if (row.bold) printer.style('b');
+    if (row.bold) printer.style('b').size(0, 1);
     const label = index === 0 && lines.quantityTotal !== undefined && lines.quantityTotal !== null
       ? `QTY TOTAL: ${lines.quantityTotal}`
       : row.label;
@@ -635,5 +635,7 @@ function renderTestPage(printer) {
 }
 
 module.exports = {
-  createEscposPrinterService
+  createEscposPrinterService,
+  renderDocumentBody,
+  RECEIPT_WIDTH: WIDTH
 };

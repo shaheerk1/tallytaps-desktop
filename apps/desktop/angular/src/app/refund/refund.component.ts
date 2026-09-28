@@ -2,6 +2,7 @@ import { Component, OnInit } from '@angular/core';
 import { SessionService } from '../services/session.service';
 import { PrintingService } from '../services/printing.service';
 import type { FundAccount } from '../../../../../../packages/shared/ipc/pos-api';
+import { receiptMoney } from '../services/receipt-money';
 import type {
   PaymentLine,
   PaymentMode,
@@ -558,7 +559,7 @@ export class RefundComponent implements OnInit {
       items: items.map((item) => ({
         description: `${this.itemCode(item)} ${item.description}`.trim(),
         qty: item.returnKilos !== null ? `${this.formatMeasure(item.returnKilos)} kg x ${item.unitPrice.toFixed(2)}` : `${this.formatMeasure(item.returnQuantity)} x ${item.unitPrice.toFixed(2)}`,
-        amount: `${settings?.currencySymbol || 'Rs.'} ${item.merchandiseTotal.toFixed(2)}`,
+        amount: receiptMoney(item.merchandiseTotal, settings?.currencySymbol || 'Rs.'),
         measure: {
           qty: this.formatMeasure(item.returnQuantity),
           ...(item.returnKilos !== null ? { kilos: this.formatMeasure(item.returnKilos) } : {}),
@@ -566,10 +567,10 @@ export class RefundComponent implements OnInit {
         }
       })),
       totals: [
-        { label: 'Subtotal', value: `${settings?.currencySymbol || 'Rs.'} ${(items.reduce((sum, item) => sum + item.merchandiseTotal, 0)).toFixed(2)}` },
-        ...(items.some((item) => item.bagChargeTotal > 0) ? [{ label: 'Bag Charge', value: `${settings?.currencySymbol || 'Rs.'} ${(items.reduce((sum, item) => sum + item.bagChargeTotal, 0)).toFixed(2)}` }] : []),
-        ...(items.some((item) => item.wageChargeTotal > 0) ? [{ label: 'Wage Charge', value: `${settings?.currencySymbol || 'Rs.'} ${(items.reduce((sum, item) => sum + item.wageChargeTotal, 0)).toFixed(2)}` }] : []),
-        { label: 'REFUND TOTAL', value: `${settings?.currencySymbol || 'Rs.'} ${total.toFixed(2)}`, bold: true }
+        { label: 'Subtotal', value: receiptMoney(items.reduce((sum, item) => sum + item.merchandiseTotal, 0), settings?.currencySymbol || 'Rs.') },
+        ...(items.some((item) => item.bagChargeTotal > 0) ? [{ label: 'Bag Charge', value: receiptMoney(items.reduce((sum, item) => sum + item.bagChargeTotal, 0), settings?.currencySymbol || 'Rs.') }] : []),
+        ...(items.some((item) => item.wageChargeTotal > 0) ? [{ label: 'Wage Charge', value: receiptMoney(items.reduce((sum, item) => sum + item.wageChargeTotal, 0), settings?.currencySymbol || 'Rs.') }] : []),
+        { label: 'REFUND TOTAL', value: receiptMoney(total, settings?.currencySymbol || 'Rs.'), bold: true }
       ],
       footerLines: settings?.footers || []
     };

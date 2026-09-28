@@ -1,6 +1,7 @@
 import { Component, ElementRef, HostListener, OnInit, ViewChild } from '@angular/core';
 import { SessionService } from '../services/session.service';
 import { PrintingService } from '../services/printing.service';
+import { groupedAmount } from '../services/receipt-money';
 import type {
   CashCountLine,
   CashMovement,
@@ -512,7 +513,7 @@ export class CashManagementComponent implements OnInit {
     const items = shift.movements.map((movement) => ({
       description: `${movement.direction === 'in' ? 'IN' : 'OUT'} ${movement.movement_type}`,
       qty: movement.reason || 'System transaction',
-      amount: `${movement.direction === 'out' ? '-' : ''}${movement.amount.toFixed(2)}`
+      amount: `${movement.direction === 'out' ? '-' : ''}${groupedAmount(movement.amount)}`
     }));
     const doc: PrintDocument = {
       documentTitle: `${type} Cash Shift Report`,
@@ -526,12 +527,12 @@ export class CashManagementComponent implements OnInit {
       ],
       items,
       totals: [
-        ...(shift.carriedInTotal == null ? [] : [{ label: 'Left by last shift', value: shift.carriedInTotal.toFixed(2) }]),
-        { label: 'Opening Float', value: shift.openingTotal.toFixed(2) },
-        ...(!shift.openingDifference ? [] : [{ label: shift.openingDifference > 0 ? 'Opening excess' : 'Opening shortage', value: shift.openingDifference.toFixed(2) }]),
-        { label: 'Expected Cash', value: shift.expectedTotal.toFixed(2), bold: true },
-        ...(shift.declaredTotal === null ? [] : [{ label: 'Declared Cash', value: shift.declaredTotal.toFixed(2) }]),
-        ...(shift.varianceTotal === null ? [] : [{ label: 'Variance', value: shift.varianceTotal.toFixed(2), bold: true }])
+        ...(shift.carriedInTotal == null ? [] : [{ label: 'Left by last shift', value: groupedAmount(shift.carriedInTotal) }]),
+        { label: 'Opening Float', value: groupedAmount(shift.openingTotal) },
+        ...(!shift.openingDifference ? [] : [{ label: shift.openingDifference > 0 ? 'Opening excess' : 'Opening shortage', value: groupedAmount(shift.openingDifference) }]),
+        { label: 'Expected Cash', value: groupedAmount(shift.expectedTotal), bold: true },
+        ...(shift.declaredTotal === null ? [] : [{ label: 'Declared Cash', value: groupedAmount(shift.declaredTotal) }]),
+        ...(shift.varianceTotal === null ? [] : [{ label: 'Variance', value: groupedAmount(shift.varianceTotal), bold: true }])
       ],
       footerLines: settings?.footers || []
     };

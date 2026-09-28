@@ -6,6 +6,7 @@ import { SessionService } from '../services/session.service';
 import { WorkstationSwitchService } from '../services/workstation-switch.service';
 import { PrintingService } from '../services/printing.service';
 import { ItemMeasureSummary, itemMeasureSummaryText, summarizeItemMeasures } from '../services/item-measure-summary';
+import { receiptMoney } from '../services/receipt-money';
 import type {
   BillItem, HeldBill, OpenBillResult, FinalizeResult, PaymentMode, PaymentLine, ChequePaymentDetails, PluginField, PrintDocument, PrintDocItem, PrintTextLine, ReceiptLabels, ReceiptLanguage, InventoryLotCandidate, FundAccount
 } from '../../../../../../packages/shared/ipc/pos-api';
@@ -2529,7 +2530,7 @@ export class BillingComponent implements OnInit, OnDestroy {
     const r = this.settledReceipt;
     const cfg = this.receiptConfig;
     if (!r) throw new Error('No settled receipt to print.');
-    const money = (n: number): string => `${cfg.currencySymbol} ${n.toFixed(2)}`;
+    const money = (n: number): string => receiptMoney(n, cfg.currencySymbol);
 
     const meta: PrintDocument['meta'] = [
       { label: 'Receipt', value: `#${r.receiptNo}` },

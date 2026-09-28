@@ -97,8 +97,8 @@ export class PrinterManagementComponent implements OnInit {
         }
       ],
       totals: [
-        { label: 'Subtotal', value: 'Rs. 490.00' },
-        { label: 'TOTAL', value: 'Rs. 490.00', bold: true }
+        { label: 'Subtotal', value: 'Rs. 1,234,490.00' },
+        { label: 'TOTAL', value: 'Rs. 1,234,490.00', bold: true }
       ],
       footerLines: ['Thank you for your business!'],
       barcode: '1001',

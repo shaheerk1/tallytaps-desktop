@@ -6,6 +6,7 @@ import { SessionService } from '../services/session.service';
 import { PrintingService } from '../services/printing.service';
 import { ItemMeasureSummary, itemMeasureSummaryText, summarizeItemMeasures } from '../services/item-measure-summary';
 import type { FundAccount, InvoiceArchive, InvoiceRefundState, PaymentMode, PrintDocument, PrintTextLine } from '../../../../../../packages/shared/ipc/pos-api';
+import { receiptMoney } from '../services/receipt-money';
 
 type InvoiceRow = Pick<InvoiceArchive, 'id' | 'invoice_number' | 'loc_code' | 'mac_code' | 'receipt_no' | 'txn_date' | 'status' | 'subtotal' | 'grandTotal' | 'paidTotal' | 'balance' | 'customer_code'> & Partial<InvoiceRefundState>;
 
@@ -299,7 +300,7 @@ export class InvoiceHistoryComponent implements OnInit, OnDestroy {
     } finally { this.collecting = false; }
   }
 
-  private money(value: number): string { return `${this.receiptSettings?.currencySymbol || 'Rs.'} ${Number(value || 0).toFixed(2)}`; }
+  private money(value: number): string { return receiptMoney(value, this.receiptSettings?.currencySymbol || 'Rs.'); }
   formatSriLankanDate(value: unknown): string {
     if (!value) return '';
     const raw = String(value);

@@ -3,6 +3,7 @@ import { SessionService } from '../services/session.service';
 import { PrintingService } from '../services/printing.service';
 import { PageLinksService } from '../services/page-links.service';
 import type { CustomerAdvanceSummary, FundAccount, PaymentMode } from '../../../../../../packages/shared/ipc/pos-api';
+import { groupedAmount, receiptMoney } from '../services/receipt-money';
 
 type Customer = {
   id: number; account_number?: string; name: string; shop_name?: string | null; locality?: string | null;
@@ -103,7 +104,7 @@ export class CustomerAccountsComponent implements OnInit {
 
   async printStatement(): Promise<void> {
     if (!this.account) return; const c = this.account.customer;
-    const result = await this.printing.printDocument({ brand: { name: 'Customer Statement' }, meta: [{ label: 'Account', value: c.accountNumber }, { label: 'Customer', value: c.name }, ...(c.marketCodes?.length ? [{ label: 'Market codes', value: c.marketCodes.join(', ') }] : []), ...(c.mobile ? [{ label: 'Mobile', value: c.mobile }] : []), { label: 'Outstanding', value: Number(c.outstandingBalance).toFixed(2) }], items: this.filteredEntries().map((entry: any) => ({ description: `${entry.entry_type} ${entry.invoice_number || entry.refund_number || ''}`, qty: this.dateKey(entry.transaction_date || entry.created_at), amount: Number(entry.amount).toFixed(2) })), totals: [{ label: 'ACCOUNT OUTSTANDING', value: Number(c.outstandingBalance).toFixed(2), bold: true }] });
+    const result = await this.printing.printDocument({ brand: { name: 'Customer Statement' }, meta: [{ label: 'Account', value: c.accountNumber }, { label: 'Customer', value: c.name }, ...(c.marketCodes?.length ? [{ label: 'Market codes', value: c.marketCodes.join(', ') }] : []), ...(c.mobile ? [{ label: 'Mobile', value: c.mobile }] : []), { label: 'Outstanding', value: groupedAmount(c.outstandingBalance) }], items: this.filteredEntries().map((entry: any) => ({ description: `${entry.entry_type} ${entry.invoice_number || entry.refund_number || ''}`, qty: this.dateKey(entry.transaction_date || entry.created_at), amount: groupedAmount(entry.amount) })), totals: [{ label: 'ACCOUNT OUTSTANDING', value: groupedAmount(c.outstandingBalance), bold: true }] });
     this.info = result.success ? 'Customer statement sent to the printer.' : result.error || 'Statement print failed.';
   }
 
@@ -192,7 +193,7 @@ export class CustomerAccountsComponent implements OnInit {
     const ws = this.session.getWorkstationSession();
     const customer = this.account?.customer;
     const currency = settings.currencySymbol || 'Rs.';
-    const money = (value: number) => `${currency} ${Number(value || 0).toFixed(2)}`;
+    const money = (value: number) => receiptMoney(value, currency);
     const title = mode === 'receive' ? 'CUSTOMER ADVANCE RECEIPT' : 'ADVANCE REFUND VOUCHER';
     return this.printing.printDocument({
       documentTitle: title,

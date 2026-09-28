@@ -226,9 +226,20 @@ function receiptHtml(input) {
             .total { padding: 4px 2px; }
             .grand {
               border-top: 2px solid #000;
-              margin-top: 4px;
-              padding-top: 6px;
+              margin-top: 6px;
+              padding-top: 8px;
               font-size: 26px;
+              align-items: baseline;
+            }
+            .grand span {
+              flex: 1 1 auto;
+              min-width: 0;
+              overflow: hidden;
+            }
+            .grand strong {
+              flex: 0 0 auto;
+              font-size: 34px;
+              white-space: nowrap;
             }
             .standard-item { padding: 5px 2px; border-bottom: 1px solid #000; }
             .standard-item:last-child { border-bottom: 0; }
