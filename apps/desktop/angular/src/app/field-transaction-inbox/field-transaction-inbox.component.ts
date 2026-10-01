@@ -225,6 +225,16 @@ export class FieldTransactionInboxComponent implements OnInit {
     else if (this.selectedBill) this.closeBill();
   }
 
+  /** Who the note is about and the writer's own tags, said in one short line. */
+  noteMarks(record: FieldInboxRecord): string {
+    const details = (record as { details?: { who?: string | null; tags?: string[] } }).details;
+    if (!details) return '';
+    return [
+      details.who ? `about ${details.who}` : '',
+      ...(details.tags || []).map((tag) => `#${tag}`)
+    ].filter(Boolean).join(' · ');
+  }
+
   async toggleResolved(record: FieldInboxRecord, event?: Event): Promise<void> {
     event?.stopPropagation();
     if (!window.posApi || !this.canResolve || this.resolvingIds.has(record.id)) return;

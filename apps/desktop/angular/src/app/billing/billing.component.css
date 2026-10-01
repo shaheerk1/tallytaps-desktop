@@ -916,3 +916,14 @@
 .line-lot-badge.warn { color: #8a4a10; font-weight: 700; }
 .lot-option-none { background: #fbfcfe; }
 .lot-option-none .lot-option-stock { color: #5c6775; }
+/* Adding a customer without leaving the bill */
+.pm-new-customer-btn { border: 1px solid var(--ui-primary); background: var(--ui-surface); color: var(--ui-primary); font-weight: 700; }
+.pm-account-results button.highlighted { border-color: var(--ui-primary); background: color-mix(in srgb, var(--ui-primary) 10%, var(--ui-surface)); }
+.pm-new-customer { margin-top: 8px; padding: 10px 12px; border: 1px solid var(--ui-border); border-radius: 10px; background: var(--ui-surface-muted); }
+.pm-new-customer-head { display: grid; gap: 2px; margin-bottom: 8px; }
+.pm-new-customer-head small { color: var(--ui-ink-muted); font-size: 11px; line-height: 1.4; }
+.pm-new-customer-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.pm-new-customer-grid label { display: grid; gap: 3px; font-size: 11px; font-weight: 700; color: var(--ui-ink-muted); }
+.pm-new-customer-grid input { min-height: 32px; }
+.pm-new-customer-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+.pm-new-customer-actions .primary { border: 1px solid var(--ui-primary); background: var(--ui-primary); color: #fff; font-weight: 700; }

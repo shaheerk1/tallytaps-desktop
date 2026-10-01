@@ -70,13 +70,31 @@ function createFieldInboxService({ fieldInboxRepository, cloudSyncRepository = n
     const recordId = normalizeRequired(payload.recordId, 'Record ID', 120);
     const clientRecordId = optionalText(payload.clientRecordId, 180);
     const userId = Number(payload.userId);
-    return fieldInboxRepository.setResolved({
+    const resolved = payload.resolved !== false;
+    const state = await fieldInboxRepository.setResolved({
       hostId: config.host_id,
       recordId,
       clientRecordId,
       userId: Number.isInteger(userId) && userId > 0 ? userId : null,
-      resolved: payload.resolved !== false
+      resolved
     });
+    // Tell the server too, so the person who wrote the note sees it was seen.
+    // It is a courtesy, not the record: a server that cannot be reached, or one
+    // not yet given the follow-up table, must not stop work at the counter.
+    try {
+      await authenticatedFetch(
+        `${API_BASE_URL}/pos/records/${encodeURIComponent(recordId)}/follow-up`,
+        config,
+        LIST_TIMEOUT_MS,
+        { method: 'POST', body: { resolved, resolvedBy: optionalText(payload.resolvedByName, 190) } }
+      );
+    } catch (error) {
+      state.followUpNotified = false;
+      state.followUpError = error.message;
+      return state;
+    }
+    state.followUpNotified = true;
+    return state;
   }
 
   async function getMedia(payload = {}) {
@@ -130,9 +148,10 @@ function createFieldInboxService({ fieldInboxRepository, cloudSyncRepository = n
     };
   }
 
-  async function authenticatedFetch(url, config, timeoutMs) {
+  async function authenticatedFetch(url, config, timeoutMs, request = {}) {
     const apiKey = secretProtector.decrypt(config.api_key_ciphertext);
     const headers = { 'X-Host-ID': config.host_id, 'X-API-Key': apiKey };
+    if (request.body !== undefined) headers['Content-Type'] = 'application/json';
     if (cloudSyncRepository) {
       const cloud = await cloudSyncRepository.ensureConfiguration();
       if (cloud?.node_id && cloud?.registered_host_id === config.host_id) headers['X-POS-Node-ID'] = cloud.node_id;
@@ -141,7 +160,8 @@ function createFieldInboxService({ fieldInboxRepository, cloudSyncRepository = n
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetchImpl(url, {
-        method: 'GET',
+        method: request.method || 'GET',
+        ...(request.body === undefined ? {} : { body: JSON.stringify(request.body) }),
         headers,
         signal: controller.signal
       });
@@ -194,6 +214,11 @@ function normalizeRecord(value) {
     qty: nullableNumber(value.qty),
     unit: optionalText(value.unit, 60),
     note: optionalText(value.note, 4000),
+    // What the person marked on the note itself.
+    details: normalizeDetails(value.details),
+    // Whether somebody at a counter has already seen to it.
+    followUpResolvedAt: validIso(value.followUp?.resolvedAt),
+    followUpResolvedBy: optionalText(value.followUp?.resolvedBy, 190),
     createdAt: validIso(value.created_at),
     receivedAt: validIso(value.received_at),
     media: Array.isArray(value.media) ? value.media.map(normalizeMedia).filter(Boolean) : [],
@@ -206,6 +231,19 @@ function normalizeRecord(value) {
       platform: optionalText(device.platform, 80),
       appVersion: optionalText(device.appVersion, 80)
     }
+  };
+}
+
+function normalizeDetails(value) {
+  const details = value && typeof value === 'object' ? value : {};
+  const tags = Array.isArray(details.tags)
+    ? details.tags.map((tag) => optionalText(tag, 40)).filter(Boolean).slice(0, 12)
+    : [];
+  return {
+    who: optionalText(details.who, 190),
+    tags,
+    needsDoing: details.needsDoing === true,
+    kind: ['note', 'money', 'goods'].includes(details.kind) ? details.kind : 'note'
   };
 }
 

@@ -1293,7 +1293,8 @@ function registerIpcHandlers(services) {
   wrapIpcHandler('fieldInbox.records.resolve', async (payload) => {
     return services.fieldInboxService.setResolved({
       ...payload,
-      userId: payload?.actor?.id
+      userId: payload?.actor?.id,
+      resolvedByName: payload?.actor?.displayName || payload?.actor?.name || null
     });
   }, { authorize: requireFieldInboxResolve });
   wrapIpcHandler('fieldInbox.media.get', async (payload) => {

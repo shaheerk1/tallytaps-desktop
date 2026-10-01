@@ -662,17 +662,33 @@
 
             <div class="pm-account-search" *ngIf="paymentAccountSearchOpen || !linkedCustomer">
               <div class="pm-account-search-row">
-                <input type="text" [(ngModel)]="paymentAccountTerm" (input)="onPaymentAccountTermChange()" placeholder="Find by name, shop, phone, locality, account or market code" autocomplete="off" />
+                <input type="text" [(ngModel)]="paymentAccountTerm" (input)="onPaymentAccountTermChange()" (keydown)="onPaymentAccountKeydown($event)" placeholder="Find by name, shop, phone, locality, account or market code" autocomplete="off" />
+                <button type="button" class="pm-new-customer-btn" *ngIf="canAddCustomer && !newCustomer" (click)="startNewCustomer()">+ New customer</button>
                 <button type="button" *ngIf="linkedCustomer" (click)="closePaymentAccountSearch()">Cancel</button>
               </div>
-              <div class="pm-account-results" *ngIf="paymentAccountMatches.length">
-                <button type="button" *ngFor="let account of paymentAccountMatches" (click)="choosePaymentCustomerAccount(account)">
+              <div class="pm-new-customer" *ngIf="newCustomer">
+                <div class="pm-new-customer-head"><strong>New customer</strong><small>Credit is on, so this bill can be left pending. Everything else can be filled in later from Customer Accounts.</small></div>
+                <div class="pm-new-customer-grid">
+                  <label>Name<input name="newCustomerName" [(ngModel)]="newCustomer.name" (keyup.enter)="saveNewCustomer()" placeholder="Person or business" autocomplete="off" /></label>
+                  <label>Shop<input [(ngModel)]="newCustomer.shopName" (keyup.enter)="saveNewCustomer()" placeholder="Optional" autocomplete="off" /></label>
+                  <label>Mobile<input [(ngModel)]="newCustomer.mobile" (keyup.enter)="saveNewCustomer()" placeholder="Optional" autocomplete="off" /></label>
+                  <label>Market code<input [(ngModel)]="newCustomer.marketCodesText" (keyup.enter)="saveNewCustomer()" placeholder="Optional" autocomplete="off" /></label>
+                  <label>Credit limit<input type="number" min="0" step="0.01" [(ngModel)]="newCustomer.creditLimit" (keyup.enter)="saveNewCustomer()" placeholder="No limit" /></label>
+                </div>
+                <div class="pm-new-customer-actions">
+                  <button type="button" (click)="cancelNewCustomer()">Cancel</button>
+                  <button type="button" class="primary" [disabled]="savingNewCustomer" (click)="saveNewCustomer()">{{ savingNewCustomer ? 'Adding…' : 'Add and use' }}</button>
+                </div>
+              </div>
+              <div class="pm-account-results" *ngIf="paymentAccountMatches.length && !newCustomer">
+                <button type="button" *ngFor="let account of paymentAccountMatches; let i = index" [class.highlighted]="i === paymentAccountHighlight" (click)="choosePaymentCustomerAccount(account)">
                   <span><strong>{{ account.name }}</strong><small>{{ account.shop_name || account.locality || account.mobile || account.account_number }}</small></span>
                   <span><b>{{ account.marketCodes?.join(', ') || 'No saved code' }}</b><small>{{ account.outstandingBalance | number:'1.2-2' }} due</small></span>
                 </button>
               </div>
+              <small class="pm-account-status" *ngIf="paymentAccountMatches.length && !newCustomer">Up and down to choose · Enter to take it</small>
               <small class="pm-account-status" *ngIf="isPaymentAccountSearching">Searching customer accounts…</small>
-              <small class="pm-account-status" *ngIf="paymentAccountTerm && !isPaymentAccountSearching && !paymentAccountMatches.length">No matching account. The loading code remains {{ customerCode }}.</small>
+              <small class="pm-account-status" *ngIf="paymentAccountTerm && !isPaymentAccountSearching && !paymentAccountMatches.length && !newCustomer">No matching account.<ng-container *ngIf="canAddCustomer"> Add them with <b>+ New customer</b>.</ng-container> The loading code remains {{ customerCode }}.</small>
             </div>
           </section>
 

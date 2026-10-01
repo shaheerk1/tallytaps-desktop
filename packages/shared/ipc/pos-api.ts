@@ -74,6 +74,16 @@ export type FieldInboxRecord = {
   base_uom: string | null;
   dual_uom_enabled: number | boolean;
   note: string | null;
+  /** What the person marked on the note: who it is about, their tags, and whether it asks to be done. */
+  details?: {
+    who: string | null;
+    tags: string[];
+    needsDoing: boolean;
+    kind: 'note' | 'money' | 'goods';
+  };
+  /** When somebody at a counter saw to it, as the server knows it. */
+  followUpResolvedAt?: string | null;
+  followUpResolvedBy?: string | null;
   createdAt: string | null;
   receivedAt: string | null;
   media: FieldInboxMedia[];

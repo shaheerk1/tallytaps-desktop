@@ -48,3 +48,92 @@ button { font:inherit; font-weight:700; cursor:pointer; } button:disabled { curs
 .removal-note { margin:8px 0 0; color:var(--ui-ink-muted); font-size:11px; }
 @media (max-width: 760px) { .removal-panel { grid-template-columns:1fr; } }
 .button-danger { min-height:34px; padding:6px 10px; border:1px solid #b7534a; border-radius:var(--ui-radius-sm); background:#a9362d; color:#fff; font-size:12px; }
+
+/* ── Writing up a delivery, one line per item ─────────────── */
+.grn-lines { display:grid; gap:10px; }
+.grn-item-row {
+  display:grid;
+  grid-template-columns:22px minmax(0,2fr) 116px 116px minmax(0,1.5fr) 124px 100px 30px;
+  grid-template-areas:'no item count measured ratio cost value remove';
+  align-items:end; gap:10px; padding:10px 12px;
+  border:1px solid var(--ui-border); border-radius:10px; background:var(--ui-surface);
+}
+.grn-item-row-empty { background:var(--ui-surface-muted); }
+.grn-item-no { grid-area:no; padding-bottom:9px; color:var(--ui-ink-muted); font-size:11px; font-weight:800; }
+.grn-field { display:grid; gap:4px; min-width:0; }
+.grn-field-product { grid-area:item; }
+.grn-field-count { grid-area:count; }
+.grn-field-measured { grid-area:measured; }
+.grn-field-ratio { grid-area:ratio; }
+.grn-field-cost { grid-area:cost; }
+.grn-field-value { grid-area:value; }
+.grn-item-remove { grid-area:remove; }
+.grn-field-off { opacity:.55; }
+.grn-label { overflow:hidden; color:var(--ui-ink-muted); font-size:9.5px; font-weight:800; letter-spacing:.04em; text-overflow:ellipsis; text-transform:uppercase; white-space:nowrap; }
+.grn-field input, .grn-field select { min-width:0; min-height:34px; width:100%; }
+.grn-input-unit { display:flex; align-items:center; gap:5px; min-width:0; padding-right:7px; border:1px solid var(--ui-border); border-radius:8px; background:var(--ui-surface); }
+.grn-input-unit input { min-width:0; min-height:32px; border:0; background:transparent; text-align:right; font-variant-numeric:tabular-nums; }
+.grn-input-unit input:focus { outline:none; }
+.grn-input-unit:focus-within { border-color:var(--ui-primary); box-shadow:0 0 0 2px color-mix(in srgb, var(--ui-primary) 16%, transparent); }
+.grn-input-unit em { flex:none; max-width:84px; overflow:hidden; color:var(--ui-ink-muted); font-size:10.5px; font-style:normal; font-weight:700; text-overflow:ellipsis; white-space:nowrap; }
+.grn-input-narrow em { max-width:52px; }
+.grn-ratio-row { display:grid; grid-template-columns:minmax(0,1.1fr) minmax(0,1fr) 88px; gap:6px; }
+.grn-ratio-row select { min-width:0; min-height:34px; }
+.grn-actual { margin-top:4px; color:var(--ui-ink-muted); font-size:10.5px; line-height:1.35; }
+.grn-field-value { align-items:flex-end; text-align:right; }
+.grn-field-value strong { padding-bottom:7px; font-size:14px; font-variant-numeric:tabular-nums; }
+.grn-item-remove { align-self:end; width:28px; height:34px; border:1px solid var(--ui-border); border-radius:8px; background:var(--ui-surface); color:var(--ui-ink-muted); font-size:16px; line-height:1; cursor:pointer; }
+.grn-item-remove:hover:not(:disabled) { border-color:#b7534a; color:#a9362d; }
+.grn-lines-foot { display:flex; justify-content:flex-end; padding:2px 2px 0; }
+.grn-lines-total { color:var(--ui-ink-muted); font-size:12px; }
+.grn-lines-total strong { color:var(--ui-ink); font-variant-numeric:tabular-nums; }
+
+/* The item field: typed into, narrowed down, chosen with the keyboard */
+.grn-picker { position:relative; min-width:0; }
+.grn-picker > input { min-width:0; min-height:34px; width:100%; }
+.grn-picker-menu { position:absolute; z-index:40; top:calc(100% + 4px); left:0; right:0; max-height:264px; min-width:230px; overflow:auto; padding:4px; border:1px solid var(--ui-border); border-radius:10px; background:var(--ui-surface); box-shadow:0 12px 28px rgba(16,24,40,.14); }
+.grn-picker-menu.empty { padding:10px 12px; color:var(--ui-ink-muted); font-size:11.5px; }
+.grn-picker-menu button { display:flex; align-items:center; justify-content:space-between; gap:10px; width:100%; padding:7px 9px; border:0; border-radius:7px; background:transparent; color:var(--ui-ink); text-align:left; cursor:pointer; }
+.grn-picker-menu button:hover, .grn-picker-menu button.active { background:color-mix(in srgb, var(--ui-primary) 10%, var(--ui-surface)); }
+.grn-picker-menu button span { display:grid; min-width:0; }
+.grn-picker-menu button strong { overflow:hidden; font-size:12.5px; white-space:nowrap; text-overflow:ellipsis; }
+.grn-picker-menu button small { color:var(--ui-ink-muted); font-size:10.5px; }
+.grn-picker-uom { flex:none; color:var(--ui-ink-muted); font-size:10.5px; font-weight:700; }
+
+/* Narrower than a wide screen: the line folds into three tidy bands rather
+   than letting any field escape its row. */
+@media(max-width:1250px) {
+  .grn-item-row {
+    grid-template-columns:22px minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) 30px;
+    grid-template-areas:
+      'no item item item remove'
+      'no count measured cost value'
+      'no ratio ratio ratio ratio';
+    row-gap:12px;
+  }
+  .grn-item-row { align-items:end; }
+  .grn-field-value { align-items:flex-end; }
+}
+@media(max-width:720px) {
+  .grn-item-row {
+    grid-template-columns:22px minmax(0,1fr) minmax(0,1fr) 30px;
+    grid-template-areas:
+      'no item item remove'
+      'no count measured measured'
+      'no cost value value'
+      'no ratio ratio ratio';
+  }
+  .grn-ratio-row { grid-template-columns:1fr; }
+}
+
+/* ── Reading a finished delivery note ────────────────────── */
+.grn-view-line { display:grid; grid-template-columns:minmax(170px,2fr) 110px 120px 92px 110px minmax(170px,1.2fr); align-items:center; gap:10px; padding:9px 10px; border-bottom:1px solid var(--ui-border); font-size:12px; }
+.grn-view-line:last-child { border-bottom:0; }
+.grn-view-head { color:var(--ui-ink-muted); font-size:9.5px; font-weight:800; letter-spacing:.05em; text-transform:uppercase; background:var(--ui-surface-muted); border-radius:8px 8px 0 0; }
+.grn-view-line .num { text-align:right; font-variant-numeric:tabular-nums; }
+.grn-view-item { display:grid; gap:2px; min-width:0; }
+.grn-view-item strong { overflow:hidden; font-size:12.5px; white-space:nowrap; text-overflow:ellipsis; }
+.grn-view-item small, .grn-view-mode small { display:block; color:var(--ui-ink-muted); font-size:10.5px; }
+.grn-view-mode { color:var(--ui-ink-muted); font-size:11px; }
+.grn-view-foot { border-top:1px solid var(--ui-border-strong); background:var(--ui-surface-muted); border-radius:0 0 8px 8px; font-weight:800; }
+.preview-lines { border:1px solid var(--ui-border); border-radius:10px; overflow:hidden; }

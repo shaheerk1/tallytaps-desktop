@@ -132,6 +132,150 @@ export class SupplyReceivingComponent implements OnInit, OnDestroy {
     const failed = [suppliers, receipts, agreements, lots, inventorySummary, allocationExceptions, recentLotAllocations].find((result: any) => !result.success);
     if (failed) this.reportError(failed.error || 'Some receiving data could not be loaded. Check the role permissions for this workflow.');
   }
+  // ── Choosing an item ────────────────────────────────────
+  // A shop carries hundreds of items, so the item field is typed into and
+  // narrowed down, never scrolled through.
+  productPickerLine: any = null;
+  productPickerTerm = '';
+  productPickerHighlight = 0;
+
+  get productPickerMatches(): any[] {
+    const term = this.productPickerTerm.trim().toLowerCase();
+    const all = this.products || [];
+    if (!term) return all.slice(0, 12);
+    return all.filter((product: any) =>
+      String(product.name || '').toLowerCase().includes(term)
+      || String(product.sku || '').toLowerCase().includes(term)
+    ).slice(0, 12);
+  }
+
+  productLabel(line: any): string {
+    const product = this.productForLine(line);
+    return product ? `${product.name}` : '';
+  }
+
+  openProductPicker(line: any): void {
+    if (this.grnReviewMode) return;
+    this.productPickerLine = line;
+    this.productPickerTerm = '';
+    this.productPickerHighlight = 0;
+  }
+
+  closeProductPicker(): void {
+    this.productPickerLine = null;
+    this.productPickerTerm = '';
+    this.productPickerHighlight = 0;
+  }
+
+  onProductPickerInput(event: Event): void {
+    this.productPickerTerm = (event.target as HTMLInputElement).value;
+    this.productPickerHighlight = 0;
+  }
+
+  onProductPickerKeydown(event: KeyboardEvent, line: any): void {
+    const matches = this.productPickerMatches;
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      this.productPickerHighlight = matches.length ? (this.productPickerHighlight + 1) % matches.length : 0;
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      this.productPickerHighlight = matches.length
+        ? (this.productPickerHighlight - 1 + matches.length) % matches.length : 0;
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      this.closeProductPicker();
+    } else if (event.key === 'Enter' && this.productPickerLine === line && matches.length) {
+      // Taking an item is the whole point of this field, so Enter does that
+      // before the row's own Enter moves on.
+      event.preventDefault();
+      event.stopPropagation();
+      this.chooseProduct(line, matches[this.productPickerHighlight]);
+    }
+  }
+
+  chooseProduct(line: any, product: any): void {
+    line.productId = product.id;
+    this.onGrnProductChanged(line);
+    this.closeProductPicker();
+    // Straight on to how many came in.
+    setTimeout(() => {
+      const row = (document.activeElement as HTMLElement)?.closest('.grn-row');
+      const next = row?.querySelector<HTMLInputElement>('.grn-field-qty input');
+      next?.focus();
+      next?.select();
+    });
+  }
+
+  /** What one line is worth, costed on whichever measure the price is per. */
+  lineValue(line: any): number {
+    const product = this.productForLine(line);
+    if (!product) return 0;
+    const cost = Number(line.unitCost || 0);
+    const base = Number(line.receivedKilos || 0);
+    const handling = Number(line.packageQty || 0);
+    const measure = product.dual_uom_enabled && base > 0 ? base : handling;
+    return Math.round(cost * measure * 100) / 100;
+  }
+
+  /** Which measure a cost is per, said in the item's own words. */
+  costUnitFor(line: any): string {
+    const product = this.productForLine(line);
+    if (!product) return 'unit';
+    return product.dual_uom_enabled ? (product.base_uom || 'measured') : (product.handling_uom || 'unit');
+  }
+
+  get grnGoodsValue(): number {
+    return this.receipt.lines.reduce((sum: number, line: any) => sum + this.lineValue(line), 0);
+  }
+
+  /**
+   * Enter walks the fields of a line and, at the end of one, adds the next
+   * line. The same flow the cash page uses, because the same hands use both.
+   */
+  onGrnKeydown(event: KeyboardEvent): void {
+    if (event.key !== 'Enter' || this.grnReviewMode) return;
+    const target = event.target as HTMLElement;
+    if (target.tagName === 'BUTTON' && !target.hasAttribute('data-flow')) return;
+    event.preventDefault();
+    const container = event.currentTarget as HTMLElement;
+    const fields = Array.from(container.querySelectorAll<HTMLElement>('[data-flow]'))
+      .filter((field) => !(field as HTMLInputElement).disabled && field.offsetParent !== null);
+    const next = fields.find((field) => target.compareDocumentPosition(field) & Node.DOCUMENT_POSITION_FOLLOWING);
+    if (!next) {
+      this.addLine();
+      setTimeout(() => {
+        const inputs = container.querySelectorAll<HTMLElement>('.grn-row:last-of-type [data-flow]');
+        inputs[0]?.focus();
+      });
+      return;
+    }
+    if (next.tagName === 'BUTTON') {
+      (next as HTMLButtonElement).click();
+      return;
+    }
+    next.focus();
+    if (next instanceof HTMLInputElement) next.select();
+  }
+
+  /**
+   * A measure as a person would write it: 100 bags, not 100.000, and 12.5 kg
+   * kept at 12.5. Trailing zeros carry no meaning and make a column hard to read.
+   */
+  measureText(value: unknown, uom?: string | null): string {
+    if (value == null || value === '') return '—';
+    const amount = Number(value);
+    if (!Number.isFinite(amount)) return String(value);
+    const trimmed = Number.isInteger(amount)
+      ? String(amount)
+      : String(Number(amount.toFixed(3)));
+    return uom ? `${trimmed} ${uom}` : trimmed;
+  }
+
+  /** How the second measure was taken, said plainly. */
+  conversionModeLabel(mode: unknown): string {
+    return String(mode) === 'fixed' ? 'Same every unit' : 'Weighed as it came';
+  }
+
   productForLine(line: any): any { return this.products.find((product: any) => Number(product.id) === Number(line.productId)) || null; }
   actualBasePerHandling(line: any): number | null { const handling = Number(line.packageQty); const base = Number(line.receivedKilos); return handling > 0 && base > 0 ? base / handling : null; }
   ratioDeviation(line: any): number | null { const expected = Number(line.expectedBasePerHandling); const actual = this.actualBasePerHandling(line); return expected > 0 && actual != null ? ((actual - expected) / expected) * 100 : null; }

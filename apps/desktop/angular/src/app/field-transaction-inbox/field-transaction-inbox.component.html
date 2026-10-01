@@ -85,7 +85,11 @@
             <td><b>{{ deviceLabel(record) }}</b><small>{{ record.device.model || record.device.name || 'Unknown model' }}</small></td>
             <td><span class="type-badge" [attr.data-type]="record.type">{{ record.type }}</span><small>{{ record.direction | titlecase }}</small></td>
             <td><b>{{ record.item || 'General transaction' }}</b><small>{{ displayQuantity(record) }}</small></td>
-            <td class="note-cell">{{ record.note || '-' }}</td>
+            <td class="note-cell">
+              <span class="needs-doing" *ngIf="record.details?.needsDoing && !record.resolved">Needs doing</span>
+              {{ record.note || '-' }}
+              <small class="note-marks" *ngIf="noteMarks(record)">{{ noteMarks(record) }}</small>
+            </td>
             <td class="number amount-cell">{{ record.amount | number:'1.2-2' }}</td>
             <td>{{ record.media.length || '-' }}</td>
             <td><span class="status-pill" [class.resolved]="record.resolved">{{ record.resolved ? 'Resolved' : 'Open' }}</span></td>
@@ -145,6 +149,14 @@
       <div><span>Quantity</span><b>{{ displayQuantity(record) }}</b></div>
     </section>
 
+    <section class="detail-section" *ngIf="record.details?.who || record.details?.tags?.length || record.details?.needsDoing">
+      <h3>Marked on this note</h3>
+      <p class="note-marks-detail">
+        <span class="needs-doing" *ngIf="record.details?.needsDoing">{{ record.resolved ? 'Was asking to be done' : 'Needs doing' }}</span>
+        <span class="mark-chip" *ngIf="record.details?.who">About {{ record.details?.who }}</span>
+        <span class="mark-chip" *ngFor="let tag of record.details?.tags">#{{ tag }}</span>
+      </p>
+    </section>
     <section class="detail-section"><h3>Note</h3><p>{{ record.note || 'No note was recorded.' }}</p></section>
     <section class="detail-section"><h3>Source device</h3><div class="device-card"><b>{{ deviceLabel(record) }}</b><span>{{ deviceDetails(record) }}</span><small>Device ID: {{ record.device.id || '-' }}</small></div></section>
     <section class="detail-section identifiers"><h3>Record identifiers</h3><div><span>Server record</span><code>{{ record.id }}</code></div><div><span>Client record</span><code>{{ record.clientRecordId || '-' }}</code></div></section>

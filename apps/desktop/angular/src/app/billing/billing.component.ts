@@ -241,6 +241,11 @@ export class BillingComponent implements OnInit, OnDestroy {
   showChequeDetailsEditor = false;
   paymentAccountTerm = '';
   paymentAccountMatches: CustomerAccountSummary[] = [];
+  /** Which match the arrow keys are sitting on. */
+  paymentAccountHighlight = 0;
+  /** A customer being added without leaving the bill. */
+  newCustomer: { name: string; mobile: string; shopName: string; marketCodesText: string; creditLimit: string } | null = null;
+  savingNewCustomer = false;
   paymentAccountSearchOpen = false;
   isPaymentAccountSearching = false;
   private paymentAccountSearchToken = 0;
@@ -2242,6 +2247,107 @@ export class BillingComponent implements OnInit, OnDestroy {
     if (token !== this.paymentAccountSearchToken) return;
     this.isPaymentAccountSearching = false;
     this.paymentAccountMatches = result.success ? (result.data as CustomerAccountSummary[]).slice(0, 8) : [];
+    this.paymentAccountHighlight = 0;
+  }
+
+  /** Up and down walk the matches; Enter takes the one highlighted. */
+  onPaymentAccountKeydown(event: KeyboardEvent): void {
+    if (!this.paymentAccountMatches.length) {
+      if (event.key === 'Escape' && this.linkedCustomer) this.closePaymentAccountSearch();
+      return;
+    }
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      this.paymentAccountHighlight = (this.paymentAccountHighlight + 1) % this.paymentAccountMatches.length;
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      this.paymentAccountHighlight =
+        (this.paymentAccountHighlight - 1 + this.paymentAccountMatches.length) % this.paymentAccountMatches.length;
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      const account = this.paymentAccountMatches[this.paymentAccountHighlight];
+      if (account) void this.choosePaymentCustomerAccount(account);
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      if (this.linkedCustomer) this.closePaymentAccountSearch();
+    }
+  }
+
+  /**
+   * Adds a customer here, on the bill, because needing one is discovered at
+   * the moment of taking payment. Credit is on from the start: the only reason
+   * to add a customer in the middle of a bill is to leave it unpaid.
+   */
+  startNewCustomer(): void {
+    this.paymentError = '';
+    this.newCustomer = {
+      name: this.paymentAccountTerm.trim(),
+      mobile: '',
+      shopName: '',
+      marketCodesText: this.customerCode.trim().toUpperCase() === 'X' ? '' : this.customerCode.trim().toUpperCase(),
+      creditLimit: ''
+    };
+    setTimeout(() => {
+      const field = document.querySelector<HTMLInputElement>('.pm-new-customer input[name="newCustomerName"]');
+      field?.focus();
+      field?.select();
+    });
+  }
+
+  cancelNewCustomer(): void {
+    this.newCustomer = null;
+    this.focusAmountInput();
+  }
+
+  get canAddCustomer(): boolean {
+    return this.session.hasPermission('customers.manage');
+  }
+
+  async saveNewCustomer(): Promise<void> {
+    const draft = this.newCustomer;
+    if (!window.posApi || !draft || this.savingNewCustomer) return;
+    const name = draft.name.trim() || draft.shopName.trim();
+    if (!name) {
+      this.paymentError = 'Give the customer a name, or the shop name.';
+      return;
+    }
+    const user = this.session.getUser();
+    if (!user) {
+      this.paymentError = 'An active workstation session is required to add a customer.';
+      return;
+    }
+    this.savingNewCustomer = true;
+    this.paymentError = '';
+    const result = await window.posApi.catalog.createCustomer({
+      name,
+      displayName: name,
+      shopName: draft.shopName.trim(),
+      mobile: draft.mobile.trim(),
+      marketCodes: draft.marketCodesText.split(',').map((code) => code.trim().toUpperCase()).filter(Boolean),
+      creditEnabled: true,
+      creditLimit: draft.creditLimit.trim() === '' ? '' : Number(draft.creditLimit),
+      paymentTermsDays: 0,
+      isActive: true,
+      origin: { locCode: this.locationCode, macCode: this.machineCode, txnDate: this.billingDate },
+      userId: user.id
+    } as never, this.actor());
+    this.savingNewCustomer = false;
+    if (!result.success) {
+      this.paymentError = result.error || 'Could not add this customer.';
+      return;
+    }
+    const created = (result.data as { customer?: CustomerAccountSummary } | CustomerAccountSummary | null);
+    const account = (created && 'customer' in (created as object)
+      ? (created as { customer: CustomerAccountSummary }).customer
+      : created) as CustomerAccountSummary | null;
+    this.newCustomer = null;
+    if (!account?.id) {
+      // Saved, but the answer was not shaped as expected: let the search find it.
+      this.paymentAccountTerm = name;
+      this.onPaymentAccountTermChange();
+      return;
+    }
+    await this.choosePaymentCustomerAccount(account);
   }
 
   async choosePaymentCustomerAccount(account: CustomerAccountSummary): Promise<void> {
@@ -2264,8 +2370,13 @@ export class BillingComponent implements OnInit, OnDestroy {
     this.paymentError = '';
     this.paymentAccountTerm = '';
     this.paymentAccountMatches = [];
+    this.paymentAccountHighlight = 0;
     this.paymentAccountSearchOpen = false;
+    this.newCustomer = null;
     await this.loadAdvanceBalance();
+    // Back to the amount, which is what was being typed when the customer was
+    // found to be missing.
+    this.focusAmountInput();
   }
 
   private async loadAdvanceBalance(): Promise<void> {
