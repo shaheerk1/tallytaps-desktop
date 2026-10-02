@@ -279,7 +279,8 @@ function createOperationalAccountingRepository({ database, journalRepository }) 
   async function syncSupplierLedger(connection, locCode, userId) {
     const [obligations] = await connection.execute(
       `SELECT e.*, COALESCE(b.id, g.business_day_id) AS business_day_id,
-              e.business_date AS txn_date, e.created_by AS source_user_id, l.ownership_model
+              e.business_date AS txn_date, e.created_by AS source_user_id, l.ownership_model,
+              g.stock_mode, l.stock_tracked
        FROM supplier_payable_entries e
        LEFT JOIN goods_receipts g ON g.id = e.goods_receipt_id
        LEFT JOIN business_days b ON b.loc_code = e.loc_code AND b.business_date = e.business_date
@@ -309,7 +310,9 @@ function createOperationalAccountingRepository({ database, journalRepository }) 
       }
       const obligation = {
         entryType: row.ownership_model === 'consignment' ? 'consignment_accrual' : row.entry_type,
-        amount: money(row.amount), inventoryLotId: row.inventory_lot_id && Number(row.inventory_lot_id), reason: row.reason
+        amount: money(row.amount), inventoryLotId: row.inventory_lot_id && Number(row.inventory_lot_id), reason: row.reason,
+        // A purchase record holds no stock, so its cost cannot be held as stock value.
+        stockTracked: !(row.stock_mode === 'purchase_record' || Number(row.stock_tracked) === 0)
       };
       posted += await post(connection, row, {
         sourceType: 'supplier_obligation', sourceId: row.id,

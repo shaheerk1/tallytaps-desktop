@@ -44,11 +44,15 @@ function createAuthRepository({ database }) {
     });
   }
 
-  async function createSession(userId, token, expiresAt) {
+  /**
+   * A sign-in with no end date lasts until someone signs out. A date may still
+   * be given, and rows that carry one are honoured and swept up when they pass.
+   */
+  async function createSession(userId, token, expiresAt = null) {
     return database.withConnection(async (connection) => {
       await connection.execute(
         'INSERT INTO sessions (user_id, token, expires_at) VALUES (?, ?, ?)',
-        [userId, token, expiresAt]
+        [userId, token, expiresAt || null]
       );
     });
   }
@@ -61,7 +65,7 @@ function createAuthRepository({ database }) {
                 u.status, u.last_login_at, u.password_updated_at
          FROM sessions s
          JOIN users u ON u.id = s.user_id
-         WHERE s.token = ? AND s.expires_at > NOW()
+         WHERE s.token = ? AND (s.expires_at IS NULL OR s.expires_at > NOW())
          LIMIT 1`,
         [token]
       );
@@ -98,7 +102,7 @@ function createAuthRepository({ database }) {
          LEFT JOIN workstation_sessions ws ON ws.id = s.workstation_session_id AND ws.status = 'open'
          LEFT JOIN pos_workstations pw ON pw.id = ws.workstation_id
          LEFT JOIN pos_locations pl ON pl.loc_code = pw.location_code
-         WHERE s.token = ? AND s.expires_at > NOW()
+         WHERE s.token = ? AND (s.expires_at IS NULL OR s.expires_at > NOW())
          LIMIT 1`,
         [token]
       );
@@ -115,7 +119,7 @@ function createAuthRepository({ database }) {
   async function deleteExpiredSessions() {
     return database.withConnection(async (connection) => {
       const [result] = await connection.execute(
-        'DELETE FROM sessions WHERE expires_at <= NOW()'
+        'DELETE FROM sessions WHERE expires_at IS NOT NULL AND expires_at <= NOW()'
       );
       return { deleted: result.affectedRows };
     });

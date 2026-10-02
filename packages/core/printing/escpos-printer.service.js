@@ -540,7 +540,9 @@ function renderDocumentBody(printer, lines) {
     }
   }
 
-  printer.text('-'.repeat(WIDTH));
+  // A document with no items (an account sheet, say) would otherwise rule twice
+  // in a row here: the line below the items block already separates it.
+  if ((lines.items || []).length > 0) printer.text('-'.repeat(WIDTH));
 
   const renderedInvoiceMeasures = lines.itemLayout === 'invoice-measures'
     ? renderInvoiceMeasureItems(printer, lines.items)

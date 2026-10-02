@@ -202,6 +202,7 @@ function createLotCostingRepository({ database, documentSequenceRepository, busi
       supplierId: Number(row.supplier_id),
       supplierName: row.supplier_name,
       ownershipModel: row.ownership_model,
+      stockTracked: Number(row.stock_tracked) !== 0,
       receivedHandlingQuantity: Number(row.received_handling_quantity || 0),
       remainingHandlingQuantity: Number(row.remaining_handling_quantity || 0),
       receivedBaseQuantity: row.received_base_quantity == null ? null : Number(row.received_base_quantity),
@@ -264,7 +265,7 @@ function createLotCostingRepository({ database, documentSequenceRepository, busi
         params.push(like, like, like, like, like, like);
       }
       const [rows] = await connection.query(
-        `SELECT g.id AS goods_receipt_id, g.grn_number, g.business_date, s.name AS supplier_name, s.supplier_code,
+        `SELECT g.id AS goods_receipt_id, g.grn_number, g.business_date, g.stock_mode, s.name AS supplier_name, s.supplier_code,
                 l.id AS lot_id, l.lot_code, l.lot_tag, p.name AS product_name
          FROM goods_receipts g
          JOIN suppliers s ON s.id = g.supplier_id
@@ -279,7 +280,7 @@ function createLotCostingRepository({ database, documentSequenceRepository, busi
         const id = Number(row.goods_receipt_id);
         if (!grns.has(id)) {
           if (grns.size >= Math.min(200, Math.max(1, Number(filters.limit || 60)))) continue;
-          grns.set(id, { id, grnNumber: row.grn_number, date: dateOnly(row.business_date), supplierName: row.supplier_name, supplierCode: row.supplier_code || null, lots: [] });
+          grns.set(id, { id, grnNumber: row.grn_number, date: dateOnly(row.business_date), supplierName: row.supplier_name, supplierCode: row.supplier_code || null, stockMode: row.stock_mode === 'purchase_record' ? 'purchase_record' : 'stock_receipt', lots: [] });
         }
         grns.get(id).lots.push({ id: Number(row.lot_id), lotCode: row.lot_code, lotTag: row.lot_tag || null, productName: row.product_name });
       }
@@ -384,7 +385,7 @@ function createLotCostingRepository({ database, documentSequenceRepository, busi
         posting: require('../../core/accounting/posting-rules').allocationPosting({
           allocation: { amount: share, reason },
           category: { id: expense.category_id, name: expense.category_name, defaultTreatment: expense.default_treatment },
-          lot: { id: Number(lot.id), lotCode: lot.lot_code, ownershipModel: lot.ownership_model }
+          lot: { id: Number(lot.id), lotCode: lot.lot_code, ownershipModel: lot.ownership_model, stockTracked: Number(lot.stock_tracked) !== 0 }
         }),
         userId: input.userId,
         metadata: { expenseNumber: expense.expense_number, lotCode: lot.lot_code }
@@ -497,7 +498,7 @@ function createLotCostingRepository({ database, documentSequenceRepository, busi
             posting: rules.allocationPosting({
               allocation: { amount: side.amount, reason },
               category,
-              lot: { id: Number(side.lot.id), lotCode: side.lot.lot_code, ownershipModel: side.lot.ownership_model }
+              lot: { id: Number(side.lot.id), lotCode: side.lot.lot_code, ownershipModel: side.lot.ownership_model, stockTracked: Number(side.lot.stock_tracked) !== 0 }
             }),
             userId: input.userId,
             metadata: { reallocationNumber, lotCode: side.lot.lot_code }
@@ -574,7 +575,7 @@ function createLotCostingRepository({ database, documentSequenceRepository, busi
         posting: postingRules.allocationPosting({
           allocation: { amount, reason },
           category,
-          lot: { id: Number(lot.id), lotCode: lot.lot_code, ownershipModel: lot.ownership_model }
+          lot: { id: Number(lot.id), lotCode: lot.lot_code, ownershipModel: lot.ownership_model, stockTracked: Number(lot.stock_tracked) !== 0 }
         }),
         userId,
         metadata: { detachNumber, lotCode: lot.lot_code }

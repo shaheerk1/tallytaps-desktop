@@ -102,10 +102,136 @@ export class CustomerAccountsComponent implements OnInit {
   }
   filteredEntries(): any[] { return (this.account?.entries || []).filter((entry: any) => { const date = this.dateKey(entry.transaction_date || entry.created_at); return (!this.fromDate || date >= this.fromDate) && (!this.toDate || date <= this.toDate); }); }
 
+  /** The printable width of an 80mm receipt at the printer's normal font. */
+  private readonly paperWidth = 48;
+
+  private clip(text: string, width: number): string {
+    const value = String(text ?? '');
+    return value.length > width ? `${value.slice(0, Math.max(1, width - 1))}…` : value;
+  }
+
+  /** The open bills the statement covers, narrowed by the date range if one is set. */
+  openBillsForStatement(): any[] {
+    return (this.account?.openInvoices || []).filter((invoice: any) => {
+      const date = this.dateKey(invoice.txn_date);
+      return (!this.fromDate || date >= this.fromDate) && (!this.toDate || date <= this.toDate);
+    });
+  }
+
+  /**
+   * What the customer still owes, bill by bill.
+   *
+   * This used to print every receivable entry ever recorded, raw entry types
+   * and all, which told a customer nothing and read like an accusation. A
+   * customer wants one question answered at the counter: which bills are still
+   * open, and what do they come to? So the statement lists only bills with
+   * something left on them, each with its date, what it came to, what has
+   * already been paid against it, and what is left -- then one total.
+   */
   async printStatement(): Promise<void> {
-    if (!this.account) return; const c = this.account.customer;
-    const result = await this.printing.printDocument({ brand: { name: 'Customer Statement' }, meta: [{ label: 'Account', value: c.accountNumber }, { label: 'Customer', value: c.name }, ...(c.marketCodes?.length ? [{ label: 'Market codes', value: c.marketCodes.join(', ') }] : []), ...(c.mobile ? [{ label: 'Mobile', value: c.mobile }] : []), { label: 'Outstanding', value: groupedAmount(c.outstandingBalance) }], items: this.filteredEntries().map((entry: any) => ({ description: `${entry.entry_type} ${entry.invoice_number || entry.refund_number || ''}`, qty: this.dateKey(entry.transaction_date || entry.created_at), amount: groupedAmount(entry.amount) })), totals: [{ label: 'ACCOUNT OUTSTANDING', value: groupedAmount(c.outstandingBalance), bold: true }] });
-    this.info = result.success ? 'Customer statement sent to the printer.' : result.error || 'Statement print failed.';
+    if (!this.account) return;
+    const customer = this.account.customer;
+    const settings = this.receiptSettings || {};
+    const currency = settings.currencySymbol || 'Rs.';
+    const width = this.paperWidth;
+    const amountWidth = 14;
+    const bills = this.openBillsForStatement();
+    const filtered = Boolean(this.fromDate || this.toDate);
+
+    const lines: Array<{ text: string; bold?: boolean }> = [];
+    const rule = () => lines.push({ text: '-'.repeat(width) });
+    const amountRow = (label: string, value: string, indent = 0) => lines.push({
+      text: `${' '.repeat(indent)}${this.clip(label, width - indent - amountWidth).padEnd(width - indent - amountWidth, ' ')}${this.clip(value, amountWidth).padStart(amountWidth, ' ')}`
+    });
+    const dueRow = (value: string) => lines.push({
+      text: `${'Still to pay'.padStart(width - amountWidth, ' ')}${this.clip(value, amountWidth).padStart(amountWidth, ' ')}`
+    });
+
+    rule();
+    if (!bills.length) {
+      lines.push({
+        text: filtered ? 'No bills from these dates are open.' : 'No bills are open. Thank you.',
+        bold: true
+      });
+    } else {
+      lines.push({ text: 'These bills are still to be settled:' });
+      rule();
+    }
+
+    for (const bill of bills) {
+      const billed = Number(bill.grandTotal ?? bill.grand_total ?? 0);
+      const paid = Number(bill.paidTotal ?? bill.paid_total ?? 0);
+      const due = this.dateKey(bill.due_date) && this.dateKey(bill.due_date) !== this.dateKey(bill.txn_date)
+        ? `  due ${this.formatSriLankanDate(bill.due_date)}`
+        : '';
+      lines.push({ text: this.clip(`${this.formatSriLankanDate(bill.txn_date)}  ${bill.invoice_number}${due}`, width), bold: true });
+      amountRow('Bill total', groupedAmount(billed), 2);
+      if (paid > 0.005) amountRow('Paid so far', `-${groupedAmount(paid)}`, 2);
+      dueRow(groupedAmount(Number(bill.balance || 0)));
+    }
+
+    if (bills.length) {
+      const billedTotal = bills.reduce((sum: number, bill: any) => sum + Number(bill.grandTotal ?? bill.grand_total ?? 0), 0);
+      const paidTotal = bills.reduce((sum: number, bill: any) => sum + Number(bill.paidTotal ?? bill.paid_total ?? 0), 0);
+      rule();
+      amountRow('Bills still open', String(bills.length));
+      amountRow('Billed', groupedAmount(billedTotal));
+      if (paidTotal > 0.005) amountRow('Paid so far', `-${groupedAmount(paidTotal)}`);
+    }
+
+    const listedTotal = bills.reduce((sum: number, bill: any) => sum + Number(bill.balance || 0), 0);
+    const outstanding = Number(customer.outstandingBalance || 0);
+    const totals: Array<{ label: string; value: string; bold?: boolean }> = [];
+    // With a date range on, the bills listed may not be the whole account, so
+    // both figures are printed and neither can be mistaken for the other.
+    if (filtered && Math.abs(listedTotal - outstanding) > 0.005) {
+      totals.push({ label: 'Total for the bills above', value: groupedAmount(listedTotal) });
+    }
+    totals.push({ label: 'TOTAL OUTSTANDING', value: receiptMoney(outstanding, currency), bold: true });
+    if (Number(customer.chequeExposure || 0) > 0.005) {
+      // Separate from the total above: these were credited against the bills
+      // when they were taken, and are counted here only so the customer can
+      // see what of theirs the shop is still holding.
+      totals.push({ label: 'Cheques with us, not cleared', value: groupedAmount(customer.chequeExposure) });
+    }
+    if (Number(this.advanceSummary?.availableBalance || 0) > 0.005) {
+      totals.push({ label: 'Advance held for you', value: groupedAmount(this.advanceSummary!.availableBalance) });
+    }
+
+    const result = await this.printing.printDocument({
+      documentTitle: 'STATEMENT OF ACCOUNT',
+      brand: { name: settings.storeName || 'POS Platform', addressLines: settings.addressLines || [], phone: settings.phone || '' },
+      logoDataUrl: settings.logoDataUrl || undefined,
+      receiptLanguage: settings.language || 'en-LK',
+      rasterHeaderLayout: 'billing',
+      secondaryHeaderLines: [{ text: 'STATEMENT OF ACCOUNT', align: 'center', bold: true }],
+      meta: [
+        { label: 'Customer', value: this.clip(customer.name || '', width - 14) },
+        { label: 'Account', value: customer.accountNumber || '' },
+        { label: 'Codes', value: (customer.marketCodes || []).join(', ') },
+        { label: 'Mobile', value: customer.mobile || customer.phone || '' },
+        { label: 'Bills dated', value: filtered ? this.statementRangeLabel : '' },
+        { label: 'Printed', value: this.formatSriLankanDate(new Date().toISOString(), true) }
+      ].filter((row) => String(row.value || '').trim()),
+      preLines: lines,
+      items: [],
+      totals,
+      footerLines: [
+        'Thank you for your business.',
+        'Please check and tell us of any difference.',
+        ...(settings.footers || []).filter(Boolean)
+      ]
+    });
+    this.info = result.success ? 'Statement sent to the printer.' : '';
+    if (!result.success) this.error = result.error || 'Statement print failed.';
+  }
+
+  /** The date range the statement covers, as the header should say it. */
+  get statementRangeLabel(): string {
+    if (this.fromDate && this.toDate) return `${this.formatSriLankanDate(this.fromDate)} to ${this.formatSriLankanDate(this.toDate)}`;
+    if (this.fromDate) return `from ${this.formatSriLankanDate(this.fromDate)}`;
+    if (this.toDate) return `up to ${this.formatSriLankanDate(this.toDate)}`;
+    return '';
   }
 
   async save(): Promise<void> {

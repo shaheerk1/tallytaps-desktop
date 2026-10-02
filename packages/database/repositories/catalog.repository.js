@@ -484,6 +484,25 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
   }
 
   /** How a GRN holds its goods. Kept on the GRN itself; supply agreements are no longer required. */
+  /**
+   * Which of the two a GRN is. A purchase record keeps the money and creates no
+   * stock; anything else is a stock receipt, which is what every GRN was before.
+   */
+  function receiptStockMode(value) {
+    return String(value || '').trim() === 'purchase_record' ? 'purchase_record' : 'stock_receipt';
+  }
+
+  /**
+   * A consignment supplier is paid from what sold, and that is read off sales
+   * allocated to their lot. Without stock there are no such sales, so the
+   * supplier would never be owed anything: the combination is refused.
+   */
+  function assertStockModeAllowed(stockMode, ownership) {
+    if (stockMode === 'purchase_record' && ownership === 'consignment') {
+      throw new Error('A consignment delivery must be a stock receipt: the supplier is paid from what sells out of their lot.');
+    }
+  }
+
   function receiptOwnership(receipt, agreement = null) {
     let metadata = receipt?.metadata || {};
     if (typeof metadata === 'string') { try { metadata = JSON.parse(metadata); } catch { metadata = {}; } }
@@ -512,10 +531,11 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
     return created.insertId;
   }
 
-  async function saveGoodsReceiptDraft({ goodsReceiptId = null, id = null, supplierId = null, supplierName = null, agreementId = null, ownershipModel = null, businessDate, locCode, macCode, vehicleNo = null, externalReference = null, documentType = 'receipt', correctsGoodsReceiptId = null, correctionReason = null, userId = null, lines = [] }) {
+  async function saveGoodsReceiptDraft({ goodsReceiptId = null, id = null, supplierId = null, supplierName = null, agreementId = null, ownershipModel = null, stockMode = null, businessDate, locCode, macCode, vehicleNo = null, externalReference = null, documentType = 'receipt', correctsGoodsReceiptId = null, correctionReason = null, userId = null, lines = [] }) {
     if ((!supplierId && !String(supplierName || '').trim()) || !businessDate || !String(locCode || '').trim() || !String(macCode || '').trim()) throw new Error('Supplier, business date, location, and machine are required to save a GRN draft.');
     if (!['receipt', 'correction'].includes(documentType)) throw new Error('Invalid GRN document type.');
     if (ownershipModel != null && !['owned', 'consignment'].includes(ownershipModel)) throw new Error('Choose owned purchase or consignment.');
+    if (stockMode != null && !['stock_receipt', 'purchase_record'].includes(stockMode)) throw new Error('A GRN is either a stock receipt or a purchase record.');
     const normalizedLines = normalizeDraftReceiptLines(lines);
     return database.withConnection(async (connection) => {
       await connection.beginTransaction();
@@ -536,26 +556,40 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
             throw new Error('A saved GRN keeps its original business date and workstation identity. Cancel it and create a new GRN to change those fields.');
           }
           grnNumber = draft.grn_number;
+          const draftOwnership = ownershipModel || receiptOwnership(draft);
+          // A correction keeps the mode of the GRN it corrects; nothing else can
+          // turn a stock receipt into a purchase record after the fact.
+          const draftStockMode = draft.document_type === 'correction'
+            ? receiptStockMode(draft.stock_mode)
+            : receiptStockMode(stockMode == null ? draft.stock_mode : stockMode);
+          assertStockModeAllowed(draftStockMode, draftOwnership);
           await connection.execute(
             `UPDATE goods_receipts SET supplier_id = ?, agreement_id = ?, business_date = ?, vehicle_no = ?, external_reference = ?, correction_reason = ?,
+                    stock_mode = ?,
                     metadata = JSON_SET(COALESCE(metadata, JSON_OBJECT()), '$.ownershipModel', ?)
              WHERE id = ?`,
             [supplierId, agreementId || null, draft.business_date, vehicleNo || null, externalReference || null, correctionReason || null,
-              ownershipModel || receiptOwnership(draft), draftId]
+              draftStockMode, draftOwnership, draftId]
           );
           await connection.execute('DELETE FROM goods_receipt_lines WHERE goods_receipt_id = ?', [draftId]);
         } else {
           if (documentType === 'correction' && (!correctsGoodsReceiptId || !String(correctionReason || '').trim())) throw new Error('A linked GRN and correction reason are required for a correction draft.');
+          let newStockMode = receiptStockMode(stockMode);
+          if (documentType === 'correction') {
+            const [corrected] = await connection.execute('SELECT stock_mode FROM goods_receipts WHERE id = ?', [correctsGoodsReceiptId]);
+            newStockMode = receiptStockMode(corrected[0] && corrected[0].stock_mode);
+          }
+          assertStockModeAllowed(newStockMode, ownershipModel || 'owned');
           const grnNo = await documentSequenceRepository.allocateWithConnection(connection, {
             documentType: 'goods_receipt', locCode, macCode, txnDate: businessDate
           });
           grnNumber = receiptNumber(documentType === 'correction' ? 'GRC' : 'GRN', businessDate, grnNo);
           const [created] = await connection.execute(
             `INSERT INTO goods_receipts
-               (business_day_id, grn_number, loc_code, mac_code, grn_no, document_type, supplier_id, agreement_id,
+               (business_day_id, grn_number, loc_code, mac_code, grn_no, document_type, stock_mode, supplier_id, agreement_id,
                 corrects_goods_receipt_id, business_date, status, vehicle_no, external_reference, correction_reason, created_by, metadata)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, CAST(? AS JSON))`,
-            [businessDay.id, grnNumber, String(locCode).trim(), String(macCode).trim(), grnNo, documentType, supplierId,
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, CAST(? AS JSON))`,
+            [businessDay.id, grnNumber, String(locCode).trim(), String(macCode).trim(), grnNo, documentType, newStockMode, supplierId,
               agreementId || null, correctsGoodsReceiptId || null, businessDate, vehicleNo || null,
               externalReference || null, correctionReason || null, userId || null,
               JSON.stringify({ ownershipModel: ownershipModel || 'owned' })]
@@ -614,7 +648,8 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
       const baseQty = lot.received_base_quantity == null && lot.received_kilos == null
         ? null
         : Number(lot.received_base_quantity ?? lot.received_kilos);
-      await inventoryLedgerRepository.postWithConnection(connection, {
+      // A purchase record never put stock in, so there is none to take back out.
+      if (Number(lot.stock_tracked) !== 0) await inventoryLedgerRepository.postWithConnection(connection, {
         productId: lot.product_id,
         inventoryLotId: lot.id,
         locCode: correction.loc_code,
@@ -702,6 +737,11 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
         }
         if (receipt.document_type === 'correction') await reverseOriginalGoodsReceiptForCorrection(connection, receipt.corrects_goods_receipt_id, receipt, userId);
         const ownership = receiptOwnership(receipt, agreement);
+        const stockMode = receiptStockMode(receipt.stock_mode);
+        assertStockModeAllowed(stockMode, ownership);
+        // A purchase record writes the lot and what was received, and stops
+        // there: nothing to sell, and no movement in the stock ledger.
+        const tracksStock = stockMode !== 'purchase_record';
         const postingEventNo = receipt.document_type === 'correction' ? 2 : 1;
         for (const line of lines) {
           const handlingQuantity = Number(line.handling_quantity ?? line.package_qty ?? 0);
@@ -726,17 +766,21 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
           const lotCode = `${supplierLotPrefix}-${locationLotPrefix}-${businessDateText(receipt.business_date).replace(/-/g, '')}-${receipt.grn_no}-${line.line_no}`;
           // The short handle the counter types; the lot code above stays its identity.
           const lotTag = await nextLotTag(connection, { locCode: receipt.loc_code, productId: line.product_id });
+          // A lot of a purchase record is born empty: `active_lot_tag` is NULL
+          // for an empty lot, so the counter can neither type it nor sell it.
+          const remainingHandling = tracksStock ? handlingQuantity : 0;
+          const remainingBase = baseQuantity == null ? null : (tracksStock ? baseQuantity : 0);
           const [lot] = await connection.execute(
             `INSERT INTO inventory_lots
                (goods_receipt_line_id, lot_code, lot_tag, loc_code, mac_code, txn_date, grn_no, line_no, supplier_id, product_id,
-                ownership_model, received_quantity, remaining_quantity, received_handling_quantity, remaining_handling_quantity,
+                ownership_model, stock_tracked, received_quantity, remaining_quantity, received_handling_quantity, remaining_handling_quantity,
                 received_kilos, remaining_kilos, received_base_quantity, remaining_base_quantity,
                 handling_uom_snapshot, base_uom_snapshot, conversion_mode, expected_base_per_handling, actual_base_per_handling, ratio_tolerance_percent, terms_snapshot)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON))`,
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON))`,
             [line.id, lotCode, lotTag, receipt.loc_code, receipt.mac_code, receipt.business_date, receipt.grn_no, line.line_no,
-              receipt.supplier_id, line.product_id, ownership,
-              handlingQuantity, handlingQuantity, handlingQuantity, handlingQuantity,
-              baseQuantity, baseQuantity, baseQuantity, baseQuantity,
+              receipt.supplier_id, line.product_id, ownership, tracksStock ? 1 : 0,
+              handlingQuantity, remainingHandling, handlingQuantity, remainingHandling,
+              baseQuantity, remainingBase, baseQuantity, remainingBase,
               line.handling_uom || 'qty', line.base_uom || null, line.conversion_mode || 'variable', expectedRatio, actualRatio, Number(line.ratio_tolerance_percent || 20),
               JSON.stringify({ agreementId: receipt.agreement_id, ownershipModel: ownership, commissionRate: agreement?.commission_rate || 0, settlementBasis: agreement?.settlement_basis || null })]
           );
@@ -756,7 +800,7 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
             [lot.insertId, receipt.loc_code, receipt.mac_code, receipt.business_date, receipt.grn_no, line.line_no,
               postingEventNo, handlingQuantity || null, baseQuantity, userId || null]
           );
-          await inventoryLedgerRepository.postWithConnection(connection, {
+          if (tracksStock) await inventoryLedgerRepository.postWithConnection(connection, {
             productId: line.product_id,
             inventoryLotId: lot.insertId,
             locCode: receipt.loc_code,
@@ -859,7 +903,8 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
         for (const lot of lots) {
           const handlingQty = Number(lot.received_handling_quantity ?? lot.received_quantity ?? 0);
           const baseQty = lot.received_base_quantity == null && lot.received_kilos == null ? null : Number(lot.received_base_quantity ?? lot.received_kilos);
-          await inventoryLedgerRepository.postWithConnection(connection, {
+          // Nothing went into stock for a purchase record, so nothing comes out.
+          if (Number(lot.stock_tracked) !== 0) await inventoryLedgerRepository.postWithConnection(connection, {
             productId: lot.product_id, inventoryLotId: lot.id, locCode, macCode, businessDate: removalDate,
             documentType: 'grn_removal', documentNo: receipt.id, lineNo: lot.line_no, eventNo: 1,
             movementType: 'receipt_removed', referenceType: 'goods_receipt', referenceId: receipt.id,

@@ -1,7 +1,9 @@
 import { Component, HostListener, OnInit } from '@angular/core';
+import { PrintingService } from '../services/printing.service';
 import { SessionService } from '../services/session.service';
 import type {
-  FundAccount, SupplierAccountLine, SupplierAccountSheet, SupplierAccountSummary, SupplierChequeInHand, SupplierPaymentBankAccount
+  FundAccount, PrintDocument, PrintTextLine, SupplierAccountLine, SupplierAccountSheet, SupplierAccountSummary,
+  SupplierChequeInHand, SupplierPaymentBankAccount
 } from '../../../../../../packages/shared/ipc/pos-api';
 
 type BalanceFilter = '' | 'owed' | 'owes_us' | 'settled';
@@ -61,7 +63,7 @@ export class SupplierAccountsComponent implements OnInit {
   ];
   drawerId: number | null = null;
 
-  constructor(private session: SessionService) {}
+  constructor(private session: SessionService, private printing: PrintingService) {}
 
   get canManage(): boolean { return this.session.hasPermission('supplier-settlements.manage'); }
   get canBackdate(): boolean { return this.session.hasPermission('money.backdate'); }
@@ -360,6 +362,133 @@ export class SupplierAccountsComponent implements OnInit {
   }
 
   // ── Sharing ────────────────────────────────────────────────
+
+  /** The printable width of an 80mm receipt at the printer's normal font. */
+  private readonly paperWidth = 48;
+
+  private clip(text: string, width: number): string {
+    const value = String(text ?? '');
+    return value.length > width ? `${value.slice(0, Math.max(1, width - 1))}…` : value;
+  }
+
+  private padLeftTo(text: string, width: number): string { return this.clip(text, width).padStart(width, ' '); }
+
+  private padRightTo(text: string, width: number): string { return this.clip(text, width).padEnd(width, ' '); }
+
+  /** The period the sheet is showing, said the way it is filtered. */
+  get periodLabel(): string {
+    const sheet = this.sheet;
+    if (!sheet) return '';
+    if (sheet.fromDate && sheet.toDate) return `${sheet.fromDate} to ${sheet.toDate}`;
+    if (sheet.fromDate) return `From ${sheet.fromDate}`;
+    if (sheet.toDate) return `Up to ${sheet.toDate}`;
+    return 'All dates';
+  }
+
+  /** A balance on paper: a negative one is the supplier's credit, marked CR. */
+  private paperBalance(value: number): string {
+    const amount = this.moneyText(Math.abs(value));
+    if (value < -0.005) return `${amount} CR`;
+    return amount;
+  }
+
+  /**
+   * The account as a supplier should be able to read it on a till roll: their
+   * name, the period, every entry with its running balance, and one figure at
+   * the end. It is built from the sheet already on screen, so the compact or
+   * detailed view and any date range are exactly what gets printed.
+   */
+  private sheetDocument(brand: { name?: string; addressLines?: string[]; phone?: string }): PrintDocument {
+    const sheet = this.sheet as SupplierAccountSheet;
+    const width = this.paperWidth;
+    const amountWidth = 14;
+    const lines: PrintTextLine[] = [];
+    const rule = (character = '-') => lines.push({ text: character.repeat(width) });
+    const amountRow = (label: string, value: string, indent = 0) => lines.push({
+      text: `${' '.repeat(indent)}${this.padRightTo(label, width - indent - amountWidth)}${this.padLeftTo(value, amountWidth)}`
+    });
+    const signed = (line: SupplierAccountLine): string => {
+      if (line.owed) return `+${this.moneyText(line.owed)}`;
+      if (line.paid) return `-${this.moneyText(line.paid)}`;
+      return '';
+    };
+
+    const balanceRow = (value: number) => lines.push({
+      text: `${this.padLeftTo('Balance', width - amountWidth)}${this.padLeftTo(this.paperBalance(value), amountWidth)}`
+    });
+
+    rule();
+    if (sheet.broughtForward != null) {
+      amountRow('Balance brought forward', this.paperBalance(sheet.broughtForward));
+      rule();
+    }
+
+    if (!sheet.lines.length) {
+      lines.push({ text: `Nothing recorded ${sheet.fromDate || sheet.toDate ? 'in this period' : 'for this supplier yet'}.` });
+    }
+
+    sheet.lines.forEach((line, index) => {
+      if (this.startsGroup(index)) {
+        const refs = line.refs?.length ? ` ${line.refs.join(' ')}` : '';
+        lines.push({ text: this.clip(`${line.date}  ${this.kindLabel(line).toUpperCase()}${refs}`, width), bold: true });
+      }
+      amountRow(line.description, signed(line), 2);
+      if (this.sheetView === 'detailed' && line.detail) {
+        lines.push({ text: `    ${this.clip(line.detail, width - 4)}` });
+      }
+      if (line.reversed) lines.push({ text: '    ** reversed **', bold: true });
+      // One running balance for each entry, after the parts it is made of.
+      const last = index === sheet.lines.length - 1 || this.startsGroup(index + 1);
+      if (last) balanceRow(line.balance);
+    });
+
+    const owing = sheet.closingBalance;
+    const totals: PrintDocument['totals'] = [
+      { label: 'Owed to supplier (+)', value: this.moneyText(sheet.totalOwed) },
+      { label: 'Paid and deducted (-)', value: this.moneyText(sheet.totalPaid) },
+      { label: owing < -0.005 ? 'SUPPLIER CREDIT' : 'BALANCE DUE', value: this.moneyText(Math.abs(owing)), bold: true },
+      {
+        label: owing > 0.005 ? 'We owe the supplier' : owing < -0.005 ? 'The supplier owes us' : 'Settled',
+        value: ''
+      }
+    ];
+    // A statement for a past period must not be mistaken for today's position.
+    if ((sheet.fromDate || sheet.toDate) && Math.abs(sheet.currentBalance - owing) > 0.005) {
+      totals.push({ label: 'Balance today', value: this.paperBalance(sheet.currentBalance) });
+    }
+
+    return {
+      brand: { name: brand.name, addressLines: brand.addressLines, phone: brand.phone },
+      secondaryHeaderLines: [{ text: 'SUPPLIER ACCOUNT', bold: true, align: 'center' }],
+      meta: [
+        { label: 'Supplier', value: this.clip(sheet.supplier.name, width - 14) },
+        ...(sheet.supplier.supplierCode ? [{ label: 'Code', value: sheet.supplier.supplierCode }] : []),
+        ...(sheet.supplier.phone ? [{ label: 'Phone', value: sheet.supplier.phone }] : []),
+        { label: 'Period', value: this.periodLabel },
+        { label: 'Shown as', value: this.sheetView === 'detailed' ? 'Detailed' : 'Compact' },
+        { label: 'Printed', value: new Date().toLocaleString() },
+        ...(this.session.getUser()?.displayName
+          ? [{ label: 'By', value: this.clip(this.session.getUser()!.displayName, width - 14) }]
+          : [])
+      ],
+      preLines: lines,
+      items: [],
+      totals,
+      footerLines: ['Please check this statement', 'and tell us of any difference.']
+    };
+  }
+
+  async printSheet(): Promise<void> {
+    if (!this.sheet || !window.posApi) return;
+    this.clearMessages();
+    const settings = await window.posApi.settings.getReceipt();
+    const brand = settings.success && settings.data
+      ? { name: settings.data.storeName, addressLines: settings.data.addressLines || [], phone: settings.data.phone || '' }
+      : {};
+    const result = await this.printing.printDocument(this.sheetDocument(brand));
+    if (result.success) this.info = `Account sheet sent to the receipt printer (${this.sheetView === 'detailed' ? 'detailed' : 'compact'}, ${this.periodLabel.toLowerCase()}).`;
+    else this.error = result.error || 'Could not print the account sheet.';
+  }
 
   async exportSheet(format: 'pdf' | 'xlsx'): Promise<void> {
     if (!window.posApi || !this.sheetSupplierId) return;

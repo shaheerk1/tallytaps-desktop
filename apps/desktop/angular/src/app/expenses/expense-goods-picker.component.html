@@ -7,7 +7,7 @@
     <span>GRN it belongs to</span>
     <select [ngModel]="goodsReceiptId" (ngModelChange)="chooseGrn($event)">
       <option [ngValue]="null">Choose the GRN</option>
-      <option *ngFor="let grn of targets" [ngValue]="grn.id">{{ grn.grnNumber }} · {{ grn.supplierCode || grn.supplierName }} · {{ grn.date }}</option>
+      <option *ngFor="let grn of targets" [ngValue]="grn.id">{{ grn.grnNumber }} · {{ grn.supplierCode || grn.supplierName }} · {{ grn.date }}{{ grn.stockMode === 'purchase_record' ? ' · purchase record' : '' }}</option>
     </select>
     <small *ngIf="!term && !loading">Showing GRNs from the last 30 days. Search to find an older one.</small>
     <small class="picker-error" *ngIf="error">{{ error }}</small>

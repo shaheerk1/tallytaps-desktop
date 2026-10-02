@@ -97,6 +97,20 @@ function expensePosting({ expense, fund, category, stakeholder = null }) {
 }
 
 /**
+ * Where the cost of owned goods is held.
+ *
+ * Goods whose stock is kept are an asset until they sell, so their cost sits in
+ * stock value and is released to goods cost as they go out -- perpetual
+ * inventory. A purchase record keeps no stock, so there is nothing to hold the
+ * cost and nothing later to release it: it is charged to goods cost as it is
+ * bought, which is periodic inventory. Both are proper methods; which one a
+ * delivery used is written on its GRN and never changes afterwards.
+ */
+function stockValueAccount(subject) {
+  return subject && subject.stockTracked === false ? ACCOUNTS.GOODS_COST : ACCOUNTS.INVENTORY;
+}
+
+/**
  * A cost attached to received goods stops being a period expense and becomes
  * part of what those goods are worth. A negative amount (a reallocation giving
  * the cost up) simply flips the two sides.
@@ -107,7 +121,7 @@ function allocationPosting({ allocation, category, lot }) {
   const dimensions = { inventoryLotId: lot.id, expenseCategoryId: category.id, memo: allocation.reason };
   const inventoryAccount = lot.ownershipModel === 'consignment'
     ? ACCOUNTS.DEFERRED_CONSIGNMENT_COST
-    : ACCOUNTS.INVENTORY;
+    : stockValueAccount(lot);
   const magnitude = Math.abs(amount);
   return {
     narration: `${category.name} attached to lot ${lot.lotCode}`,
@@ -268,7 +282,7 @@ function customerAdvanceRefundPosting({ refund }) {
 function supplierObligationPosting({ obligation }) {
   const value = Math.abs(money(obligation.amount));
   const isConsignment = obligation.entryType === 'consignment_accrual';
-  const debitAccount = isConsignment ? ACCOUNTS.CONSIGNMENT_SUPPLIER_COST : ACCOUNTS.INVENTORY;
+  const debitAccount = isConsignment ? ACCOUNTS.CONSIGNMENT_SUPPLIER_COST : stockValueAccount(obligation);
   return {
     narration: obligation.reason || 'Supplier obligation',
     lines: obligation.amount >= 0

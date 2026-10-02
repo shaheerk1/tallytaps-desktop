@@ -137,3 +137,27 @@ button { font:inherit; font-weight:700; cursor:pointer; } button:disabled { curs
 .grn-view-mode { color:var(--ui-ink-muted); font-size:11px; }
 .grn-view-foot { border-top:1px solid var(--ui-border-strong); background:var(--ui-surface-muted); border-radius:0 0 8px 8px; font-weight:800; }
 .preview-lines { border:1px solid var(--ui-border); border-radius:10px; overflow:hidden; }
+
+/* ── Which kind of GRN this is ─────────────────────────────── */
+/* Each choice is a <label>, and this page shouts through every label and
+   stretches every input, so both are put back to plain reading size here. */
+.grn-mode { display:flex; flex-wrap:wrap; gap:10px; margin-top:12px; }
+.grn-mode-choice {
+  display:flex; flex:1 1 300px; align-items:flex-start; gap:10px; min-width:0;
+  padding:11px 13px; border:1px solid var(--ui-border); border-radius:10px; background:var(--ui-surface);
+  color:var(--ui-ink); font-size:13px; font-weight:400; letter-spacing:0; text-transform:none; cursor:pointer;
+}
+.grn-mode-choice.chosen { border-color:var(--ui-primary); background:color-mix(in srgb, var(--ui-primary) 7%, var(--ui-surface)); }
+.grn-mode-choice input[type="radio"] {
+  /* The page's own input rule would make this a full-width 34px box with a
+     border and padding, which on a radio leaves a one-pixel dot. */
+  flex:none; width:15px; min-width:15px; height:15px; min-height:0;
+  margin:2px 0 0; padding:0; border:0; border-radius:50%; background:transparent;
+  box-shadow:none; accent-color:var(--ui-primary); cursor:pointer;
+}
+.grn-mode-choice > span { display:grid; gap:3px; min-width:0; }
+.grn-mode-choice strong { font-size:13px; font-weight:800; letter-spacing:0; text-transform:none; }
+.grn-mode-choice small { color:var(--ui-ink-muted); font-size:11.5px; font-weight:400; letter-spacing:0; line-height:1.45; text-transform:none; }
+.grn-mode-choice input:disabled, .grn-mode-choice input:disabled ~ span { opacity:.5; cursor:not-allowed; }
+.grn-mode-note { flex:1 1 100%; color:var(--ui-ink-muted); font-size:11.5px; font-weight:400; text-transform:none; }
+.grn-kind { display:block; margin-top:2px; color:var(--ui-ink-muted); font-size:10px; font-weight:800; letter-spacing:.03em; text-transform:uppercase; }

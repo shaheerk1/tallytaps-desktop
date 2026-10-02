@@ -69,6 +69,7 @@
         <button type="button" class="btn primary" *ngIf="canManage" (click)="openPayment(sheet.supplier.id, sheet.supplier.name, sheet.currentBalance)">Record payment</button>
         <button type="button" class="btn" *ngIf="canManage" (click)="openAdjustment()">Adjustment</button>
         <button type="button" class="btn" *ngIf="canManage && !sheet.hasOpeningBalance" (click)="openOpeningBalance()">Opening balance</button>
+        <button type="button" class="btn ghost" (click)="printSheet()" title="Print what is shown on an 80mm receipt printer">Thermal print</button>
         <button type="button" class="btn ghost" (click)="exportSheet('pdf')">Save PDF</button>
         <button type="button" class="btn ghost" (click)="exportSheet('xlsx')">Save Excel</button>
       </div>

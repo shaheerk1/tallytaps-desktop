@@ -13,8 +13,6 @@ function generateToken() {
   return crypto.randomBytes(48).toString('hex');
 }
 
-const SESSION_TTL_HOURS = 12;
-
 function createAuthService({ authRepository, seedAdminUser, seedDefaultSettings }) {
   if (!authRepository) {
     throw new Error('Auth service requires authRepository.');
@@ -60,10 +58,10 @@ function createAuthService({ authRepository, seedAdminUser, seedDefaultSettings 
     const permissions = await authRepository.getUserPermissions(user.id);
     const roles = await authRepository.getUserRoles(user.id);
     const token = generateToken();
-    const expiresAt = new Date(Date.now() + SESSION_TTL_HOURS * 60 * 60 * 1000)
-      .toISOString()
-      .slice(0, 19)
-      .replace('T', ' ');
+    // No end date: a counter stays signed in until someone signs it out. A
+    // market day outlasts any clock we could pick, and being thrown out in the
+    // middle of a bill costs more than it protects.
+    const expiresAt = null;
 
     await authRepository.createSession(user.id, token, expiresAt);
     await authRepository.updateLastLogin(user.id);
@@ -116,7 +114,7 @@ function createAuthService({ authRepository, seedAdminUser, seedDefaultSettings 
         roles: roles.map((r) => ({ key: r.role_key, name: r.role_name }))
       },
       token: session.token,
-      expiresAt: session.expires_at
+      expiresAt: session.expires_at || null
     };
   }
 
@@ -132,6 +130,7 @@ function createAuthService({ authRepository, seedAdminUser, seedDefaultSettings 
     return { loggedOut: true };
   }
 
+  /** Sweeps away sign-ins made before they stopped having an end date. */
   async function cleanupExpiredSessions() {
     return authRepository.deleteExpiredSessions();
   }

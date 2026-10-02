@@ -13,7 +13,7 @@ export class SupplyReceivingComponent implements OnInit, OnDestroy {
   /** Which part of Stock control is open. Unmatched sales are shown on their tab, so none go unnoticed. */
   stockTab: 'onhand' | 'lotcodes' | 'adjust' | 'sendout' | 'allocation' = 'onhand';
   panelInfo = ''; panelError = '';
-  receipt: any = { supplierId: null, supplierName: '', ownershipModel: 'owned', businessDate: new Date().toISOString().slice(0, 10), vehicleNo: '', externalReference: '', lines: [{ productId: null, packageQty: null, packageUnit: '', receivedKilos: null, expectedKilos: null, expectedBasePerHandling: null, ratioTolerancePercent: 20, conversionMode: 'variable', unitCost: null }] };
+  receipt: any = { supplierId: null, supplierName: '', ownershipModel: 'owned', stockMode: 'stock_receipt', businessDate: new Date().toISOString().slice(0, 10), vehicleNo: '', externalReference: '', lines: [{ productId: null, packageQty: null, packageUnit: '', receivedKilos: null, expectedKilos: null, expectedBasePerHandling: null, ratioTolerancePercent: 20, conversionMode: 'variable', unitCost: null }] };
   adjustment: any = { productId: null, handlingQuantity: null, baseQuantity: null, businessDate: new Date().toISOString().slice(0, 10), reason: '' };
   stockCount: any = { businessDate: new Date().toISOString().slice(0, 10), reason: '', lines: [] };
   issues: any[] = [];
@@ -69,11 +69,30 @@ export class SupplyReceivingComponent implements OnInit, OnDestroy {
   private reportSuccess(message: string): void { this.info = message; this.error = ''; this.panelInfo = message; this.panelError = ''; }
   private reportError(message: string): void { this.error = message; this.info = ''; this.panelError = message; this.panelInfo = ''; }
   get canFinalizeGrn(): boolean { return this.hasSupplier && this.receipt.lines.length > 0 && this.receipt.lines.every((line: any) => { const product = this.productForLine(line); if (!product) return false; const handling = Number(line.packageQty || 0); if (!product.dual_uom_enabled) return handling > 0; if (line.conversionMode === 'fixed') return handling > 0 && Number(line.expectedBasePerHandling) > 0; return Number(line.receivedKilos) > 0; }); }
-  get grnReadiness(): string { if (!this.hasSupplier) return 'Choose or type the supplier first.'; if (!this.receipt.lines.some((line: any) => line.productId)) return 'Add a product to the GRN line.'; if (!this.canFinalizeGrn) return 'Each line needs its required handling and measured quantities.'; return 'Ready to finalize. This will create immutable lot and stock records.'; }
+  get grnReadiness(): string { if (!this.hasSupplier) return 'Choose or type the supplier first.'; if (!this.receipt.lines.some((line: any) => line.productId)) return 'Add a product to the GRN line.'; if (!this.canFinalizeGrn) return 'Each line needs its required handling and measured quantities.';
+    return this.receipt.stockMode === 'purchase_record'
+      ? 'Ready to finalize. This records the purchase and what is owed, and creates no stock.'
+      : 'Ready to finalize. This will create immutable lot and stock records.'; }
   get canReceive(): boolean { return this.session.hasPermission('receiving.manage'); }
   get hasSupplier(): boolean { return Boolean(this.receipt.supplierId || String(this.receipt.supplierName || '').trim()); }
   supplierLabel(supplier: any): string { return supplier?.supplier_code ? `${supplier.supplier_code} - ${supplier.name}` : String(supplier?.name || ''); }
   ownershipLabel(value: unknown): string { return value === 'consignment' ? 'Consignment' : 'Owned purchase'; }
+
+  /** What kind of document this GRN is, said the way the shop says it. */
+  stockModeLabel(value: unknown): string {
+    return value === 'purchase_record' ? 'Purchase record' : 'Stock receipt';
+  }
+
+  isPurchaseRecord(value: unknown): boolean { return value === 'purchase_record'; }
+
+  /**
+   * A consignment supplier is paid out of what sells from their lot, so their
+   * delivery has to keep stock. Choosing consignment puts the GRN back to a
+   * stock receipt rather than leaving an impossible pair on screen.
+   */
+  onOwnershipChanged(): void {
+    if (this.receipt.ownershipModel === 'consignment') this.receipt.stockMode = 'stock_receipt';
+  }
 
   /**
    * The supplier box takes a pick from the list or free text. Text that matches
@@ -287,7 +306,7 @@ export class SupplyReceivingComponent implements OnInit, OnDestroy {
   removeLine(index: number): void { if (this.receipt.lines.length > 1) this.receipt.lines.splice(index, 1); }
   get grnPageCount(): number { return Math.max(1, Math.ceil(this.grnTotal / this.grnPageSize)); }
   get grnPageNumbers(): number[] { const count = this.grnPageCount; const start = Math.max(1, Math.min(this.grnPage - 2, count - 4)); return Array.from({ length: Math.min(5, count - start + 1) }, (_, index) => start + index); }
-  newGoodsReceipt(): void { this.receipt = { id: null, status: 'draft', documentType: 'receipt', correctsGoodsReceiptId: null, correctionReason: '', supplierId: null, supplierName: '', ownershipModel: 'owned', businessDate: this.session.getBillingDate() || new Date().toISOString().slice(0, 10), vehicleNo: '', externalReference: '', lines: [{ productId: null, packageQty: null, packageUnit: '', receivedKilos: null, expectedKilos: null, expectedBasePerHandling: null, ratioTolerancePercent: 20, conversionMode: 'variable', unitCost: null }] }; this.grnReviewMode = false; this.grnEditorOpen = true; this.grnDetail = null; this.correctionSource = null; }
+  newGoodsReceipt(): void { this.receipt = { id: null, status: 'draft', documentType: 'receipt', correctsGoodsReceiptId: null, correctionReason: '', supplierId: null, supplierName: '', ownershipModel: 'owned', stockMode: 'stock_receipt', businessDate: this.session.getBillingDate() || new Date().toISOString().slice(0, 10), vehicleNo: '', externalReference: '', lines: [{ productId: null, packageQty: null, packageUnit: '', receivedKilos: null, expectedKilos: null, expectedBasePerHandling: null, ratioTolerancePercent: 20, conversionMode: 'variable', unitCost: null }] }; this.grnReviewMode = false; this.grnEditorOpen = true; this.grnDetail = null; this.correctionSource = null; }
   async applyGrnFilters(): Promise<void> { this.grnPage = 1; await this.load(); }
   async changeGrnPage(page: number): Promise<void> { this.grnPage = Math.min(this.grnPageCount, Math.max(1, page)); await this.load(); }
   async changeGrnPageSize(): Promise<void> { this.grnPage = 1; await this.load(); }
@@ -296,7 +315,7 @@ export class SupplyReceivingComponent implements OnInit, OnDestroy {
     const result = await this.api().getGoodsReceipt(id, this.actor());
     if (!result.success) { this.reportError(result.error || 'Could not load GRN.'); return; }
     const detail = result.data; const receipt = detail.receipt;
-    this.receipt = { id: receipt.id, status: receipt.status, documentType: receipt.document_type, correctsGoodsReceiptId: receipt.corrects_goods_receipt_id, correctionReason: receipt.correction_reason || '', supplierId: receipt.supplier_id, supplierName: this.supplierLabel({ supplier_code: receipt.supplier_code, name: receipt.supplier_name }), ownershipModel: receipt.ownership_model === 'consignment' ? 'consignment' : 'owned', businessDate: this.dateInput(receipt.business_date), vehicleNo: receipt.vehicle_no || '', externalReference: receipt.external_reference || '', lines: detail.lines.map((line: any) => ({ productId: line.product_id, sku: line.sku, productName: line.product_name, packageQty: line.handling_quantity ?? line.package_qty, packageUnit: line.handling_uom_snapshot || line.package_unit || 'qty', expectedKilos: line.expected_base_quantity ?? line.expected_kilos, receivedKilos: line.received_base_quantity ?? line.received_kilos, expectedBasePerHandling: line.expected_base_per_handling, ratioTolerancePercent: line.ratio_tolerance_percent ?? 20, conversionMode: line.conversion_mode || 'variable', unitCost: line.unit_cost })) };
+    this.receipt = { id: receipt.id, status: receipt.status, documentType: receipt.document_type, correctsGoodsReceiptId: receipt.corrects_goods_receipt_id, correctionReason: receipt.correction_reason || '', supplierId: receipt.supplier_id, supplierName: this.supplierLabel({ supplier_code: receipt.supplier_code, name: receipt.supplier_name }), ownershipModel: receipt.ownership_model === 'consignment' ? 'consignment' : 'owned', stockMode: receipt.stock_mode === 'purchase_record' ? 'purchase_record' : 'stock_receipt', businessDate: this.dateInput(receipt.business_date), vehicleNo: receipt.vehicle_no || '', externalReference: receipt.external_reference || '', lines: detail.lines.map((line: any) => ({ productId: line.product_id, sku: line.sku, productName: line.product_name, packageQty: line.handling_quantity ?? line.package_qty, packageUnit: line.handling_uom_snapshot || line.package_unit || 'qty', expectedKilos: line.expected_base_quantity ?? line.expected_kilos, receivedKilos: line.received_base_quantity ?? line.received_kilos, expectedBasePerHandling: line.expected_base_per_handling, ratioTolerancePercent: line.ratio_tolerance_percent ?? 20, conversionMode: line.conversion_mode || 'variable', unitCost: line.unit_cost })) };
     this.grnDetail = detail; this.grnReviewMode = receipt.status !== 'draft'; this.grnEditorOpen = true; this.correctionSource = null;
   }
   closeGoodsReceipt(): void { this.removingGrn = false; this.grnEditorOpen = false; this.grnReviewMode = false; this.grnDetail = null; this.correctionSource = null; }
@@ -312,7 +331,9 @@ export class SupplyReceivingComponent implements OnInit, OnDestroy {
     if (showMessage) this.reportSuccess(`GRN ${result.data.grnNumber} saved as draft.`);
     await this.load(); return true;
   }
-  async finalize(): Promise<void> { if (!this.canFinalizeGrn) { this.reportError(this.grnReadiness); return; } if (!(await this.saveGoodsReceiptDraft(false))) return; this.saving = true; const result = await this.api().finalizeGoodsReceiptDraft(this.receipt.id, this.actor()?.id, this.actor()); this.saving = false; if (!result.success) { this.reportError(result.error || 'Could not finalize GRN.'); return; } this.reportSuccess(`GRN ${result.data.grnNumber} finalized. Stock and supplier entries are now posted.`); this.closeGoodsReceipt(); await this.load(); }
+  async finalize(): Promise<void> { if (!this.canFinalizeGrn) { this.reportError(this.grnReadiness); return; } if (!(await this.saveGoodsReceiptDraft(false))) return; this.saving = true; const result = await this.api().finalizeGoodsReceiptDraft(this.receipt.id, this.actor()?.id, this.actor()); this.saving = false; if (!result.success) { this.reportError(result.error || 'Could not finalize GRN.'); return; } this.reportSuccess(this.receipt.stockMode === 'purchase_record'
+      ? `GRN ${result.data.grnNumber} finalized. The purchase and what is owed are recorded; no stock was created.`
+      : `GRN ${result.data.grnNumber} finalized. Stock and supplier entries are now posted.`); this.closeGoodsReceipt(); await this.load(); }
   async cancelGoodsReceipt(): Promise<void> { if (!this.receipt.id) { this.closeGoodsReceipt(); return; } const result = await this.api().cancelGoodsReceiptDraft(this.receipt.id, this.actor()?.id, this.actor()); if (!result.success) { this.reportError(result.error || 'Could not cancel GRN draft.'); return; } this.reportSuccess('GRN draft cancelled. No stock or supplier entries were posted.'); this.closeGoodsReceipt(); await this.load(); }
   beginCorrection(grn: any): void { this.correctionSource = grn; this.correctionReason = ''; }
   removingGrn = false;
@@ -343,6 +364,7 @@ export class SupplyReceivingComponent implements OnInit, OnDestroy {
         { label: 'Business date', value: String(receipt.business_date).slice(0, 10) },
         ...(receipt.vehicle_no ? [{ label: 'Vehicle', value: receipt.vehicle_no }] : []),
         { label: 'Ownership', value: this.ownershipLabel(receipt.ownership_model) },
+        { label: 'Kind', value: this.stockModeLabel(receipt.stock_mode) },
         { label: 'Recorded', value: new Date(receipt.created_at).toLocaleString() }
       ],
       items: detail.lines.map((line: any) => ({ description: `${line.sku} ${line.product_name}`, qty: `${Number(line.handling_quantity ?? line.package_qty ?? 0).toFixed(3)} ${line.handling_uom_snapshot || line.package_unit || 'qty'}${line.received_base_quantity != null || line.received_kilos != null ? ` / ${Number(line.received_base_quantity ?? line.received_kilos).toFixed(3)} ${line.base_uom_snapshot || 'base'}` : ''}`, amount: line.unit_cost != null ? Number(line.unit_cost).toFixed(2) : '-' })),

@@ -668,7 +668,8 @@ export type SdlTemplate = {
 export type LoginResult = {
   user: AuthUser;
   token: string;
-  expiresAt: string;
+  /** Null when the sign-in has no end date, which is how they are made now. */
+  expiresAt: string | null;
   workstationSession?: WorkstationSession | null;
   workstationWarning?: string | null;
 };
@@ -676,7 +677,7 @@ export type LoginResult = {
 export type SessionResult = {
   user: AuthUser;
   token: string;
-  expiresAt: string;
+  expiresAt: string | null;
   workstationSession?: WorkstationSession | null;
 };
 
@@ -995,6 +996,8 @@ export type CostedLot = {
   supplierId: number;
   supplierName: string;
   ownershipModel: 'owned' | 'consignment';
+  /** False for a lot of a purchase-record GRN: it holds nothing and sells nothing. */
+  stockTracked: boolean;
   receivedHandlingQuantity: number;
   remainingHandlingQuantity: number;
   receivedBaseQuantity: number | null;
@@ -1621,6 +1624,8 @@ export type PattiyalCandidate = {
 /** A GRN a lot expense can be recorded against, with its lots. */
 export type ExpenseGoodsTarget = {
   id: number; grnNumber: string; date: string; supplierName: string; supplierCode: string | null;
+  /** A purchase-record GRN carries costs the same way, but holds no stock. */
+  stockMode: 'stock_receipt' | 'purchase_record';
   lots: Array<{ id: number; lotCode: string; lotTag: string | null; productName: string }>;
 };
 
