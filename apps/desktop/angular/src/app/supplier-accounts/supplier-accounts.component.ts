@@ -2,8 +2,8 @@ import { Component, HostListener, OnInit } from '@angular/core';
 import { PrintingService } from '../services/printing.service';
 import { SessionService } from '../services/session.service';
 import type {
-  FundAccount, PrintDocument, PrintTextLine, SupplierAccountLine, SupplierAccountSheet, SupplierAccountSummary,
-  SupplierChequeInHand, SupplierPaymentBankAccount
+  FundAccount, PrintDocument, PrintTextLine, ReceiptLanguage, SupplierAccountLine, SupplierAccountSheet,
+  SupplierAccountSummary, SupplierChequeInHand, SupplierPaymentBankAccount
 } from '../../../../../../packages/shared/ipc/pos-api';
 
 type BalanceFilter = '' | 'owed' | 'owes_us' | 'settled';
@@ -398,7 +398,7 @@ export class SupplierAccountsComponent implements OnInit {
    * the end. It is built from the sheet already on screen, so the compact or
    * detailed view and any date range are exactly what gets printed.
    */
-  private sheetDocument(brand: { name?: string; addressLines?: string[]; phone?: string }): PrintDocument {
+  private sheetDocument(brand: { name?: string; addressLines?: string[]; phone?: string; logoDataUrl?: string; language?: ReceiptLanguage }): PrintDocument {
     const sheet = this.sheet as SupplierAccountSheet;
     const width = this.paperWidth;
     const amountWidth = 14;
@@ -458,7 +458,13 @@ export class SupplierAccountsComponent implements OnInit {
     }
 
     return {
+      documentTitle: 'SUPPLIER ACCOUNT',
       brand: { name: brand.name, addressLines: brand.addressLines, phone: brand.phone },
+      logoDataUrl: brand.logoDataUrl || undefined,
+      // The shop's own masthead, as on a bill. Without the language this sheet
+      // falls to the plain text printer, which cannot print a Sinhala name.
+      receiptLanguage: brand.language || 'en-LK',
+      rasterHeaderLayout: 'billing',
       secondaryHeaderLines: [{ text: 'SUPPLIER ACCOUNT', bold: true, align: 'center' }],
       meta: [
         { label: 'Supplier', value: this.clip(sheet.supplier.name, width - 14) },
@@ -483,7 +489,10 @@ export class SupplierAccountsComponent implements OnInit {
     this.clearMessages();
     const settings = await window.posApi.settings.getReceipt();
     const brand = settings.success && settings.data
-      ? { name: settings.data.storeName, addressLines: settings.data.addressLines || [], phone: settings.data.phone || '' }
+      ? {
+        name: settings.data.storeName, addressLines: settings.data.addressLines || [], phone: settings.data.phone || '',
+        logoDataUrl: (settings.data as { logoDataUrl?: string }).logoDataUrl, language: settings.data.language
+      }
       : {};
     const result = await this.printing.printDocument(this.sheetDocument(brand));
     if (result.success) this.info = `Account sheet sent to the receipt printer (${this.sheetView === 'detailed' ? 'detailed' : 'compact'}, ${this.periodLabel.toLowerCase()}).`;

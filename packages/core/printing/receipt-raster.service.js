@@ -78,6 +78,14 @@ function receiptHtml(input) {
       return lineHtml(row.text, `${row.align || "center"} ${emphasis}`);
     })
     .join("");
+  // Free-form lines a document lays out itself, column by column, counting on
+  // the 48 characters an 80mm roll prints at the normal font. The plain ESC/POS
+  // path prints them as they are; here they need a monospaced block of the same
+  // width, or the padding that makes the columns would collapse.
+  const preLines = (doc.preLines || [])
+    .filter((line) => String(line?.text ?? '').trim())
+    .map((line) => `<div class="pre${line.bold ? ' bold' : ''}">${escapeHtml(line.text)}</div>`)
+    .join("");
   const standardItems = (doc.items || [])
     .map(
       (item) =>
@@ -208,6 +216,15 @@ function receiptHtml(input) {
               gap: 10px;
             }
             .meta span:first-child { font-weight: 600; }
+            /* 48 monospaced characters across the 576px roll, so a document
+               that lays itself out in columns keeps them. */
+            .prelines { margin: 4px 0; }
+            .pre {
+              font-family: "Consolas", "DejaVu Sans Mono", "Courier New", monospace;
+              font-size: 19px;
+              line-height: 1.25;
+              white-space: pre;
+            }
             .items { border: 2px solid #000; }
             .item-title { padding: 4px 7px; border-bottom: 2px solid #000; }
             .measure-head, .measure-row {
@@ -254,6 +271,7 @@ function receiptHtml(input) {
           <div class="rule"></div>
 
           ${meta ? `<section>${meta}</section><div class="rule dash"></div>` : ""}
+          ${preLines ? `<section class="prelines">${preLines}</section>` : ""}
           ${itemLayout}
 
           <div class="rule dash"></div>

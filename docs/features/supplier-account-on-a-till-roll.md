@@ -133,5 +133,27 @@ Advance held for you                    5,000.00
 - A due date is only shown when it differs from the bill date, because bills
   without payment terms carry their own date as the due date.
 
-Checked by rendering all three cases (open bills, a date range, nothing open)
-at 48 columns before shipping.
+## Two printers, one document
+
+A receipt in any language but `en-LK` is drawn as an image by
+`receipt-raster.service.js` rather than printed as text, and that renderer drew
+only `brand`, `meta`, `items`, `totals` and `footerLines`. **`preLines` were
+silently dropped.** On a Sinhala till the first build of this statement printed
+its header and its total with nothing in between.
+
+Two things came out of that:
+
+- The customer statement carries its bills in **`items`**, which both renderers
+  lay out: the bill number and date as the line's title, what is left to pay as
+  its amount, and the bill total, what has been paid and the due date beneath.
+- The raster renderer now **renders `preLines`** too, in a monospaced block 48
+  characters wide, so a document that lays itself out in columns keeps them.
+  That is what lets the supplier sheet above keep its ledger layout while also
+  carrying the shop's own masthead, logo and Sinhala name, as a bill does.
+
+The only other document using `preLines` is the mobile bill in the Field
+Transaction Inbox, whose note was being dropped on a Sinhala till and now
+prints.
+
+Checked by rendering the customer statement and the supplier sheet through the
+real raster renderer, and both at 48 columns on the text path, before shipping.
