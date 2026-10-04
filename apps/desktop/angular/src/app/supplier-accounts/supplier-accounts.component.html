@@ -27,6 +27,7 @@
           <button type="button" [class.active]="balanceFilter === 'settled'" (click)="setBalanceFilter('settled')">Settled</button>
         </div>
         <label class="check"><input type="checkbox" [(ngModel)]="includeAll" (change)="loadAccounts()" /> Include suppliers with no activity</label>
+        <button type="button" class="btn primary new-supplier" *ngIf="canAddSupplier" (click)="openNewSupplier()">New supplier</button>
       </div>
 
       <div class="table list-table" *ngIf="accounts.length">
@@ -237,6 +238,41 @@
       <button type="button" class="btn ghost" (click)="closeForm()">Cancel</button>
       <button type="button" class="btn primary" [disabled]="saving || !formReady" (click)="saveForm()">
         {{ saving ? 'Saving…' : form.kind === 'payment' ? 'Record payment' : form.kind === 'opening' ? 'Save opening balance' : 'Save adjustment' }}
+      </button>
+    </div>
+  </section>
+</div>
+
+<!-- ════════ START A SUPPLIER ════════ -->
+<div class="overlay" *ngIf="supplierDraft" (click)="closeNewSupplier()">
+  <section class="entry-drawer supplier-drawer" (click)="$event.stopPropagation()" (keydown)="onSupplierKeydown($event)">
+    <button type="button" class="close" (click)="closeNewSupplier()" aria-label="Close">×</button>
+    <div class="drawer-head">
+      <span class="eyebrow">New supplier</span>
+      <h2>Start a supplier account</h2>
+      <p>The account opens empty. Record an opening balance next if the old book carries one.</p>
+    </div>
+
+    <div class="fields">
+      <label class="field">
+        <span>Supplier name</span>
+        <input [(ngModel)]="supplierDraft.name" placeholder="As it is written in the book (required)" />
+      </label>
+      <label class="field">
+        <span>Supplier code (optional)</span>
+        <input [(ngModel)]="supplierDraft.supplierCode" placeholder="The short code typed when billing" />
+        <small>Leave it empty if the book does not use one. A code is unique to this location.</small>
+      </label>
+      <label class="field"><span>Mobile (optional)</span><input [(ngModel)]="supplierDraft.mobile" /></label>
+      <label class="field"><span>Phone (optional)</span><input [(ngModel)]="supplierDraft.phone" /></label>
+      <label class="field"><span>Address (optional)</span><input [(ngModel)]="supplierDraft.address" /></label>
+    </div>
+
+    <div class="drawer-actions">
+      <small class="key-hint"><kbd>Enter</kbd> save · <kbd>Esc</kbd> cancel</small>
+      <button type="button" class="btn ghost" (click)="closeNewSupplier()">Cancel</button>
+      <button type="button" class="btn primary" [disabled]="creatingSupplier || !supplierDraftReady" (click)="saveNewSupplier()">
+        {{ creatingSupplier ? 'Adding…' : 'Add supplier' }}
       </button>
     </div>
   </section>

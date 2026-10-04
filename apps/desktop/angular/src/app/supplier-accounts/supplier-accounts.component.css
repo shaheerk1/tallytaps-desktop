@@ -50,6 +50,8 @@ input[type='checkbox'] { width: 16px; min-height: 16px; margin: 0; accent-color:
 
 /* Toolbar */
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; }
+/* The primary action sits at the end of the filter row. */
+.new-supplier { margin-left: auto; }
 .toolbar > input[type='search'] { flex: 1 1 260px; }
 .chips, .segmented { display: inline-flex; padding: 3px; border: 1px solid var(--ui-border); border-radius: 9px; background: var(--ui-surface-muted); }
 .chips button, .segmented button { min-height: 32px; padding: 4px 12px; border: 0; border-radius: 7px; background: transparent; color: var(--ui-ink-muted); font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; }

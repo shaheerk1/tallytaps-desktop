@@ -354,10 +354,19 @@ export class SupplyReceivingComponent implements OnInit, OnDestroy {
     await this.load();
   }
   async createCorrection(): Promise<void> { if (!this.correctionSource || !this.correctionReason.trim()) { this.reportError('Enter a reason before creating a correction.'); return; } const origin = this.origin(); const result = await this.api().createGoodsReceiptCorrection(this.correctionSource.id, this.correctionReason.trim(), this.actor()?.id, { ...origin, businessDate: origin.txnDate }, this.actor()); if (!result.success) { this.reportError(result.error || 'Could not create correction draft.'); return; } this.reportSuccess(`Correction ${result.data.grnNumber} created on the current business day as a draft.`); await this.load(); await this.openGoodsReceipt(result.data.id); }
-  private grnDocument(detail: any): any {
+  private async printSettings(): Promise<any | null> {
+    if (!window.posApi) return null;
+    const result = await window.posApi.settings.getReceipt();
+    return result.success ? result.data : null;
+  }
+
+  private grnDocument(detail: any, settings: any = null): any {
     const receipt = detail.receipt;
     return {
       brand: { name: 'Goods Received Note' },
+      // Without the language this falls to the plain text printer, whose
+      // character set has no Sinhala or Tamil and prints digits instead.
+      receiptLanguage: settings?.language || 'en-LK',
       meta: [
         { label: 'GRN', value: receipt.grn_number },
         { label: 'Supplier', value: `${receipt.supplier_code || ''} ${receipt.supplier_name}`.trim() },
@@ -372,8 +381,8 @@ export class SupplyReceivingComponent implements OnInit, OnDestroy {
     };
   }
   private async receiptDetail(id: number): Promise<any | null> { const result = await this.api().getGoodsReceipt(id, this.actor()); if (!result.success) { this.error = result.error || 'Could not load GRN details.'; return null; } return result.data; }
-  async printGrn(id: number): Promise<void> { const detail = await this.receiptDetail(id); if (!detail) return; const result = await this.printing.printDocument(this.grnDocument(detail)); this.info = result.success ? 'GRN acknowledgement sent to the receipt printer.' : result.error || 'GRN print failed.'; }
-  async saveGrnPdf(id: number): Promise<void> { const detail = await this.receiptDetail(id); if (!detail) return; const number = detail.receipt.grn_number; const result = await this.printing.savePdf(this.grnDocument(detail), { prompt: true, fileName: `${number}.pdf` }); this.info = result.success ? (result.canceled ? 'PDF save canceled.' : `GRN PDF saved to ${result.filePath}.`) : result.error || 'GRN PDF save failed.'; }
+  async printGrn(id: number): Promise<void> { const detail = await this.receiptDetail(id); if (!detail) return; const result = await this.printing.printDocument(this.grnDocument(detail, await this.printSettings())); this.info = result.success ? 'GRN acknowledgement sent to the receipt printer.' : result.error || 'GRN print failed.'; }
+  async saveGrnPdf(id: number): Promise<void> { const detail = await this.receiptDetail(id); if (!detail) return; const number = detail.receipt.grn_number; const result = await this.printing.savePdf(this.grnDocument(detail, await this.printSettings()), { prompt: true, fileName: `${number}.pdf` }); this.info = result.success ? (result.canceled ? 'PDF save canceled.' : `GRN PDF saved to ${result.filePath}.`) : result.error || 'GRN PDF save failed.'; }
   async saveAdjustment(): Promise<void> { const result = await this.api().adjustStock({ ...this.adjustment, ...this.origin(this.adjustment.businessDate) }, this.actor()); if (!result.success) { this.error = result.error || 'Could not save stock adjustment.'; return; } this.info = 'Dual stock adjustment recorded.'; this.adjustment.handlingQuantity = null; this.adjustment.baseQuantity = null; this.adjustment.reason = ''; await this.load(); }
   eligibleAllocationLots(productId: number, saleDate: string, excludeLotId: number | null = null): any[] { return this.lots.filter((lot: any) => Number(lot.product_id) === Number(productId) && Number(lot.id) !== Number(excludeLotId) && this.dateInput(lot.txn_date) <= this.dateInput(saleDate) && (Number(lot.remaining_handling_quantity || 0) > 0.0005 || Number(lot.remaining_base_quantity || 0) > 0.0005)); }
   beginExceptionAllocation(item: any): void { const candidates = this.eligibleAllocationLots(item.product_id, item.txn_date); this.exceptionAllocation = { exceptionId: item.id, productId: item.product_id, saleDate: this.dateInput(item.txn_date), inventoryLotId: candidates[0]?.id || null, handlingQuantity: Number(item.unallocated_handling_quantity || 0), baseQuantity: item.unallocated_base_quantity == null ? null : Number(item.unallocated_base_quantity), reason: '' }; }
