@@ -1,4 +1,5 @@
 const requestContext = require('../../core/security/request-context');
+const { findSupplierAtLocation } = require('./supplier-directory');
 const { createInventoryLedgerRepository } = require('./inventory-ledger.repository');
 
 const PRODUCT_COLUMNS = `
@@ -446,6 +447,26 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
     // A supplier belongs to the location that records it.
     const supplierLoc = writeLoc(arguments[0]);
     return database.withConnection(async (connection) => {
+      // Adding a second supplier under a name or code this location already
+      // keeps would split one account in two, so say which one to use instead.
+      const named = (supplier) => `${supplier.supplier_code ? `${supplier.supplier_code} ` : ''}${supplier.name}`;
+      for (const typed of [String(supplierCode || '').trim(), String(name).trim()].filter(Boolean)) {
+        const clash = await findSupplierAtLocation(connection, { locCode: supplierLoc, term: typed });
+        if (clash) throw new Error(`${named(clash)} is already a supplier here. Open that account instead.`);
+      }
+      // A code stays taken even once a supplier is retired, because the unique
+      // key behind it does not care. Catch that here rather than letting the
+      // database answer with its own duplicate-key wording.
+      const code = String(supplierCode || '').trim();
+      if (code) {
+        const [held] = await connection.execute(
+          'SELECT name, supplier_code, is_active FROM suppliers WHERE loc_code = ? AND UPPER(supplier_code) = UPPER(?) LIMIT 1',
+          [supplierLoc, code]
+        );
+        if (held[0]) {
+          throw new Error(`The code ${code} belongs to ${named(held[0])}${held[0].is_active ? '' : ', which is retired'}. Use another code.`);
+        }
+      }
       const [result] = await connection.execute(
         `INSERT INTO suppliers (loc_code, supplier_code, name, phone, mobile, address, metadata)
          VALUES (?, ?, ?, ?, ?, ?, CAST(? AS JSON))`,
@@ -518,12 +539,8 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
     if (supplierId) return supplierId;
     const typed = String(supplierName || '').trim();
     if (!typed) return null;
-    const [matches] = await connection.execute(
-      `SELECT id FROM suppliers WHERE loc_code = ? AND is_active = 1 AND (UPPER(supplier_code) = UPPER(?) OR UPPER(name) = UPPER(?))
-       ORDER BY UPPER(COALESCE(supplier_code, '')) = UPPER(?) DESC, id ASC LIMIT 1`,
-      [locCode, typed, typed, typed]
-    );
-    if (matches.length) return matches[0].id;
+    const existing = await findSupplierAtLocation(connection, { locCode, term: typed });
+    if (existing) return existing.id;
     const [created] = await connection.execute(
       `INSERT INTO suppliers (loc_code, supplier_code, name, metadata) VALUES (?, NULL, ?, CAST(? AS JSON))`,
       [locCode, typed, JSON.stringify({ createdFrom: 'goods_receipt' })]
@@ -848,29 +865,69 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
    * costed), and no live statement, lot expense, settlement or correction may
    * point at it.
    */
-  async function goodsReceiptRemovalBlocker(connection, receipt) {
-    if (receipt.status !== 'finalized') return 'Only a finalized GRN can be removed. A draft is cancelled instead.';
-    if (receipt.document_type !== 'receipt') return 'A correction cannot be removed on its own.';
-    const one = async (sql) => { const [rows] = await connection.execute(sql, [receipt.id]); return rows.length > 0; };
-    const lots = `SELECT l.id FROM inventory_lots l JOIN goods_receipt_lines grl ON grl.id = l.goods_receipt_line_id WHERE grl.goods_receipt_id = ?`;
-    if (await one(`SELECT g.id FROM goods_receipts g WHERE g.corrects_goods_receipt_id = ? AND g.status IN ('draft','finalized') LIMIT 1`)) {
-      return 'This GRN has a correction. Cancel or remove the correction first.';
+  /**
+   * A GRN and every correction stacked on it, oldest first. A wrong delivery
+   * is usually corrected once or twice before anyone decides the whole thing
+   * should not be there, so the documents have to come out together: the
+   * original on its own is already reversed, and the last correction is the
+   * one still holding the stock and the amount due.
+   */
+  async function goodsReceiptChain(connection, receiptId) {
+    const chain = [];
+    const seen = new Set();
+    let frontier = [Number(receiptId)];
+    while (frontier.length) {
+      const [rows] = await connection.query(
+        `SELECT * FROM goods_receipts WHERE id IN (?) ORDER BY id FOR UPDATE`, [frontier]
+      );
+      for (const row of rows) {
+        if (seen.has(Number(row.id))) continue;
+        seen.add(Number(row.id));
+        chain.push(row);
+      }
+      const [next] = await connection.query(
+        `SELECT id FROM goods_receipts WHERE corrects_goods_receipt_id IN (?) AND status IN ('finalized','corrected')`,
+        [frontier]
+      );
+      frontier = next.map((row) => Number(row.id)).filter((id) => !seen.has(id));
     }
-    if (await one(`SELECT m.id FROM stock_movements m WHERE m.inventory_lot_id IN (${lots}) AND m.movement_type <> 'receipt' LIMIT 1`)
+    return chain;
+  }
+
+  /**
+   * Why a GRN and its corrections cannot be withdrawn, or null when nothing
+   * has used them: no stock of theirs may have been sold, sent out, counted,
+   * adjusted or costed, and no live statement, settlement or draft correction
+   * may point at any of them.
+   */
+  async function goodsReceiptRemovalBlocker(connection, receipt) {
+    if (receipt.document_type !== 'receipt') return 'A correction cannot be removed on its own. Remove the GRN it corrects, which takes its corrections with it.';
+    if (!['finalized', 'corrected'].includes(receipt.status)) {
+      return 'Only a finalized GRN can be removed. A draft is cancelled instead.';
+    }
+    const chain = await goodsReceiptChain(connection, receipt.id);
+    const ids = chain.map((row) => Number(row.id));
+    const one = async (sql) => { const [rows] = await connection.query(sql, [ids]); return rows.length > 0; };
+    const lots = `SELECT l.id FROM inventory_lots l JOIN goods_receipt_lines grl ON grl.id = l.goods_receipt_line_id WHERE grl.goods_receipt_id IN (?)`;
+    // A correction still being written would be left pointing at nothing.
+    if (await one(`SELECT g.id FROM goods_receipts g WHERE g.corrects_goods_receipt_id IN (?) AND g.status = 'draft' LIMIT 1`)) {
+      return 'A correction on this GRN is still a draft. Cancel that draft first.';
+    }
+    if (await one(`SELECT m.id FROM stock_movements m WHERE m.inventory_lot_id IN (${lots}) AND m.movement_type NOT IN ('receipt','receipt_correction') LIMIT 1`)
       || await one(`SELECT a.id FROM lot_sale_allocations a WHERE a.inventory_lot_id IN (${lots}) LIMIT 1`)
       || await one(`SELECT c.id FROM inventory_stock_count_lines c WHERE c.inventory_lot_id IN (${lots}) LIMIT 1`)
       || await one(`SELECT i.id FROM inventory_issue_lines i WHERE i.inventory_lot_id IN (${lots}) LIMIT 1`)) {
       return 'Stock from this GRN has already been sold, sent out, counted or adjusted, so it cannot be removed. Use a correction or a stock adjustment instead.';
     }
     if (await one(`SELECT a.id FROM expense_allocations a WHERE a.inventory_lot_id IN (${lots}) LIMIT 1`)
-      || await one(`SELECT e.id FROM expense_entries e WHERE e.goods_receipt_id = ? AND e.status <> 'void' LIMIT 1`)) {
+      || await one(`SELECT e.id FROM expense_entries e WHERE e.goods_receipt_id IN (?) AND e.status <> 'void' LIMIT 1`)) {
       return 'A lot expense is recorded against this GRN. Reverse that expense first.';
     }
-    if (await one(`SELECT l.statement_id FROM supplier_sale_statement_grns l JOIN supplier_sale_statements s ON s.id = l.statement_id WHERE l.goods_receipt_id = ? AND s.status <> 'void' LIMIT 1`)
-      || await one(`SELECT p.statement_id FROM supplier_sale_statement_purchase_lines p JOIN supplier_sale_statements s ON s.id = p.statement_id WHERE p.goods_receipt_id = ? AND s.status <> 'void' LIMIT 1`)) {
+    if (await one(`SELECT l.statement_id FROM supplier_sale_statement_grns l JOIN supplier_sale_statements s ON s.id = l.statement_id WHERE l.goods_receipt_id IN (?) AND s.status <> 'void' LIMIT 1`)
+      || await one(`SELECT p.statement_id FROM supplier_sale_statement_purchase_lines p JOIN supplier_sale_statements s ON s.id = p.statement_id WHERE p.goods_receipt_id IN (?) AND s.status <> 'void' LIMIT 1`)) {
       return 'A supplier statement uses this GRN. Remove it from that statement (or void the statement) first.';
     }
-    if (await one(`SELECT e.id FROM supplier_payable_entries e JOIN supplier_settlement_lines sl ON sl.payable_entry_id = e.id WHERE e.goods_receipt_id = ? LIMIT 1`)) {
+    if (await one(`SELECT e.id FROM supplier_payable_entries e JOIN supplier_settlement_lines sl ON sl.payable_entry_id = e.id WHERE e.goods_receipt_id IN (?) LIMIT 1`)) {
       return 'This GRN is part of a supplier settlement, so it cannot be removed.';
     }
     return null;
@@ -896,13 +953,22 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
         const blocker = await goodsReceiptRemovalBlocker(connection, receipt);
         if (blocker) throw new Error(blocker);
         await businessDayRepository.assertOpenWithConnection(connection, { locationCode: locCode, businessDate: removalDate });
-        const [lots] = await connection.execute(
-          `SELECT l.* FROM inventory_lots l JOIN goods_receipt_lines grl ON grl.id = l.goods_receipt_line_id
-           WHERE grl.goods_receipt_id = ? ORDER BY l.line_no FOR UPDATE`, [receipt.id]
+        // The whole chain goes, so what is reversed is whatever is still
+        // standing: a document already superseded by a correction had its lots
+        // emptied and its amount credited back at that point, and must not be
+        // reversed a second time.
+        const chain = await goodsReceiptChain(connection, receipt.id);
+        const chainIds = chain.map((row) => Number(row.id));
+        const [lots] = await connection.query(
+          `SELECT l.*, grl.goods_receipt_id FROM inventory_lots l JOIN goods_receipt_lines grl ON grl.id = l.goods_receipt_line_id
+           WHERE grl.goods_receipt_id IN (?) ORDER BY grl.goods_receipt_id, l.line_no FOR UPDATE`, [chainIds]
         );
         for (const lot of lots) {
-          const handlingQty = Number(lot.received_handling_quantity ?? lot.received_quantity ?? 0);
-          const baseQty = lot.received_base_quantity == null && lot.received_kilos == null ? null : Number(lot.received_base_quantity ?? lot.received_kilos);
+          const handlingQty = Number(lot.remaining_handling_quantity ?? lot.remaining_quantity ?? 0);
+          const baseQty = lot.remaining_base_quantity == null && lot.remaining_kilos == null
+            ? null
+            : Number(lot.remaining_base_quantity ?? lot.remaining_kilos);
+          if (handlingQty === 0 && (baseQty == null || baseQty === 0)) continue;
           // Nothing went into stock for a purchase record, so nothing comes out.
           if (Number(lot.stock_tracked) !== 0) await inventoryLedgerRepository.postWithConnection(connection, {
             productId: lot.product_id, inventoryLotId: lot.id, locCode, macCode, businessDate: removalDate,
@@ -925,30 +991,35 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
                 measurement_type, package_qty, kilos, reason, recorded_by)
              VALUES (?, ?, ?, ?, 'grn_removal', ?, ?, 1, 'correction', ?, ?, ?, ?)`,
             [lot.id, locCode, macCode, removalDate, receipt.id, lot.line_no,
-              -Number(lot.received_quantity || 0), lot.received_kilos == null ? null : -Number(lot.received_kilos),
+              -handlingQty, baseQty == null ? null : -baseQty,
               `GRN removed: ${why}`.slice(0, 255), userId || null]
           );
         }
-        const [debits] = await connection.execute("SELECT * FROM supplier_payable_entries WHERE goods_receipt_id = ? AND entry_type = 'purchase_debit'", [receipt.id]);
-        let lineNo = 0;
-        for (const debit of debits) {
-          lineNo += 1;
+        // A correction books its reversal against itself, not against the
+        // document it corrects, so what the supplier is still owed for this
+        // delivery is the balance across the chain rather than any one of them.
+        const [owed] = await connection.query(
+          `SELECT COALESCE(SUM(amount), 0) AS due, MIN(supplier_id) AS supplier_id
+           FROM supplier_payable_entries WHERE goods_receipt_id IN (?)`, [chainIds]
+        );
+        const stillDue = Math.round(Number(owed[0]?.due || 0) * 100) / 100;
+        if (stillDue !== 0) {
           await connection.execute(
             `INSERT INTO supplier_payable_entries
                (supplier_id, loc_code, mac_code, goods_receipt_id, inventory_lot_id, entry_type, amount, business_date,
                 document_type, document_no, line_no, entry_no, reason, created_by, metadata)
-             VALUES (?, ?, ?, ?, ?, 'return_credit', ?, ?, 'grn_removal', ?, ?, 1, ?, ?, CAST(? AS JSON))`,
-            [debit.supplier_id, locCode, macCode, receipt.id, debit.inventory_lot_id, -Number(debit.amount), removalDate,
-              receipt.id, lineNo, `GRN ${receipt.grn_number} removed`, userId || null,
-              JSON.stringify({ removedGoodsReceiptId: Number(receipt.id), originalPayableEntryId: Number(debit.id), reason: why })]
+             VALUES (?, ?, ?, ?, NULL, 'return_credit', ?, ?, 'grn_removal', ?, 1, 1, ?, ?, CAST(? AS JSON))`,
+            [receipt.supplier_id, locCode, macCode, receipt.id, -stillDue, removalDate,
+              receipt.id, `GRN ${receipt.grn_number} removed`, userId || null,
+              JSON.stringify({ removedGoodsReceiptId: Number(receipt.id), removedChain: chainIds, reversedAmount: stillDue, reason: why })]
           );
         }
-        await connection.execute(
-          "UPDATE goods_receipts SET status = 'removed', removed_at = NOW(), removed_by = ?, removal_reason = ? WHERE id = ?",
-          [userId || null, why.slice(0, 255), receipt.id]
+        await connection.query(
+          "UPDATE goods_receipts SET status = 'removed', removed_at = NOW(), removed_by = ?, removal_reason = ? WHERE id IN (?)",
+          [userId || null, why.slice(0, 255), chainIds]
         );
         await connection.commit();
-        return { id: Number(receipt.id), grnNumber: receipt.grn_number, removed: true, lots: lots.length };
+        return { id: Number(receipt.id), grnNumber: receipt.grn_number, removed: true, lots: lots.length, documents: chainIds.length, reversedAmount: stillDue };
       } catch (error) { await connection.rollback(); throw error; }
     });
   }
@@ -1068,8 +1139,9 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
          WHERE g.corrects_goods_receipt_id = ? GROUP BY g.id ORDER BY g.id DESC`,
         [goodsReceiptId]
       );
-      const removalBlocker = receipts[0].status === 'finalized' ? await goodsReceiptRemovalBlocker(connection, receipts[0]) : null;
-      return { receipt: receipts[0], lines, corrections, removable: receipts[0].status === 'finalized' && !removalBlocker, removalBlocker };
+      const withdrawable = ['finalized', 'corrected'].includes(receipts[0].status);
+      const removalBlocker = withdrawable ? await goodsReceiptRemovalBlocker(connection, receipts[0]) : null;
+      return { receipt: receipts[0], lines, corrections, removable: withdrawable && !removalBlocker, removalBlocker };
     });
   }
 

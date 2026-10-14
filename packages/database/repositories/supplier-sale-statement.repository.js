@@ -1,4 +1,5 @@
 const requestContext = require('../../core/security/request-context');
+const { findSupplierAtLocation } = require('./supplier-directory');
 'use strict';
 
 function createSupplierSaleStatementRepository({ database, documentSequenceRepository, businessDayRepository }) {
@@ -482,12 +483,8 @@ function createSupplierSaleStatementRepository({ database, documentSequenceRepos
     if (!typed) throw new Error('Type or pick a supplier.');
     if (!loc) throw new Error('An active workstation session is required.');
     return database.withConnection(async (connection) => {
-      const [matches] = await connection.execute(
-        `SELECT * FROM suppliers WHERE loc_code = ? AND is_active = 1 AND (UPPER(supplier_code) = UPPER(?) OR UPPER(name) = UPPER(?))
-         ORDER BY UPPER(COALESCE(supplier_code, '')) = UPPER(?) DESC, id ASC LIMIT 1`,
-        [loc, typed, typed, typed]
-      );
-      if (matches.length) return { supplier: matches[0], created: false };
+      const existing = await findSupplierAtLocation(connection, { locCode: loc, term: typed });
+      if (existing) return { supplier: existing, created: false };
       const [created] = await connection.execute(
         'INSERT INTO suppliers (loc_code, supplier_code, name, metadata) VALUES (?, NULL, ?, CAST(? AS JSON))',
         [loc, typed.slice(0, 190), JSON.stringify({ createdFrom: 'supplier_statement' })]

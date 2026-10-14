@@ -1438,6 +1438,9 @@ export class PattiyalWorkspaceComponent implements OnInit {
         phone: settings?.phone || ''
       },
       logoDataUrl: settings?.logoDataUrl || '',
+      // Without the language this falls to the plain text printer, whose
+      // character set has no Sinhala or Tamil and prints digits instead.
+      receiptLanguage: settings?.language || 'en-LK',
       secondaryHeaderLines: [{ text: title.toUpperCase(), align: 'center', bold: true }],
       meta: [
         { label: 'Statement', value: String(statement['statement_number'] || '') },

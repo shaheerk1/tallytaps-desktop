@@ -1642,6 +1642,28 @@ export type PattiyalRegisterTotals = {
   finalizedNetPayable: number;
 };
 
+/** What a supplier is started with. The code is optional and unique per location. */
+export type SupplierInput = {
+  name: string;
+  supplierCode?: string | null;
+  phone?: string | null;
+  mobile?: string | null;
+  address?: string | null;
+  metadata?: Record<string, unknown> | null;
+};
+
+/** The stored supplier row, as the repository returns it. */
+export type SupplierRecord = {
+  id: number;
+  loc_code: string | null;
+  supplier_code: string | null;
+  name: string;
+  phone: string | null;
+  mobile: string | null;
+  address: string | null;
+  is_active: number | boolean;
+};
+
 export type SupplierPaymentBankAccount = {
   id: number;
   bankName: string;
@@ -1944,6 +1966,8 @@ export interface PosApi {
     getIssuedCheque: (chequeId: number, actor?: ActorContext | null) => Promise<IpcResult<unknown>>;
     createIssuedCheque: (cheque: Record<string, unknown>, actor?: ActorContext | null) => Promise<IpcResult<unknown>>;
     updateIssuedChequeStatus: (payload: Record<string, unknown>, actor?: ActorContext | null) => Promise<IpcResult<unknown>>;
+    listSuppliers: (actor?: ActorContext | null) => Promise<IpcResult<SupplierRecord[]>>;
+    createSupplier: (supplier: SupplierInput, actor?: ActorContext | null) => Promise<IpcResult<SupplierRecord>>;
     /** Lots still holding stock at a location, with item, supplier and remaining quantities. */
     listInventoryLots: (productId: number | null, locCode: string | null, actor?: ActorContext | null) => Promise<IpcResult<Array<Record<string, any>>>>;
   };

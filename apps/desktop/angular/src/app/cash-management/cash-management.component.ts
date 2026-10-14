@@ -704,6 +704,9 @@ export class CashManagementComponent implements OnInit {
     const doc: PrintDocument = {
       documentTitle: `${type} Cash Shift Report`,
       brand: settings ? { name: settings.storeName, tagline: settings.tagline, addressLines: settings.addressLines, phone: settings.phone } : { name: 'POS Platform' },
+      // Without the language this falls to the plain text printer, whose
+      // character set has no Sinhala or Tamil and prints digits instead.
+      receiptLanguage: settings?.language || 'en-LK',
       meta: [
         { label: 'Report', value: `${type} REPORT` },
         { label: 'Shift', value: String(shift.id) },

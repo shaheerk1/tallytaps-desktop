@@ -6,6 +6,8 @@ import type {
   SupplierAccountSummary, SupplierChequeInHand, SupplierPaymentBankAccount
 } from '../../../../../../packages/shared/ipc/pos-api';
 
+type SupplierDraft = { name: string; supplierCode: string; phone: string; mobile: string; address: string };
+
 type BalanceFilter = '' | 'owed' | 'owes_us' | 'settled';
 type PaymentMethod = 'fund' | 'own_cheque' | 'customer_cheque';
 type EntryForm =
@@ -63,10 +65,15 @@ export class SupplierAccountsComponent implements OnInit {
   ];
   drawerId: number | null = null;
 
+  // Starting a supplier
+  supplierDraft: SupplierDraft | null = null;
+  creatingSupplier = false;
+
   constructor(private session: SessionService, private printing: PrintingService) {}
 
   get canManage(): boolean { return this.session.hasPermission('supplier-settlements.manage'); }
   get canBackdate(): boolean { return this.session.hasPermission('money.backdate'); }
+  get canAddSupplier(): boolean { return this.session.hasPermission('suppliers.manage'); }
   get today(): string { return String(this.session.getWorkstationSession()?.billingDate || '').slice(0, 10); }
   private actor() { return this.session.getActor() || undefined; }
 
@@ -76,6 +83,7 @@ export class SupplierAccountsComponent implements OnInit {
 
   @HostListener('document:keydown.escape') onEscape(): void {
     if (this.form) this.form = null;
+    else if (this.supplierDraft) this.closeNewSupplier();
     else if (this.reversingEntryId) this.cancelReverse();
   }
 
@@ -212,6 +220,53 @@ export class SupplierAccountsComponent implements OnInit {
     this.focusFirstField();
   }
 
+  openNewSupplier(): void {
+    this.clearMessages();
+    this.supplierDraft = { name: '', supplierCode: '', phone: '', mobile: '', address: '' };
+    this.focusSupplierName();
+  }
+
+  closeNewSupplier(): void {
+    this.supplierDraft = null;
+    this.creatingSupplier = false;
+  }
+
+  get supplierDraftReady(): boolean {
+    return Boolean(this.supplierDraft && this.supplierDraft.name.trim());
+  }
+
+  /**
+   * Adds the supplier and opens its account. A supplier with no entries yet is
+   * hidden by the default filter, so the list is switched to show it -- landing
+   * on an empty sheet is also where an opening balance is recorded, which is
+   * usually the next thing to do when the old book carries one.
+   */
+  async saveNewSupplier(): Promise<void> {
+    const draft = this.supplierDraft;
+    if (!window.posApi || !draft || this.creatingSupplier || !this.supplierDraftReady) return;
+    this.creatingSupplier = true;
+    const trimmed = (value: string) => value.trim() || null;
+    const result = await window.posApi.catalog.createSupplier({
+      name: draft.name.trim(),
+      supplierCode: trimmed(draft.supplierCode),
+      phone: trimmed(draft.phone),
+      mobile: trimmed(draft.mobile),
+      address: trimmed(draft.address),
+      metadata: { createdFrom: 'supplier_account' }
+    }, this.actor());
+    this.creatingSupplier = false;
+    if (!result.success) {
+      this.error = result.error || 'Could not start this supplier account.';
+      return;
+    }
+    const supplier = result.data;
+    this.supplierDraft = null;
+    this.includeAll = true;
+    await this.loadAccounts();
+    await this.openSheet(Number(supplier.id));
+    this.info = `${supplier.name} added. Record an opening balance if the old book carries one.`;
+  }
+
   openAdjustment(): void {
     if (!this.sheet) return;
     this.clearMessages();
@@ -333,6 +388,21 @@ export class SupplierAccountsComponent implements OnInit {
       event.preventDefault();
       void this.saveForm();
     }
+  }
+
+  onSupplierKeydown(event: KeyboardEvent): void {
+    if (event.key === 'Enter' && (event.ctrlKey || (event.target as HTMLElement).tagName === 'INPUT')) {
+      event.preventDefault();
+      void this.saveNewSupplier();
+    }
+  }
+
+  private focusSupplierName(): void {
+    setTimeout(() => {
+      const input = document.querySelector<HTMLInputElement>('.supplier-drawer input');
+      input?.focus();
+      input?.select();
+    });
   }
 
   private focusFirstField(): void {
