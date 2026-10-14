@@ -339,7 +339,14 @@ function createCashManagementRepository({ database, documentSequenceRepository, 
     });
   }
 
-  async function listMovementHistory({ locCode, fromDate, toDate, direction, movementType, term, includeVoided = true, limit = 250 }) {
+  /**
+   * Cash movements over a range.
+   *
+   * `expenseTreatment` narrows to money that went out on goods ('lot_cost') or
+   * on running the shop ('overhead'). The two look alike in the drawer and are
+   * nothing alike in the books, so they are worth telling apart here.
+   */
+  async function listMovementHistory({ locCode, fromDate, toDate, direction, movementType, expenseTreatment, term, includeVoided = true, limit = 250 }) {
     return database.withConnection(async (connection) => {
       const clauses = ['s.loc_code = ?'];
       const params = [String(locCode || '').trim()];
@@ -347,6 +354,13 @@ function createCashManagementRepository({ database, documentSequenceRepository, 
       if (toDate) { clauses.push('s.business_date <= ?'); params.push(String(toDate).slice(0, 10)); }
       if (direction === 'in' || direction === 'out') { clauses.push('m.direction = ?'); params.push(direction); }
       if (movementType) { clauses.push('m.movement_type = ?'); params.push(String(movementType)); }
+      if (['lot_cost', 'overhead', 'supplier_deduction'].includes(String(expenseTreatment || ''))) {
+        clauses.push(`EXISTS (
+          SELECT 1 FROM expense_entries ex
+           WHERE ex.cash_movement_id = m.id AND ex.treatment_snapshot = ?
+        )`);
+        params.push(String(expenseTreatment));
+      }
       if (!includeVoided) clauses.push("m.status = 'active'");
       if (String(term || '').trim()) {
         clauses.push('(m.reason LIKE ? OR m.reference_type LIKE ? OR m.reference_id LIKE ? OR u.display_name LIKE ?)');
@@ -384,9 +398,24 @@ function createCashManagementRepository({ database, documentSequenceRepository, 
     return database.withConnection(async (connection) => {
       const shift = await getShiftRow(connection, shiftId);
       if (!shift) return null;
+      // Where a movement came from, resolved to the bill behind it. Money taken
+      // at the counter, change given back and a debt collected all name the
+      // invoice itself; goods returned name the refund, which names the bill.
       const [movements] = await connection.execute(
-        `SELECT id, movement_type, direction, amount, reference_type, reference_id, reason, created_at
-         FROM cash_movements WHERE cash_shift_id = ? AND status = 'active' ORDER BY id ASC`, [shiftId]
+        `SELECT m.id, m.movement_type, m.direction, m.amount, m.reference_type, m.reference_id,
+                m.reason, m.created_at,
+                ex.id AS expense_entry_id,
+                COALESCE(i.id, ri.id) AS invoice_id,
+                COALESCE(i.invoice_number, ri.invoice_number) AS invoice_number,
+                COALESCE(i.txn_date, ri.txn_date) AS invoice_date,
+                COALESCE(i.loc_code, ri.loc_code) AS invoice_loc_code,
+                COALESCE(i.mac_code, ri.mac_code) AS invoice_mac_code
+           FROM cash_movements m
+           LEFT JOIN invoices i ON m.reference_type = 'invoice' AND i.id = m.reference_id
+           LEFT JOIN refunds r ON m.reference_type = 'refund' AND r.id = m.reference_id
+           LEFT JOIN invoices ri ON ri.id = r.source_invoice_id
+           LEFT JOIN expense_entries ex ON ex.cash_movement_id = m.id AND ex.status = 'recorded'
+          WHERE m.cash_shift_id = ? AND m.status = 'active' ORDER BY m.id ASC`, [shiftId]
       );
       const [counts] = await connection.execute(
         `SELECT c.id, c.count_type, c.total, c.counted_at, u.display_name AS counted_by_name
@@ -416,7 +445,19 @@ function createCashManagementRepository({ database, documentSequenceRepository, 
         movements: movements.map((row) => ({
           ...row,
           amount: money(row.amount),
-          editable: shift.status === 'open' && !row.reference_type && editableMovementTypes.has(row.movement_type)
+          editable: shift.status === 'open' && !row.reference_type && editableMovementTypes.has(row.movement_type),
+          // An expense is undone through the expense itself, which also puts the
+          // money back in its fund and reverses its journal entry; the drawer
+          // movement is only one of the things it did. The entry is found by the
+          // movement it wrote, because the reference holds its number, not its id.
+          expenseEntryId: shift.status === 'open' && row.expense_entry_id
+            ? Number(row.expense_entry_id)
+            : null,
+          invoiceId: row.invoice_id == null ? null : Number(row.invoice_id),
+          invoiceNumber: row.invoice_number || null,
+          invoiceDate: row.invoice_date || null,
+          invoiceLocCode: row.invoice_loc_code || null,
+          invoiceMacCode: row.invoice_mac_code || null
         })),
         counts
       };

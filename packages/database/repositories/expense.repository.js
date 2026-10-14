@@ -281,6 +281,53 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
     });
   }
 
+  /**
+   * Removes an expense reason.
+   *
+   * One that has been used is never deleted: expenses, recurring templates and
+   * statement deductions point at it, and a reason that vanished would leave
+   * them describing nothing. Such a reason is switched off instead, which keeps
+   * it off the pickers while the records it explains stay readable. Only a
+   * reason nothing has ever used is actually removed.
+   */
+  async function deleteCategory(input) {
+    const id = Number(input?.id || 0);
+    if (!id) throw new Error('Choose the reason to remove.');
+    return database.withConnection(async (connection) => {
+      await connection.beginTransaction();
+      try {
+        const [found] = await connection.execute('SELECT * FROM expense_categories WHERE id = ? FOR UPDATE', [id]);
+        const category = found[0];
+        if (!category) throw new Error('This expense reason no longer exists.');
+        if (category.category_code === DEFAULT_CATEGORY_CODE) {
+          throw new Error(`${category.name} is the reason every expense can fall back on, so it cannot be removed.`);
+        }
+        const scope = requestContext.scopedLocation(input);
+        if (scope && category.loc_code != null && category.loc_code !== scope) {
+          throw new Error('This expense reason belongs to another location.');
+        }
+        const [[used]] = await connection.execute(
+          'SELECT COUNT(*) AS uses FROM expense_entries WHERE expense_category_id = ?', [id]
+        );
+        const [[scheduled]] = await connection.execute(
+          'SELECT COUNT(*) AS uses FROM recurring_expense_templates WHERE expense_category_id = ?', [id]
+        );
+        const inUse = Number(used.uses || 0) + Number(scheduled.uses || 0);
+        if (inUse > 0) {
+          await connection.execute('UPDATE expense_categories SET is_active = 0 WHERE id = ?', [id]);
+          await connection.commit();
+          return {
+            id, removed: false, switchedOff: true, uses: Number(used.uses || 0),
+            name: category.name
+          };
+        }
+        await connection.execute('DELETE FROM expense_categories WHERE id = ?', [id]);
+        await connection.commit();
+        return { id, removed: true, switchedOff: false, uses: 0, name: category.name };
+      } catch (error) { await connection.rollback(); throw error; }
+    });
+  }
+
   async function saveCategory(input) {
     return database.withConnection(async (connection) => {
       const name = text(input.name);
@@ -1177,6 +1224,7 @@ function createExpenseRepository({ database, documentSequenceRepository, busines
     getFundLedger,
     listCategories,
     saveCategory,
+    deleteCategory,
     recordExpense,
     reverseExpense,
     listExpenses,

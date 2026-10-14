@@ -142,6 +142,7 @@ contextBridge.exposeInMainWorld('posApi', {
   expenses: {
     categories: (includeInactive, actor) => invoke('expenses.categories.list', { includeInactive, actor }),
     saveCategory: (category, actor) => invoke('expenses.categories.save', { category, actor }),
+    deleteCategory: (category, actor) => invoke('expenses.categories.delete', { category, actor }),
     list: (filters, actor) => invoke('expenses.list', { filters, actor }),
     create: (expense, actor) => invoke('expenses.create', { expense, actor }),
     reverse: (reversal, actor) => invoke('expenses.reverse', { reversal, actor }),

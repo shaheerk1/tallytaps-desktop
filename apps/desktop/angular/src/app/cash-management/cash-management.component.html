@@ -199,17 +199,46 @@
       <div class="table activity-table" *ngIf="shift.movements.length">
         <div class="row head"><span>Time</span><span>Type</span><span>Details</span><span class="num">Amount</span><span></span></div>
         <ng-container *ngFor="let movement of shift.movements">
-          <div class="row" *ngIf="removingMovementId !== movement.id && editingMovementId !== movement.id" [class.is-out]="movement.direction === 'out'">
+          <div class="row" *ngIf="removingMovementId !== movement.id && editingMovementId !== movement.id && removingExpenseMovementId !== movement.id && editingExpenseMovementId !== movement.id" [class.is-out]="movement.direction === 'out'">
             <span class="time">{{ movement.created_at | date:'HH:mm' }}</span>
             <span><em class="type" [class.in]="movement.direction === 'in'" [class.out]="movement.direction === 'out'">{{ movementTypeLabel(movement.movement_type) }}</em></span>
-            <span class="details"><strong>{{ movement.reason || 'System transaction' }}</strong><small *ngIf="!movement.editable && movement.reference_type">Linked to {{ referenceLabel(movement.reference_type) }}</small></span>
+            <span class="details">
+              <button type="button" class="source-link" *ngIf="hasSource(movement)" (click)="openMovementSource(movement)" title="Open this bill in the invoice archive">
+                <strong>{{ movement.reason || 'System transaction' }}</strong>
+                <small>{{ $any(movement).invoiceNumber || 'Open the bill' }} &rsaquo;</small>
+              </button>
+              <ng-container *ngIf="!hasSource(movement)">
+                <strong>{{ movement.reason || 'System transaction' }}</strong>
+                <small *ngIf="!movement.editable && movement.reference_type && !expenseIdOf(movement)">Linked to {{ referenceLabel(movement.reference_type) }}</small>
+              </ng-container>
+            </span>
             <span class="num amount" [class.in]="movement.direction === 'in'" [class.out]="movement.direction === 'out'">{{ movement.direction === 'out' ? '−' : '+' }}{{ movement.amount | number:'1.2-2' }}</span>
             <span class="row-actions">
               <ng-container *ngIf="movement.editable && canCorrectMovements">
                 <button type="button" class="btn tiny" (click)="beginMovementEdit(movement)">Edit</button>
                 <button type="button" class="btn tiny danger" (click)="beginMovementRemove(movement)">Remove</button>
               </ng-container>
+              <ng-container *ngIf="canChangeExpense(movement)">
+                <button type="button" class="btn tiny" (click)="beginExpenseEdit(movement)">Edit</button>
+                <button type="button" class="btn tiny danger" (click)="beginExpenseRemove(movement)">Remove</button>
+              </ng-container>
             </span>
+          </div>
+          <div class="row editing" *ngIf="editingExpenseMovementId === movement.id">
+            <span class="time">{{ movement.created_at | date:'HH:mm' }}</span>
+            <span><em class="type out">Expense</em></span>
+            <input [(ngModel)]="expenseReason" placeholder="What it was for" aria-label="What the expense was for" (keyup.enter)="saveExpenseEdit()" (keyup.escape)="cancelExpenseEdit()" />
+            <input class="num" type="number" min="0.01" step="0.01" [(ngModel)]="expenseAmount" aria-label="Corrected amount" (keyup.enter)="saveExpenseEdit()" />
+            <span class="row-actions"><button type="button" class="btn tiny primary" (click)="saveExpenseEdit()">Save</button><button type="button" class="btn tiny" (click)="cancelExpenseEdit()">Cancel</button></span>
+            <small class="row-note">The old expense is reversed and the corrected one recorded. Both stay in the records, and the money moves back and out again in its fund.</small>
+          </div>
+          <div class="row removing" *ngIf="removingExpenseMovementId === movement.id">
+            <span class="time">{{ movement.created_at | date:'HH:mm' }}</span>
+            <span><em class="type out">Remove?</em></span>
+            <input [(ngModel)]="expenseReason" placeholder="Why is it being removed?" aria-label="Why the expense is being removed" (keyup.enter)="confirmExpenseRemove()" (keyup.escape)="cancelExpenseRemove()" />
+            <span class="num amount out">−{{ movement.amount | number:'1.2-2' }}</span>
+            <span class="row-actions"><button type="button" class="btn tiny danger" (click)="confirmExpenseRemove()">Remove</button><button type="button" class="btn tiny" (click)="cancelExpenseRemove()">Keep</button></span>
+            <small class="row-note">The money goes back to the fund that paid, any cost put on goods comes off them, and the expense stays as a reversed record.</small>
           </div>
           <div class="row editing" *ngIf="editingMovementId === movement.id">
             <span class="time">{{ movement.created_at | date:'HH:mm' }}</span>
@@ -237,6 +266,7 @@
         <label class="field"><span>From</span><input type="date" [(ngModel)]="historyFromDate" /></label>
         <label class="field"><span>Until</span><input type="date" [(ngModel)]="historyToDate" /></label>
         <label class="field"><span>Direction</span><select [(ngModel)]="historyDirection"><option value="">All</option><option value="in">Cash in</option><option value="out">Cash out</option></select></label>
+        <label class="field"><span>Expenses</span><select [(ngModel)]="historyExpenseKind"><option value="">All entries</option><option value="lot_cost">Lot expenses</option><option value="overhead">Shop expenses</option></select></label>
         <label class="field grow"><span>Find</span><input [(ngModel)]="historyTerm" placeholder="Reason, user or reference" /></label>
         <label class="check"><input type="checkbox" [(ngModel)]="historyIncludeVoided" /> Include removed</label>
         <button type="button" class="btn primary" (click)="loadMovementHistory()">Apply</button>

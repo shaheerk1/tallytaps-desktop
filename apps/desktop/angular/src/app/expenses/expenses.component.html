@@ -962,6 +962,7 @@
       <p class="guidance wide" *ngIf="reasonDraft.id && !reasonDraft.isDefault">Expenses already recorded keep the reason and kind they were saved with.</p>
     </div>
     <div class="drawer-actions">
+      <button class="danger" *ngIf="reasonDraft.id && !reasonDraft.isDefault" (click)="removeReason()" [disabled]="saving">Remove</button>
       <button class="secondary" (click)="closeAll()">Cancel</button>
       <button class="primary" (click)="saveReason()" [disabled]="saving || !reasonDraft.name.trim()">{{ saving ? 'Saving…' : 'Save reason' }}</button>
     </div>

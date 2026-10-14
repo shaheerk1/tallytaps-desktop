@@ -1962,6 +1962,15 @@ export interface PosApi {
   expenses: {
     categories: (includeInactive?: boolean, actor?: ActorContext | null) => Promise<IpcResult<ExpenseCategory[]>>;
     saveCategory: (category: Partial<ExpenseCategory>, actor?: ActorContext | null) => Promise<IpcResult<ExpenseCategory>>;
+    /**
+     * Removes an expense reason. One that has been used is switched off instead
+     * of deleted, so the records that name it still read; the answer says which
+     * happened.
+     */
+    deleteCategory: (
+      category: { id: number; locCode?: string },
+      actor?: ActorContext | null
+    ) => Promise<IpcResult<{ id: number; name: string; removed: boolean; switchedOff: boolean; uses: number }>>;
     list: (filters: { locCode: string; fromDate?: string; toDate?: string; categoryId?: number; fundAccountId?: number; term?: string; unallocatedOnly?: boolean; includeReversed?: boolean; limit?: number }, actor?: ActorContext | null) => Promise<IpcResult<ExpenseRegister>>;
     reverse: (reversal: { expenseEntryId: number; reason: string; userId: number; origin: { locCode: string; macCode: string; txnDate: string } }, actor?: ActorContext | null) => Promise<IpcResult<{ expenseNumber: string; reversalNumber: string; amount: number; returnedTo: string | null; stakeholderName: string | null; detachedFromLots: string[]; recurringDueAgain: boolean }>>;
     create: (expense: { expenseCategoryId: number; fundAccountId: number; amount: number; reason: string; payee?: string; reference?: string; requestId?: string; paidOn?: string; paidOnReason?: string; goodsReceiptId?: number | null; inventoryLotId?: number | null; userId: number; origin: { locCode: string; macCode: string; txnDate: string } }, actor?: ActorContext | null) => Promise<IpcResult<{ id: number; expenseNumber: string; amount: number; categoryName: string; categoryTreatment: ExpenseTreatment; fundName: string; fundBalance: number; stakeholderName: string | null; stakeholderEntryNumber: string | null; replayed?: boolean; attached?: { goodsReceiptId: number; grnNumber: string; lotCode: string | null; allocatedTotal: number } | null }>>;
@@ -2235,7 +2244,7 @@ export interface PosApi {
     }, actor?: ActorContext) => Promise<IpcResult<CashShift>>;
     correctMovement: (movement: { movementId: number; direction: 'in' | 'out'; amount: number; reason: string; userId?: number }, actor?: ActorContext) => Promise<IpcResult<CashShift>>;
     removeMovement: (movement: { movementId: number; reason: string; userId?: number }, actor?: ActorContext) => Promise<IpcResult<CashShift>>;
-    movementHistory: (filters: { locCode: string; fromDate?: string; toDate?: string; direction?: 'in' | 'out' | ''; movementType?: string; term?: string; includeVoided?: boolean; limit?: number }, actor?: ActorContext) => Promise<IpcResult<CashMovementHistoryRow[]>>;
+    movementHistory: (filters: { locCode: string; fromDate?: string; toDate?: string; direction?: 'in' | 'out' | ''; movementType?: string; expenseTreatment?: 'lot_cost' | 'overhead' | ''; term?: string; includeVoided?: boolean; limit?: number }, actor?: ActorContext) => Promise<IpcResult<CashMovementHistoryRow[]>>;
     blindClose: (count: { shiftId: number; userId: number; closingLines: CashCountLine[] }, actor?: ActorContext) => Promise<IpcResult<CashShift>>;
     closeShift: (close: { shiftId: number; userId: number; varianceReason?: string }, actor?: ActorContext) => Promise<IpcResult<CashShift>>;
   };

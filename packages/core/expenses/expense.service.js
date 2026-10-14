@@ -51,6 +51,10 @@ function createExpenseService({ expenseRepository }) {
     return expenseRepository.listCategories({ includeInactive: Boolean(input.includeInactive) });
   }
 
+  async function deleteCategory(input = {}) {
+    return expenseRepository.deleteCategory(input);
+  }
+
   async function saveCategory(input = {}) {
     return expenseRepository.saveCategory(input);
   }
@@ -167,6 +171,7 @@ function createExpenseService({ expenseRepository }) {
     getFundLedger,
     listCategories,
     saveCategory,
+    deleteCategory,
     recordExpense,
     reverseExpense,
     listExpenses,

@@ -1,4 +1,5 @@
 import { Component, ElementRef, HostListener, OnInit, ViewChild } from '@angular/core';
+import { PageLinksService } from '../services/page-links.service';
 import { SessionService } from '../services/session.service';
 import { PrintingService } from '../services/printing.service';
 import { groupedAmount } from '../services/receipt-money';
@@ -9,6 +10,7 @@ import type {
   CashShift,
   CashShiftReportPrint,
   ExpenseCategory,
+  ExpenseEntry,
   FundAccount,
   PrintDocument
 } from '../../../../../../packages/shared/ipc/pos-api';
@@ -58,6 +60,18 @@ export class CashManagementComponent implements OnInit {
   // supported in Electron -- it returns nothing -- which silently stopped removal.
   removingMovementId: number | null = null;
   removeReason = '';
+  /**
+   * Narrows the history to money that went out on goods or on running the shop.
+   * The two look alike in a drawer and are nothing alike in the books.
+   */
+  historyExpenseKind: 'lot_cost' | 'overhead' | '' = '';
+  /** An expense in this shift being taken back out, or corrected. */
+  removingExpenseId: number | null = null;
+  removingExpenseMovementId: number | null = null;
+  editingExpenseId: number | null = null;
+  editingExpenseMovementId: number | null = null;
+  expenseAmount = 0;
+  expenseReason = '';
   editDirection: 'in' | 'out' = 'in';
   editAmount = 0;
   editReason = '';
@@ -65,7 +79,11 @@ export class CashManagementComponent implements OnInit {
   info = '';
   loading = false;
 
-  constructor(private session: SessionService, private printing: PrintingService) {}
+  constructor(
+    private session: SessionService,
+    private printing: PrintingService,
+    private pageLinks: PageLinksService
+  ) {}
 
   get canCorrectMovements(): boolean { return this.session.hasPermission('cash.movement.correct'); }
   get canRecordExpense(): boolean { return this.session.hasPermission('expenses.create') && this.session.hasPermission('funds.view'); }
@@ -93,6 +111,11 @@ export class CashManagementComponent implements OnInit {
     const ws = this.session.getWorkstationSession();
     const user = this.session.getUser();
     return { sessionId: ws?.sessionId || 0, workstationId: ws?.workstationId || 0, businessDate: ws?.billingDate || '', userId: user?.id || 0 };
+  }
+  /** Where and when a record is being written: this counter, on its business date. */
+  private origin() {
+    const ws = this.session.getWorkstationSession();
+    return { locCode: ws?.locationCode || '', macCode: ws?.machineCode || '', txnDate: ws?.billingDate || '' };
   }
   blankLines(): CashCountLine[] { return DEFAULT_DENOMINATIONS.map((denomination) => ({ denomination, quantity: 0 })); }
   total(lines: CashCountLine[]): number { return lines.reduce((sum, line) => sum + line.denomination * Number(line.quantity || 0), 0); }
@@ -295,6 +318,7 @@ export class CashManagementComponent implements OnInit {
       fromDate: this.historyFromDate || undefined,
       toDate: this.historyToDate || undefined,
       direction: this.historyDirection,
+      expenseTreatment: this.historyExpenseKind || undefined,
       term: this.historyTerm.trim() || undefined,
       includeVoided: this.historyIncludeVoided,
       limit: 300
@@ -408,6 +432,168 @@ export class CashManagementComponent implements OnInit {
     this.focusMovementStart();
     await this.loadFunds();
     await this.loadHistory();
+    await this.loadMovementHistory();
+  }
+
+  /** Whether this entry came from a bill that can be opened. */
+  hasSource(movement: CashMovement): boolean {
+    return Number((movement as { invoiceId?: number }).invoiceId || 0) > 0;
+  }
+
+  /**
+   * Opens the bill behind an entry in the invoice archive.
+   *
+   * Money taken at the counter, change given back and a debt collected all name
+   * the bill itself; goods returned name the refund, which the drawer read has
+   * already followed back to its bill. A returned bill is shown even when it
+   * came back in full, or the entry would open an archive that hides it.
+   */
+  openMovementSource(movement: CashMovement): void {
+    const row = movement as {
+      invoiceId?: number; invoiceNumber?: string; invoiceDate?: string;
+      invoiceLocCode?: string; invoiceMacCode?: string;
+    };
+    if (!row.invoiceId) return;
+    void this.pageLinks.openInvoiceArchive({
+      invoiceId: Number(row.invoiceId),
+      invoiceNumber: row.invoiceNumber || undefined,
+      locCode: row.invoiceLocCode || undefined,
+      macCode: row.invoiceMacCode || undefined,
+      txnDate: row.invoiceDate || undefined,
+      showReturned: true
+    });
+  }
+
+  // ── An expense in this shift ──────────────────────────────
+
+  /** Which expense an entry is, when the drawer paid one. */
+  expenseIdOf(movement: CashMovement): number | null {
+    const id = Number((movement as { expenseEntryId?: number }).expenseEntryId || 0);
+    return id > 0 ? id : null;
+  }
+
+  canChangeExpense(movement: CashMovement): boolean {
+    return this.expenseIdOf(movement) != null && this.session.hasPermission('expenses.reverse');
+  }
+
+  beginExpenseRemove(movement: CashMovement): void {
+    if (!this.canChangeExpense(movement)) return;
+    this.cancelMovementEdit();
+    this.cancelExpenseEdit();
+    this.removingExpenseId = this.expenseIdOf(movement);
+    this.removingExpenseMovementId = movement.id;
+    this.expenseReason = 'Entered by mistake';
+  }
+
+  cancelExpenseRemove(): void {
+    this.removingExpenseId = null;
+    this.removingExpenseMovementId = null;
+    this.expenseReason = '';
+  }
+
+  /**
+   * Takes an expense back out.
+   *
+   * It goes through the expense itself rather than the drawer entry, because
+   * the expense also took money from a fund, may have been attached to goods,
+   * and wrote a journal entry: undoing only the cash would leave the other
+   * three standing.
+   */
+  async confirmExpenseRemove(): Promise<void> {
+    if (!window.posApi || !this.removingExpenseId) return;
+    if (!this.expenseReason.trim()) {
+      this.error = 'Write why this expense is being removed. The reason is kept with the reversal.';
+      return;
+    }
+    const result = await window.posApi.expenses.reverse({
+      expenseEntryId: this.removingExpenseId,
+      reason: this.expenseReason.trim(),
+      ...this.origin()
+    } as never, this.actor());
+    if (!result.success) { this.error = result.error || 'Could not remove this expense.'; return; }
+    this.cancelExpenseRemove();
+    this.info = 'Expense reversed. The money is back in its fund and the original stays as a record.';
+    await this.refreshAfterExpense();
+  }
+
+  beginExpenseEdit(movement: CashMovement): void {
+    if (!this.canChangeExpense(movement)) return;
+    this.cancelMovementEdit();
+    this.cancelExpenseRemove();
+    this.editingExpenseId = this.expenseIdOf(movement);
+    this.editingExpenseMovementId = movement.id;
+    this.expenseAmount = movement.amount;
+    this.expenseReason = movement.reason || '';
+  }
+
+  cancelExpenseEdit(): void {
+    this.editingExpenseId = null;
+    this.editingExpenseMovementId = null;
+    this.expenseAmount = 0;
+    this.expenseReason = '';
+  }
+
+  /**
+   * Changes an expense by reversing it and recording the corrected one, which
+   * is what a ledger that never deletes can do. Both stay in the records.
+   */
+  async saveExpenseEdit(): Promise<void> {
+    if (!window.posApi || !this.editingExpenseId) return;
+    const amount = Number(this.expenseAmount || 0);
+    const reason = this.expenseReason.trim();
+    if (!(amount > 0)) { this.error = 'Enter the corrected amount.'; return; }
+    if (!reason) { this.error = 'Write what this expense was for.'; return; }
+
+    const original = await this.findExpense(this.editingExpenseId);
+    if (!original) { this.error = 'That expense could not be read back, so it was not changed.'; return; }
+
+    const reversed = await window.posApi.expenses.reverse({
+      expenseEntryId: this.editingExpenseId,
+      reason: `Corrected: ${reason}`,
+      ...this.origin()
+    } as never, this.actor());
+    if (!reversed.success) { this.error = reversed.error || 'Could not change this expense.'; return; }
+
+    const recorded = await window.posApi.expenses.create({
+      fundAccountId: original.fundAccountId,
+      expenseCategoryId: original.categoryId,
+      amount,
+      reason,
+      payee: original.payee || '',
+      reference: original.reference || '',
+      // A cost that belonged to a delivery still belongs to it; it spreads over
+      // that delivery's lots again just as it did the first time.
+      goodsReceiptId: original.goodsReceiptId || undefined,
+      origin: this.origin(),
+      userId: this.context().userId
+    } as never, this.actor());
+    if (!recorded.success) {
+      this.error = `${recorded.error || 'The corrected expense could not be recorded.'} `
+        + 'The original has been reversed, so record it again from the Cash out form.';
+      await this.refreshAfterExpense();
+      return;
+    }
+    this.cancelExpenseEdit();
+    this.info = 'Expense corrected. The original is reversed and both stay in the records.';
+    await this.refreshAfterExpense();
+  }
+
+  /** The expense behind an entry, read back from this day's expenses. */
+  private async findExpense(expenseEntryId: number): Promise<ExpenseEntry | null> {
+    if (!window.posApi) return null;
+    const date = this.origin().txnDate;
+    const result = await window.posApi.expenses.list(
+      { locCode: this.origin().locCode, fromDate: date, toDate: date, limit: 500 },
+      this.actor()
+    );
+    if (!result.success) return null;
+    return (result.data?.rows || []).find((row) => Number(row.id) === Number(expenseEntryId)) || null;
+  }
+
+  private async refreshAfterExpense(): Promise<void> {
+    const refreshed = await window.posApi!.cash.activeShift(this.context().sessionId, this.actor());
+    if (refreshed.success) this.shift = refreshed.data;
+    await this.loadFunds();
     await this.loadMovementHistory();
   }
 

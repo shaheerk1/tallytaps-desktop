@@ -498,6 +498,31 @@ export class ExpensesComponent implements OnInit {
     };
   }
 
+  /**
+   * Removes an expense reason.
+   *
+   * One that nothing has used is deleted outright. One that expenses or a
+   * standing charge already name is switched off instead, because deleting it
+   * would leave those records describing a reason that no longer exists. The
+   * answer says which happened, so nobody is left wondering.
+   */
+  async removeReason(): Promise<void> {
+    if (!window.posApi || !this.reasonDraft?.id || this.saving) return;
+    const draft = this.reasonDraft;
+    const origin = this.origin();
+    if (!origin) { this.error = 'An active workstation session is required.'; return; }
+    if (!confirm(`Remove "${draft.name}"? Reasons already used by an expense are switched off instead of deleted.`)) return;
+    this.saving = true; this.error = '';
+    const result = await window.posApi.expenses.deleteCategory({ id: Number(draft.id), locCode: origin.locCode }, this.actor());
+    this.saving = false;
+    if (!result.success) { this.error = result.error || 'Could not remove this expense reason.'; return; }
+    this.info = result.data.removed
+      ? `${result.data.name} removed.`
+      : `${result.data.name} is used by ${result.data.uses} expense${result.data.uses === 1 ? '' : 's'}, so it was switched off instead and will no longer be offered.`;
+    this.reasonDraft = null;
+    await Promise.all([this.loadReasons(), this.reloadCategories()]);
+  }
+
   async saveReason(): Promise<void> {
     if (!window.posApi || !this.reasonDraft || this.saving) return;
     const origin = this.origin();

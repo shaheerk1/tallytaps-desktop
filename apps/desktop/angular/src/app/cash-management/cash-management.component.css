@@ -445,3 +445,14 @@ input[type='checkbox'] { width: 16px; min-height: 16px; margin: 0; accent-color:
 .carry-difference span { flex: none; padding: 6px 10px; border-radius: 8px; background: #fef3c7; color: #92400e; font-weight: 800; font-size: 13px; font-variant-numeric: tabular-nums; }
 .carry-difference span.short { background: #fee2e2; color: #991b1b; }
 .carry-difference input { flex: 1; min-height: 36px; }
+
+/* ── An entry that came from a bill ─────────────────────────── */
+.activity-table .source-link {
+  display:grid; gap:1px; width:100%; padding:0; border:0; background:transparent;
+  color:inherit; text-align:left; cursor:pointer;
+}
+.activity-table .source-link strong { text-decoration:underline; text-decoration-color:var(--ui-border-strong); text-underline-offset:2px; }
+.activity-table .source-link:hover strong { color:var(--ui-primary); text-decoration-color:var(--ui-primary); }
+.activity-table .source-link small { color:var(--ui-primary); font-size:10px; font-weight:800; }
+/* What undoing an expense will do, said before it is done. */
+.activity-table .row .row-note { grid-column:1 / -1; margin-top:4px; color:var(--ui-ink-muted); font-size:10.5px; line-height:1.4; }

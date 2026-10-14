@@ -569,6 +569,7 @@ function registerIpcHandlers(services) {
   wrapIpcHandler('funds.transfer', async (payload) => services.expenseService.transferFunds(payload?.transfer || {}), { authorize: requireFundsTransfer });
   wrapIpcHandler('expenses.categories.list', async (payload) => services.expenseService.listCategories(payload || {}), { authorize: requireExpensesView });
   wrapIpcHandler('expenses.categories.save', async (payload) => services.expenseService.saveCategory(payload?.category || {}), { authorize: requireFundsManage });
+  wrapIpcHandler('expenses.categories.delete', async (payload) => services.expenseService.deleteCategory(payload?.category || {}), { authorize: requireFundsManage });
   wrapIpcHandler('expenses.list', async (payload) => services.expenseService.listExpenses(payload?.filters || {}), { authorize: requireExpensesView });
   wrapIpcHandler('expenses.create', async (payload) => services.expenseService.recordExpense({ ...(payload?.expense || {}), userId: actorId(payload) }), { authorize: requireExpensesCreate });
   wrapIpcHandler('expenses.recurring.list', async (payload) => services.expenseService.listRecurringExpenses(payload || {}), { authorize: requireExpensesView });
