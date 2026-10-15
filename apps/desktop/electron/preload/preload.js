@@ -122,6 +122,7 @@ contextBridge.exposeInMainWorld('posApi', {
     ,listInventoryIssues: (filters, actor) => invoke('inventory.issues.list', { filters, actor })
     ,recordInventoryIssue: (issue, actor) => invoke('inventory.issues.record', { issue, actor })
     ,setLotTag: (lotId, tag, locCode, actor) => invoke('inventory.lots.retag', { lotId, tag, locCode, actor })
+    ,closeOpenLot: (lotId, reason, locCode, actor) => invoke('inventory.lots.close', { lotId, reason, locCode, actor })
     ,listAllocationExceptions: (locCode, actor) => invoke('inventory.allocations.exceptions', { locCode, actor })
     ,listRecentLotAllocations: (locCode, limit, actor) => invoke('inventory.allocations.list', { locCode, limit, actor })
     ,allocateException: (allocation, actor) => invoke('inventory.allocations.resolve', { allocation, actor })

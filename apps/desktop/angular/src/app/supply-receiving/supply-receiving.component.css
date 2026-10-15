@@ -161,3 +161,11 @@ button { font:inherit; font-weight:700; cursor:pointer; } button:disabled { curs
 .grn-mode-choice input:disabled, .grn-mode-choice input:disabled ~ span { opacity:.5; cursor:not-allowed; }
 .grn-mode-note { flex:1 1 100%; color:var(--ui-ink-muted); font-size:11.5px; font-weight:400; text-transform:none; }
 .grn-kind { display:block; margin-top:2px; color:var(--ui-ink-muted); font-size:10px; font-weight:800; letter-spacing:.03em; text-transform:uppercase; }
+
+/* ── A lot nobody counted ───────────────────────────────────── */
+.lot-open { display:grid; gap:1px; }
+.lot-open strong { color:#8a5a12; font-size:12px; }
+.lot-open small { color:var(--ui-ink-muted); font-size:10px; }
+.lot-finish { margin-left:8px; padding:3px 8px; font-size:10.5px; }
+
+.lot-code-record .lot-held { display:block; margin-top:2px; color:#2f6bff; font-size:10.5px; font-weight:700; }

@@ -510,7 +510,8 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
    * stock; anything else is a stock receipt, which is what every GRN was before.
    */
   function receiptStockMode(value) {
-    return String(value || '').trim() === 'purchase_record' ? 'purchase_record' : 'stock_receipt';
+    const mode = String(value || '').trim();
+    return ['purchase_record', 'open_lot'].includes(mode) ? mode : 'stock_receipt';
   }
 
   /**
@@ -521,6 +522,12 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
   function assertStockModeAllowed(stockMode, ownership) {
     if (stockMode === 'purchase_record' && ownership === 'consignment') {
       throw new Error('A consignment delivery must be a stock receipt: the supplier is paid from what sells out of their lot.');
+    }
+    // An owned purchase is money owed for a quantity: without one there is
+    // nothing to owe. Goods whose count nobody took can only be consignment,
+    // where the supplier is paid out of what sells.
+    if (stockMode === 'open_lot' && ownership !== 'consignment') {
+      throw new Error('A delivery with no quantities must be consignment: an owned purchase is owed for what arrived, so it has to be counted.');
     }
   }
 
@@ -552,7 +559,7 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
     if ((!supplierId && !String(supplierName || '').trim()) || !businessDate || !String(locCode || '').trim() || !String(macCode || '').trim()) throw new Error('Supplier, business date, location, and machine are required to save a GRN draft.');
     if (!['receipt', 'correction'].includes(documentType)) throw new Error('Invalid GRN document type.');
     if (ownershipModel != null && !['owned', 'consignment'].includes(ownershipModel)) throw new Error('Choose owned purchase or consignment.');
-    if (stockMode != null && !['stock_receipt', 'purchase_record'].includes(stockMode)) throw new Error('A GRN is either a stock receipt or a purchase record.');
+    if (stockMode != null && !['stock_receipt', 'purchase_record', 'open_lot'].includes(stockMode)) throw new Error('A GRN is a stock receipt, a purchase record, or a delivery with no quantities.');
     const normalizedLines = normalizeDraftReceiptLines(lines);
     return database.withConnection(async (connection) => {
       await connection.beginTransaction();
@@ -757,13 +764,20 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
         const stockMode = receiptStockMode(receipt.stock_mode);
         assertStockModeAllowed(stockMode, ownership);
         // A purchase record writes the lot and what was received, and stops
-        // there: nothing to sell, and no movement in the stock ledger.
-        const tracksStock = stockMode !== 'purchase_record';
+        // there: nothing to sell, and no movement in the stock ledger. An open
+        // lot keeps no stock either, for want of a number to keep.
+        const tracksStock = stockMode === 'stock_receipt';
+        // Nobody counted what came, so the lot sells on its code alone until
+        // somebody closes it.
+        const quantityKnown = stockMode !== 'open_lot';
         const postingEventNo = receipt.document_type === 'correction' ? 2 : 1;
         for (const line of lines) {
-          const handlingQuantity = Number(line.handling_quantity ?? line.package_qty ?? 0);
+          // Nobody counted this load, so nothing is written down as received:
+          // a number typed and then left behind would be read later as a count
+          // somebody took. What it received is settled when it is finished.
+          const handlingQuantity = quantityKnown ? Number(line.handling_quantity ?? line.package_qty ?? 0) : 0;
           const expectedRatio = line.expected_base_per_handling == null ? null : Number(line.expected_base_per_handling);
-          let baseQuantity = line.received_base_quantity == null && line.received_kilos == null
+          let baseQuantity = !quantityKnown || (line.received_base_quantity == null && line.received_kilos == null)
             ? null
             : Number(line.received_base_quantity ?? line.received_kilos);
           if (baseQuantity == null && line.conversion_mode === 'fixed' && expectedRatio != null && handlingQuantity > 0) {
@@ -772,8 +786,10 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
           if (!line.product_id || !Number.isFinite(handlingQuantity) || handlingQuantity < 0 || (baseQuantity != null && (!Number.isFinite(baseQuantity) || baseQuantity < 0))) {
             throw new Error('Every GRN line needs valid handling and measured quantities.');
           }
-          if (line.dual_uom_enabled && !(baseQuantity > 0)) throw new Error(`A dual-UoM GRN line requires a positive ${line.base_uom || 'base quantity'}.`);
-          if (!line.dual_uom_enabled && !(handlingQuantity > 0)) throw new Error('A single-UoM GRN line requires a positive handling quantity.');
+          if (quantityKnown) {
+            if (line.dual_uom_enabled && !(baseQuantity > 0)) throw new Error(`A dual-UoM GRN line requires a positive ${line.base_uom || 'base quantity'}.`);
+            if (!line.dual_uom_enabled && !(handlingQuantity > 0)) throw new Error('A single-UoM GRN line requires a positive handling quantity.');
+          }
           const expectedBaseQuantity = line.expected_base_quantity == null
             ? (expectedRatio != null && handlingQuantity > 0 ? expectedRatio * handlingQuantity : null)
             : Number(line.expected_base_quantity);
@@ -785,17 +801,19 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
           const lotTag = await nextLotTag(connection, { locCode: receipt.loc_code, productId: line.product_id });
           // A lot of a purchase record is born empty: `active_lot_tag` is NULL
           // for an empty lot, so the counter can neither type it nor sell it.
+          // An open lot is empty too, and keeps its code all the same, because
+          // the generated column reads `quantity_known` before the balance.
           const remainingHandling = tracksStock ? handlingQuantity : 0;
           const remainingBase = baseQuantity == null ? null : (tracksStock ? baseQuantity : 0);
           const [lot] = await connection.execute(
             `INSERT INTO inventory_lots
                (goods_receipt_line_id, lot_code, lot_tag, loc_code, mac_code, txn_date, grn_no, line_no, supplier_id, product_id,
-                ownership_model, stock_tracked, received_quantity, remaining_quantity, received_handling_quantity, remaining_handling_quantity,
+                ownership_model, stock_tracked, quantity_known, received_quantity, remaining_quantity, received_handling_quantity, remaining_handling_quantity,
                 received_kilos, remaining_kilos, received_base_quantity, remaining_base_quantity,
                 handling_uom_snapshot, base_uom_snapshot, conversion_mode, expected_base_per_handling, actual_base_per_handling, ratio_tolerance_percent, terms_snapshot)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON))`,
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON))`,
             [line.id, lotCode, lotTag, receipt.loc_code, receipt.mac_code, receipt.business_date, receipt.grn_no, line.line_no,
-              receipt.supplier_id, line.product_id, ownership, tracksStock ? 1 : 0,
+              receipt.supplier_id, line.product_id, ownership, tracksStock ? 1 : 0, quantityKnown ? 1 : 0,
               handlingQuantity, remainingHandling, handlingQuantity, remainingHandling,
               baseQuantity, remainingBase, baseQuantity, remainingBase,
               line.handling_uom || 'qty', line.base_uom || null, line.conversion_mode || 'variable', expectedRatio, actualRatio, Number(line.ratio_tolerance_percent || 20),
@@ -1469,6 +1487,79 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
     return `${prefix}${Date.now() % 10000}`;
   }
 
+  /**
+   * Finishes a lot that was never counted.
+   *
+   * What it actually sold becomes what it received, so from here it reads as an
+   * ordinary lot that sold out: lot costing, the supplier's statement and the
+   * books all work on it without knowing it was ever open. Its code goes free
+   * for the next lot at the same moment, which is what finishing means.
+   *
+   * Nothing is written to the stock ledger, because an open lot never kept
+   * stock -- there was no number to add and none to take away.
+   */
+  async function closeOpenLot({ lotId, reason, locCode, userId = null }) {
+    const why = String(reason || '').trim();
+    if (!lotId) throw new Error('Choose the lot to finish.');
+    return database.withConnection(async (connection) => {
+      await connection.beginTransaction();
+      try {
+        const [lots] = await connection.execute(
+          `SELECT l.*, p.name AS product_name, p.pricing_basis, p.requires_kilos
+             FROM inventory_lots l JOIN products p ON p.id = l.product_id
+            WHERE l.id = ? FOR UPDATE`, [Number(lotId)]
+        );
+        const lot = lots[0];
+        if (!lot) throw new Error('That stock lot no longer exists.');
+        if (String(lot.loc_code) !== String(locCode || '').trim()) throw new Error('That stock lot belongs to another location.');
+        // Closing one makes its quantity known, so "already finished" has to be
+        // asked first or a second attempt would be told it was always counted.
+        if (lot.closed_at) throw new Error(`${lot.lot_tag || lot.lot_code} is already finished.`);
+        if (Number(lot.quantity_known) !== 0) throw new Error('That lot was counted when it arrived, so it finishes by selling out.');
+
+        const [[sold]] = await connection.execute(
+          `SELECT COALESCE(SUM(CASE WHEN document_type = 'refund' THEN -handling_quantity ELSE handling_quantity END), 0) AS handling,
+                  COALESCE(SUM(CASE WHEN document_type = 'refund' THEN -COALESCE(base_quantity, 0) ELSE COALESCE(base_quantity, 0) END), 0) AS base
+             FROM lot_sale_allocations WHERE inventory_lot_id = ?`, [Number(lotId)]
+        );
+        const soldHandling = Math.max(0, Math.round(Number(sold.handling || 0) * 1000) / 1000);
+        const soldBase = Math.max(0, Math.round(Number(sold.base || 0) * 1000) / 1000);
+        // A lot measured in two ways keeps both; one measured in one keeps one.
+        const keepsBase = lot.base_uom_snapshot != null || soldBase > 0;
+
+        await connection.execute(
+          `UPDATE inventory_lots
+              SET quantity_known = 1,
+                  received_quantity = ?, received_handling_quantity = ?,
+                  remaining_quantity = 0, remaining_handling_quantity = 0,
+                  received_kilos = ?, received_base_quantity = ?,
+                  remaining_kilos = ?, remaining_base_quantity = ?,
+                  closed_at = NOW(), closed_by = ?, closed_reason = ?
+            WHERE id = ?`,
+          [soldHandling, soldHandling,
+            keepsBase ? soldBase : null, keepsBase ? soldBase : null,
+            keepsBase ? 0 : null, keepsBase ? 0 : null,
+            userId || null, why.slice(0, 255) || null, Number(lotId)]
+        );
+        await connection.execute(
+          `INSERT INTO inventory_measurements
+             (inventory_lot_id, loc_code, mac_code, txn_date, document_type, document_no, line_no, event_no,
+              measurement_type, package_qty, kilos, reason, recorded_by)
+           VALUES (?, ?, ?, ?, 'grn', ?, ?, 2, 'declared', ?, ?, ?, ?)`,
+          [Number(lotId), lot.loc_code, lot.mac_code, lot.txn_date, lot.grn_no, lot.line_no,
+            soldHandling || null, keepsBase ? soldBase : null,
+            `Lot finished: sold ${soldHandling}${keepsBase ? ` / ${soldBase}` : ''}${why ? ` (${why})` : ''}`.slice(0, 255),
+            userId || null]
+        );
+        await connection.commit();
+        return {
+          lotId: Number(lotId), lotTag: lot.lot_tag, lotCode: lot.lot_code,
+          productName: lot.product_name, soldHandling, soldBase: keepsBase ? soldBase : null, closed: true
+        };
+      } catch (error) { await connection.rollback(); throw error; }
+    });
+  }
+
   /** What a tag may look like, so it stays typable at the counter. */
   function normalizeLotTag(value) {
     const tag = String(value || '').trim().toUpperCase().replace(/\s+/g, '');
@@ -1486,13 +1577,16 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
     return database.withConnection(async (connection) => {
       const normalized = normalizeLotTag(tag);
       const [lots] = await connection.execute(
-        `SELECT id, loc_code, lot_code, remaining_handling_quantity, remaining_base_quantity
+        `SELECT id, loc_code, lot_code, remaining_handling_quantity, remaining_base_quantity,
+                quantity_known, closed_at
          FROM inventory_lots WHERE id = ? LIMIT 1`, [Number(lotId)]
       );
       const lot = lots[0];
       if (!lot) throw new Error('That stock lot no longer exists.');
       if (String(lot.loc_code) !== String(locCode || '').trim()) throw new Error('That stock lot belongs to another location.');
-      const stillHoldsStock = Number(lot.remaining_handling_quantity || 0) > 0.0005
+      const openAndSelling = Number(lot.quantity_known) === 0 && lot.closed_at == null;
+      const stillHoldsStock = openAndSelling
+        || Number(lot.remaining_handling_quantity || 0) > 0.0005
         || Number(lot.remaining_base_quantity || 0) > 0.0005;
       if (!stillHoldsStock) throw new Error('That lot is finished, so its code is free for another lot and cannot be changed.');
       const [clash] = await connection.execute(
@@ -1507,7 +1601,42 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
 
   async function listInventoryLots(productId = null, locCode = null) {
     return database.withConnection(async (connection) => {
-      const [rows] = await connection.execute(`SELECT l.*, p.sku, p.name AS product_name, s.name AS supplier_name FROM inventory_lots l JOIN products p ON p.id = l.product_id JOIN suppliers s ON s.id = l.supplier_id WHERE (? IS NULL OR l.product_id = ?) AND (? IS NULL OR l.loc_code = ?) AND (l.remaining_handling_quantity > 0 OR COALESCE(l.remaining_base_quantity, 0) > 0) ORDER BY l.id ASC`, [productId, productId, locCode, locCode]);
+      // A lot nobody counted has no balance to show, so what it has sold so far
+      // stands in its place on the lot codes page.
+      const [rows] = await connection.execute(
+        `SELECT l.*, p.sku, p.name AS product_name, s.name AS supplier_name,
+                COALESCE(a.sold_handling, 0) AS sold_handling, a.sold_base,
+                COALESCE(held.handling, 0) AS held_handling, held.base AS held_base
+           FROM inventory_lots l
+           JOIN products p ON p.id = l.product_id
+           JOIN suppliers s ON s.id = l.supplier_id
+           LEFT JOIN (
+             SELECT inventory_lot_id,
+                    SUM(CASE WHEN document_type = 'refund' THEN -handling_quantity ELSE handling_quantity END) AS sold_handling,
+                    SUM(CASE WHEN document_type = 'refund' THEN -base_quantity ELSE base_quantity END) AS sold_base
+               FROM lot_sale_allocations GROUP BY inventory_lot_id
+           ) a ON a.inventory_lot_id = l.id
+           LEFT JOIN (
+             -- Quantities on bills being written that name this lot. A line
+             -- lives in invoice_items from the moment it is typed and carries
+             -- no invoice until the bill is taken, so a null invoice is what
+             -- "still on the counter" means. A held line naming no lot is left
+             -- out: it goes to the oldest stock when the bill is finished, so
+             -- it is not booked against anything yet.
+             SELECT ii.allocation_priority_lot_id AS lot_id,
+                    SUM(COALESCE(ii.handling_quantity, ii.quantity, 0)) AS handling,
+                    SUM(COALESCE(ii.base_quantity, ii.kilos)) AS base
+               FROM invoice_items ii
+              WHERE ii.invoice_id IS NULL AND ii.inv_stat = 'active'
+                AND ii.allocation_priority_lot_id IS NOT NULL
+              GROUP BY ii.allocation_priority_lot_id
+           ) held ON held.lot_id = l.id
+          WHERE (? IS NULL OR l.product_id = ?) AND (? IS NULL OR l.loc_code = ?)
+            AND ((l.quantity_known = 0 AND l.closed_at IS NULL)
+                 OR l.remaining_handling_quantity > 0 OR COALESCE(l.remaining_base_quantity, 0) > 0)
+          ORDER BY l.id ASC`,
+        [productId, productId, locCode, locCode]
+      );
       return rows;
     });
   }
@@ -1951,6 +2080,7 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
     ,addSupplierCharge
     ,listInventoryLots
     ,setLotTag
+    ,closeOpenLot
     ,listInventorySummary
     ,finalizeStockCount
     ,listAllocationExceptions

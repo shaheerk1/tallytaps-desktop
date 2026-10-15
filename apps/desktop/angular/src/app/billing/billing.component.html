@@ -82,7 +82,8 @@
                 <strong>{{ selectedLot.lot_tag || selectedLot.supplier_code || selectedLot.supplier_name }} · {{ selectedLot.grn_number }}/L{{ selectedLot.line_no }}</strong>
                 <em>{{ selectedLot.txn_date | date:'dd MMM yyyy' }}</em>
               </span>
-              <span class="lot-trigger-stock">Rem {{ selectedLot.remaining_handling_quantity | number:'1.0-3' }}/{{ selectedLot.received_handling_quantity | number:'1.0-3' }} {{ selectedLot.handling_uom_snapshot }}<ng-container *ngIf="selectedLot.remaining_base_quantity != null"> · {{ selectedLot.remaining_base_quantity | number:'1.0-3' }}/{{ selectedLot.received_base_quantity | number:'1.0-3' }} {{ selectedLot.base_uom_snapshot }}</ng-container></span>
+              <span class="lot-trigger-stock" *ngIf="!lotIsOpen(selectedLot)">Rem {{ selectedLot.remaining_handling_quantity | number:'1.0-3' }}/{{ selectedLot.received_handling_quantity | number:'1.0-3' }} {{ selectedLot.handling_uom_snapshot }}<ng-container *ngIf="selectedLot.remaining_base_quantity != null"> · {{ selectedLot.remaining_base_quantity | number:'1.0-3' }}/{{ selectedLot.received_base_quantity | number:'1.0-3' }} {{ selectedLot.base_uom_snapshot }}</ng-container><small class="lot-trigger-held" *ngIf="lotHasHeld(selectedLot)" title="On bills being written that name this lot. Not taken from it until those bills are finished.">{{ lotHeldText(selectedLot) }} on hold</small></span>
+              <span class="lot-trigger-stock open" *ngIf="lotIsOpen(selectedLot)">Billed {{ lotBilledText(selectedLot) }} · not counted<small class="lot-trigger-held" *ngIf="lotHasHeld(selectedLot)" title="On bills being written that name this lot. Not taken from it until those bills are finished.">{{ lotHeldText(selectedLot) }} on hold</small></span>
               <span class="lot-trigger-tag">{{ selectedLotSource === 'tag' ? 'Typed code' : selectedLotSource === 'manual' ? 'Chosen' : selectedLotSource === 'remembered' ? 'Remembered' : 'FIFO #1' }}</span>
               <span class="lot-trigger-chevron">▾</span>
             </ng-container>
@@ -97,9 +98,19 @@
             <button type="button" tabindex="-1" class="lot-option" *ngFor="let lot of orderedLotCandidates"
               [class.selected]="selectedLot?.id === lot.id" (click)="chooseLotCandidate(lot, $event)">
               <span class="lot-option-primary"><strong>{{ lot.lot_tag || lot.supplier_code || lot.supplier_name }}</strong><b>{{ lot.grn_number }} · Line {{ lot.line_no }}</b><em>{{ lot.txn_date | date:'dd MMM yyyy' }}</em></span>
-              <span class="lot-option-stock"><span>Unit Count <b>{{ lot.remaining_handling_quantity | number:'1.0-3' }}</b> / {{ lot.received_handling_quantity | number:'1.0-3' }} {{ lot.handling_uom_snapshot }}</span><span *ngIf="lot.remaining_base_quantity != null">Measured Qty <b>{{ lot.remaining_base_quantity | number:'1.0-3' }}</b> / {{ lot.received_base_quantity | number:'1.0-3' }} {{ lot.base_uom_snapshot }}</span></span>
+              <span class="lot-option-stock" [class.open]="lotIsOpen(lot)">
+                <ng-container *ngIf="!lotIsOpen(lot)">
+                  <span>Unit Count <b>{{ lot.remaining_handling_quantity | number:'1.0-3' }}</b> / {{ lot.received_handling_quantity | number:'1.0-3' }} {{ lot.handling_uom_snapshot }}</span>
+                  <span *ngIf="lot.remaining_base_quantity != null">Measured Qty <b>{{ lot.remaining_base_quantity | number:'1.0-3' }}</b> / {{ lot.received_base_quantity | number:'1.0-3' }} {{ lot.base_uom_snapshot }}</span>
+                </ng-container>
+                <ng-container *ngIf="lotIsOpen(lot)">
+                  <span>Billed so far <b>{{ lotBilledText(lot) }}</b></span>
+                  <span>Not counted on arrival</span>
+                </ng-container>
+                <span class="lot-option-held" *ngIf="lotHasHeld(lot)" title="On bills being written that name this lot. Not taken from it until those bills are finished.">{{ lotHeldText(lot) }} on hold</span>
+              </span>
               <span class="lot-option-meta"><small>{{ lot.supplier_code || lot.supplier_name }}</small><small>{{ lot.lot_code }}</small><small *ngIf="lot.actual_base_per_handling">{{ lot.actual_base_per_handling | number:'1.0-3' }} {{ lot.base_uom_snapshot }}/{{ lot.handling_uom_snapshot }}</small><small *ngIf="lot.external_reference">Ref {{ lot.external_reference }}</small></span>
-              <span class="lot-option-tags"><i class="lot-tag primary">{{ lotPriorityLabel(lot) }}</i><i class="lot-tag" *ngIf="lotMatchesSupplyCode(lot)">Typed code</i><i class="lot-tag warning" *ngIf="!lotCoversCurrentLine(lot)">Partial coverage</i><i class="lot-tag" *ngIf="lotCoversCurrentLine(lot)">Full coverage</i></span>
+              <span class="lot-option-tags"><i class="lot-tag primary">{{ lotPriorityLabel(lot) }}</i><i class="lot-tag" *ngIf="lotMatchesSupplyCode(lot)">Typed code</i><i class="lot-tag warning" *ngIf="!lotCoversCurrentLine(lot)">Partial coverage</i><i class="lot-tag" *ngIf="lotCoversCurrentLine(lot) && !lotIsOpen(lot)">Full coverage</i><i class="lot-tag" *ngIf="lotIsOpen(lot)">Open lot</i></span>
             </button>
             <button type="button" tabindex="-1" class="lot-auto-action" *ngIf="selectedLotSource === 'manual' || selectedLotSource === 'remembered'" (click)="useAutomaticLotOrder($event)">Return this product to automatic FIFO</button>
           </div>

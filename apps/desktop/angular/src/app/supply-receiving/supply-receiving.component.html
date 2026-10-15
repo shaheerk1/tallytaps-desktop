@@ -23,7 +23,13 @@
             <input type="radio" name="grnStockMode" value="purchase_record" [(ngModel)]="receipt.stockMode" [disabled]="receipt.ownershipModel === 'consignment' || receipt.documentType === 'correction'">
             <span><strong>Purchase record</strong><small>Only the purchase, its prices and what is owed. No stock is created and nothing can be sold from it.</small></span>
           </label>
-          <small class="grn-mode-note" *ngIf="receipt.ownershipModel === 'consignment'">A consignment delivery keeps stock: the supplier is paid from what sells out of their lot.</small>
+          <label class="grn-mode-choice" [class.chosen]="receipt.stockMode === 'open_lot'">
+            <input type="radio" name="grnStockMode" value="open_lot" [(ngModel)]="receipt.stockMode" [disabled]="receipt.ownershipModel !== 'consignment' || receipt.documentType === 'correction'">
+            <span><strong>No quantities</strong><small>Nobody counted what came. The counter sells on this lot's code until somebody finishes the lot.</small></span>
+          </label>
+          <small class="grn-mode-note" *ngIf="receipt.ownershipModel === 'consignment'">A consignment supplier is paid from what sells out of their lot, so a consignment delivery cannot be a purchase record.</small>
+          <small class="grn-mode-note" *ngIf="receipt.ownershipModel !== 'consignment'">An owned purchase is owed for what arrived, so it has to be counted.</small>
+          <small class="grn-mode-note" *ngIf="grnQuantitiesUnknown">Enter the items only. Costs and quantities are left out, and the lot keeps its code at the counter until it is finished from Stock control → Lot codes.</small>
           <small class="grn-mode-note" *ngIf="receipt.documentType === 'correction'">A correction keeps the kind of the GRN it corrects.</small>
         </div></div>
       <div class="form-section">
@@ -63,7 +69,7 @@
             <label class="grn-field grn-field-count">
               <span class="grn-label">Unit count</span>
               <div class="grn-input-unit">
-                <input type="number" min="0" step="0.001" data-flow [disabled]="grnReviewMode || !productForLine(line)" [(ngModel)]="line.packageQty" placeholder="0">
+                <input type="number" min="0" step="0.001" data-flow [disabled]="grnReviewMode || grnQuantitiesUnknown || !productForLine(line)" [(ngModel)]="line.packageQty" [placeholder]="grnQuantitiesUnknown ? 'not counted' : '0'">
                 <em>{{ productForLine(line)?.handling_uom || 'unit' }}</em>
               </div>
             </label>
@@ -72,14 +78,14 @@
               <span class="grn-label">Measured</span>
               <div class="grn-input-unit">
                 <input type="number" min="0" step="0.001" data-flow
-                  [disabled]="grnReviewMode || !productForLine(line)?.dual_uom_enabled || line.conversionMode === 'fixed'"
+                  [disabled]="grnReviewMode || grnQuantitiesUnknown || !productForLine(line)?.dual_uom_enabled || line.conversionMode === 'fixed'"
                   [(ngModel)]="line.receivedKilos"
-                  [placeholder]="!productForLine(line)?.dual_uom_enabled ? 'not kept' : (line.conversionMode === 'fixed' ? 'worked out' : '0')">
+                  [placeholder]="grnQuantitiesUnknown ? 'not counted' : (!productForLine(line)?.dual_uom_enabled ? 'not kept' : (line.conversionMode === 'fixed' ? 'worked out' : '0'))">
                 <em>{{ productForLine(line)?.base_uom || '—' }}</em>
               </div>
             </label>
 
-            <div class="grn-field grn-field-ratio" *ngIf="productForLine(line)?.dual_uom_enabled">
+            <div class="grn-field grn-field-ratio" *ngIf="productForLine(line)?.dual_uom_enabled && !grnQuantitiesUnknown">
               <span class="grn-label">How the measure is taken</span>
               <div class="grn-ratio-row">
                 <select data-flow [(ngModel)]="line.conversionMode" (ngModelChange)="onConversionModeChanged(line)" [disabled]="grnReviewMode">
@@ -106,7 +112,7 @@
             <label class="grn-field grn-field-cost">
               <span class="grn-label">Cost</span>
               <div class="grn-input-unit">
-                <input type="number" min="0" step="0.01" data-flow [disabled]="grnReviewMode || !productForLine(line)" [(ngModel)]="line.unitCost" placeholder="0.00">
+                <input type="number" min="0" step="0.01" data-flow [disabled]="grnReviewMode || grnQuantitiesUnknown || !productForLine(line)" [(ngModel)]="line.unitCost" [placeholder]="grnQuantitiesUnknown ? 'from sales' : '0.00'">
                 <em>per {{ costUnitFor(line) }}</em>
               </div>
             </label>
@@ -167,8 +173,15 @@
         </span>
         <span><strong>{{ lot.sku }}</strong><small>{{ lot.product_name }}</small></span>
         <span>{{ lot.supplier_name }}</span>
-        <span>{{ lot.remaining_handling_quantity | number:'1.0-3' }} {{ lot.handling_uom_snapshot }}<ng-container *ngIf="lot.remaining_base_quantity != null"> · {{ lot.remaining_base_quantity | number:'1.0-3' }} {{ lot.base_uom_snapshot }}</ng-container></span>
-        <span class="lot-code-record">{{ lot.lot_code }}</span>
+        <span *ngIf="!lotIsOpen(lot)">{{ lot.remaining_handling_quantity | number:'1.0-3' }} {{ lot.handling_uom_snapshot }}<ng-container *ngIf="lot.remaining_base_quantity != null"> · {{ lot.remaining_base_quantity | number:'1.0-3' }} {{ lot.base_uom_snapshot }}</ng-container></span>
+        <span *ngIf="lotIsOpen(lot)" class="lot-open"><strong>{{ lot.sold_handling | number:'1.0-3' }} {{ lot.handling_uom_snapshot }} sold<ng-container *ngIf="lot.sold_base != null"> · {{ lot.sold_base | number:'1.0-3' }} {{ lot.base_uom_snapshot }}</ng-container></strong><small>Not counted — sells until finished</small></span>
+        <span class="lot-code-record">{{ lot.lot_code }}
+          <small class="lot-held" *ngIf="lot.held_handling > 0 || lot.held_base > 0"
+            title="On bills being written that name this lot. Not taken from it until those bills are finished.">
+            {{ lot.held_handling | number:'1.0-3' }} {{ lot.handling_uom_snapshot }}<ng-container *ngIf="lot.held_base != null"> · {{ lot.held_base | number:'1.0-3' }} {{ lot.base_uom_snapshot }}</ng-container> on hold
+          </small>
+          <button type="button" class="button-quiet lot-finish" *ngIf="lotIsOpen(lot) && canReceive" (click)="closeOpenLot(lot)">Finish lot</button>
+        </span>
       </div>
       <div class="empty-state" *ngIf="!lots.length">No lot is holding stock at this location.</div>
     </section>

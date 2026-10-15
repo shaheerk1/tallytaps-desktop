@@ -49,9 +49,12 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
        JOIN goods_receipts g ON g.id = gl.goods_receipt_id
        WHERE l.id = ? AND l.product_id = ? AND l.loc_code = ? AND l.txn_date <= ?
          AND g.status = 'finalized'
-         AND (CASE WHEN p.pricing_basis = 'kilos' OR p.requires_kilos = 1
+         AND (
+           (l.quantity_known = 0 AND l.closed_at IS NULL)
+           OR (l.quantity_known = 1 AND CASE WHEN p.pricing_basis = 'kilos' OR p.requires_kilos = 1
                    THEN COALESCE(l.remaining_base_quantity, 0) > 0
                    ELSE l.remaining_handling_quantity > 0 END)
+         )
        LIMIT 1`,
       [normalizedLotId, Number(productId), String(locCode || '').trim(), txnDate]
     );
@@ -78,6 +81,11 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
                 l.received_base_quantity, l.remaining_base_quantity,
                 l.handling_uom_snapshot, l.base_uom_snapshot, l.conversion_mode,
                 l.expected_base_per_handling, l.actual_base_per_handling, l.ownership_model,
+                l.quantity_known,
+                -- A lot nobody counted has no balance to show, so what it has
+                -- been billed for stands in its place.
+                COALESCE(sold.handling, 0) AS sold_handling, sold.base AS sold_base,
+                COALESCE(held.handling, 0) AS held_handling, held.base AS held_base,
                 s.id AS supplier_id, s.supplier_code, s.name AS supplier_name,
                 g.id AS goods_receipt_id, g.grn_number, g.external_reference, g.vehicle_no
          FROM inventory_lots l
@@ -85,10 +93,35 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
          JOIN suppliers s ON s.id = l.supplier_id
          JOIN goods_receipt_lines gl ON gl.id = l.goods_receipt_line_id
          JOIN goods_receipts g ON g.id = gl.goods_receipt_id
+         LEFT JOIN (
+           SELECT inventory_lot_id,
+                  SUM(CASE WHEN document_type = 'refund' THEN -handling_quantity ELSE handling_quantity END) AS handling,
+                  SUM(CASE WHEN document_type = 'refund' THEN -base_quantity ELSE base_quantity END) AS base
+             FROM lot_sale_allocations GROUP BY inventory_lot_id
+         ) sold ON sold.inventory_lot_id = l.id
+           LEFT JOIN (
+             -- Quantities on bills being written that name this lot. A line
+             -- lives in invoice_items from the moment it is typed and carries
+             -- no invoice until the bill is taken, so a null invoice is what
+             -- "still on the counter" means. A held line naming no lot is left
+             -- out: it goes to the oldest stock when the bill is finished, so
+             -- it is not booked against anything yet.
+             SELECT ii.allocation_priority_lot_id AS lot_id,
+                    SUM(COALESCE(ii.handling_quantity, ii.quantity, 0)) AS handling,
+                    SUM(COALESCE(ii.base_quantity, ii.kilos)) AS base
+               FROM invoice_items ii
+              WHERE ii.invoice_id IS NULL AND ii.inv_stat = 'active'
+                AND ii.allocation_priority_lot_id IS NOT NULL
+              GROUP BY ii.allocation_priority_lot_id
+           ) held ON held.lot_id = l.id
          WHERE l.product_id = ? AND l.loc_code = ? AND l.txn_date <= ? AND g.status = 'finalized'
-           AND (CASE WHEN p.pricing_basis = 'kilos' OR p.requires_kilos = 1
+           AND (
+             -- A lot with no count of its own is available until it is closed.
+             (l.quantity_known = 0 AND l.closed_at IS NULL)
+             OR (l.quantity_known = 1 AND CASE WHEN p.pricing_basis = 'kilos' OR p.requires_kilos = 1
                      THEN COALESCE(l.remaining_base_quantity, 0) > 0
                      ELSE l.remaining_handling_quantity > 0 END)
+           )
          ORDER BY CASE WHEN l.id = ? THEN 0 ELSE 1 END,
                   l.txn_date ASC, l.grn_no ASC, l.line_no ASC, l.id ASC
          LIMIT ${rowLimit}`,
@@ -281,21 +314,35 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
     const originalHandling = remainingHandling;
     const controllingOriginal = byBase ? originalBase : originalHandling;
     if (!Number.isFinite(controllingOriginal) || controllingOriginal <= 0) return;
+    // A lot with no count of its own is only ever reached by being named. It
+    // never empties, so left in the ordinary queue it would swallow every sale
+    // of this item ahead of the stock that can be counted.
+    const namedLotId = Number(item.allocation_priority_lot_id || 0);
     const [lots] = await connection.execute(
       `SELECT l.* FROM inventory_lots l
        JOIN goods_receipt_lines gl ON gl.id = l.goods_receipt_line_id
        JOIN goods_receipts g ON g.id = gl.goods_receipt_id
        WHERE l.product_id = ? AND l.loc_code = ? AND l.txn_date <= ? AND g.status = 'finalized'
-         AND l.${byBase ? 'remaining_base_quantity' : 'remaining_handling_quantity'} > 0
+         AND (
+           (l.quantity_known = 1 AND l.${byBase ? 'remaining_base_quantity' : 'remaining_handling_quantity'} > 0)
+           OR (l.quantity_known = 0 AND l.closed_at IS NULL AND l.id = ?)
+         )
        ORDER BY CASE WHEN l.id = ? THEN 0 ELSE 1 END,
                 l.txn_date ASC, l.grn_no ASC, l.line_no ASC, l.id ASC FOR UPDATE`,
-      [item.product_id, item.loc_code, item.txn_date, Number(item.allocation_priority_lot_id || 0)]
+      [item.product_id, item.loc_code, item.txn_date, namedLotId, namedLotId]
     );
     let allocationNo = 0;
     for (const lot of lots) {
       if ((byBase ? remainingBase : remainingHandling) <= 0.0005) break;
-      const availableHandling = Math.max(0, Number(lot.remaining_handling_quantity || 0));
-      const availableBase = Math.max(0, Number(lot.remaining_base_quantity || 0));
+      // An open lot holds whatever is asked of it: there is no balance to run
+      // out, which is the whole point of one.
+      const open = Number(lot.quantity_known) === 0;
+      const availableHandling = open
+        ? Math.max(0, remainingHandling)
+        : Math.max(0, Number(lot.remaining_handling_quantity || 0));
+      const availableBase = open
+        ? Math.max(0, remainingBase || 0)
+        : Math.max(0, Number(lot.remaining_base_quantity || 0));
       let quantity = 0;
       let base = null;
       if (byBase) {
@@ -332,7 +379,11 @@ function createBillingRepository({ database, businessDayRepository, documentSequ
         [lot.id, item.loc_code, item.mac_code, item.txn_date, item.receipt_no, item.seq_no, allocationNo,
           item.id, quantity, quantity, base, base, saleValue]
       );
-      if (byBase) {
+      // An open lot has no balance to take from; what it sold is read from its
+      // allocations, and written down as what it received when it is closed.
+      if (open) {
+        // Nothing to run down.
+      } else if (byBase) {
         await connection.execute(
           `UPDATE inventory_lots
            SET remaining_kilos = remaining_kilos - ?,

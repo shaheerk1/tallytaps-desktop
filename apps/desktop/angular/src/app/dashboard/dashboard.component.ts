@@ -18,6 +18,13 @@ type LotRow = {
   receivedBase: number | null;
   handlingUom: string;
   baseUom: string;
+  /** A lot nobody counted on arrival: it has no balance, only what it has sold. */
+  isOpen: boolean;
+  soldHandling: number;
+  soldBase: number | null;
+  /** Quantities on bills being written that name this lot, not yet taken. */
+  heldHandling: number;
+  heldBase: number | null;
 };
 
 /** Every lot of one item, with what is left of it in total. */
@@ -134,7 +141,12 @@ export class DashboardComponent implements OnInit {
         grnNo: row.grn_no == null ? null : Number(row.grn_no),
         remainingHandling, receivedHandling, remainingBase, receivedBase,
         handlingUom: String(row.handling_uom_snapshot || 'qty'),
-        baseUom: String(row.base_uom_snapshot || '')
+        baseUom: String(row.base_uom_snapshot || ''),
+        isOpen: Number(row.quantity_known) === 0 && !row.closed_at,
+        soldHandling: Number(row.sold_handling || 0),
+        soldBase: row.sold_base == null ? null : Number(row.sold_base),
+        heldHandling: Number(row.held_handling || 0),
+        heldBase: row.held_base == null ? null : Number(row.held_base)
       };
       const group = groups.get(key) || {
         key, sku: String(row.sku || ''), name: String(row.product_name || ''),

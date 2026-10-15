@@ -1204,7 +1204,42 @@ export class BillingComponent implements OnInit, OnDestroy {
     return [this.selectedLot, ...this.lotCandidates.filter((lot) => lot.id !== this.selectedLot?.id)];
   }
 
+  /** A lot nobody counted: it has no balance, only what it has been billed for. */
+  lotIsOpen(lot: InventoryLotCandidate): boolean {
+    return Number((lot as { quantity_known?: number }).quantity_known) === 0;
+  }
+
+  /** Quantities on bills being written that name this lot, not yet taken from it. */
+  lotHeldText(lot: InventoryLotCandidate): string {
+    const row = lot as { held_handling?: number; held_base?: number | null };
+    const parts = [`${this.measureText(row.held_handling)} ${lot.handling_uom_snapshot || ''}`.trim()];
+    if (row.held_base != null) parts.push(`${this.measureText(row.held_base)} ${lot.base_uom_snapshot || ''}`.trim());
+    return parts.join(' · ');
+  }
+
+  lotHasHeld(lot: InventoryLotCandidate): boolean {
+    const row = lot as { held_handling?: number; held_base?: number | null };
+    return Number(row.held_handling || 0) > 0 || Number(row.held_base || 0) > 0;
+  }
+
+  /** What an open lot has gone out on so far, in the measures it is sold by. */
+  lotBilledText(lot: InventoryLotCandidate): string {
+    const row = lot as { sold_handling?: number; sold_base?: number | null };
+    const parts = [`${this.measureText(row.sold_handling)} ${lot.handling_uom_snapshot || ''}`.trim()];
+    if (row.sold_base != null) parts.push(`${this.measureText(row.sold_base)} ${lot.base_uom_snapshot || ''}`.trim());
+    return parts.join(' · ');
+  }
+
+  private measureText(value: unknown): string {
+    const amount = Number(value || 0);
+    if (!Number.isFinite(amount)) return '0';
+    return Number.isInteger(amount) ? String(amount) : String(Number(amount.toFixed(3)));
+  }
+
   lotCoversCurrentLine(lot: InventoryLotCandidate): boolean {
+    // A lot with no count of its own always covers the line: there is no
+    // balance for the line to exceed, which is what such a lot is for.
+    if (this.lotIsOpen(lot)) return true;
     const handlingCovered = Number(this.qty || 0) <= 0
       || Number(lot.remaining_handling_quantity || 0) + 0.0005 >= Number(this.qty || 0);
     const measuredCovered = !this.selectedProductRequiresKilos

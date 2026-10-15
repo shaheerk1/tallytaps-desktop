@@ -927,3 +927,10 @@
 .pm-new-customer-grid input { min-height: 32px; }
 .pm-new-customer-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
 .pm-new-customer-actions .primary { border: 1px solid var(--ui-primary); background: var(--ui-primary); color: #fff; font-weight: 700; }
+
+/* The same, in the lot picker on a bill line. */
+.lot-option-stock.open b { color:#8a5a12; }
+
+.lot-option-held { display:block; color:#2f6bff; font-size:10.5px; font-weight:800; }
+.lot-trigger-stock.open { color:#8a5a12; }
+.lot-trigger-held { display:block; color:#2f6bff; font-size:9.5px; font-weight:800; }

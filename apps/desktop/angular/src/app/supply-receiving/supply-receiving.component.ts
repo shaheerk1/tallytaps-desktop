@@ -68,8 +68,28 @@ export class SupplyReceivingComponent implements OnInit, OnDestroy {
   selectPanel(panel: 'receive' | 'pattiyal' | 'inventory'): void { this.activePanel = panel; this.panelInfo = ''; this.panelError = ''; }
   private reportSuccess(message: string): void { this.info = message; this.error = ''; this.panelInfo = message; this.panelError = ''; }
   private reportError(message: string): void { this.error = message; this.info = ''; this.panelError = message; this.panelInfo = ''; }
-  get canFinalizeGrn(): boolean { return this.hasSupplier && this.receipt.lines.length > 0 && this.receipt.lines.every((line: any) => { const product = this.productForLine(line); if (!product) return false; const handling = Number(line.packageQty || 0); if (!product.dual_uom_enabled) return handling > 0; if (line.conversionMode === 'fixed') return handling > 0 && Number(line.expectedBasePerHandling) > 0; return Number(line.receivedKilos) > 0; }); }
-  get grnReadiness(): string { if (!this.hasSupplier) return 'Choose or type the supplier first.'; if (!this.receipt.lines.some((line: any) => line.productId)) return 'Add a product to the GRN line.'; if (!this.canFinalizeGrn) return 'Each line needs its required handling and measured quantities.';
+  get canFinalizeGrn(): boolean {
+    if (!this.hasSupplier || !this.receipt.lines.length) return false;
+    // A delivery nobody counted asks for the items and nothing else: requiring
+    // a quantity here is the very thing it exists to avoid.
+    if (this.grnQuantitiesUnknown) return this.receipt.lines.every((line: any) => Boolean(this.productForLine(line)));
+    return this.receipt.lines.every((line: any) => {
+      const product = this.productForLine(line);
+      if (!product) return false;
+      const handling = Number(line.packageQty || 0);
+      if (!product.dual_uom_enabled) return handling > 0;
+      if (line.conversionMode === 'fixed') return handling > 0 && Number(line.expectedBasePerHandling) > 0;
+      return Number(line.receivedKilos) > 0;
+    });
+  }
+  get grnReadiness(): string { if (!this.hasSupplier) return 'Choose or type the supplier first.'; if (!this.receipt.lines.some((line: any) => line.productId)) return 'Add a product to the GRN line.'; if (!this.canFinalizeGrn) {
+      return this.grnQuantitiesUnknown
+        ? 'Every line needs its item chosen.'
+        : 'Each line needs its required handling and measured quantities.';
+    }
+    if (this.grnQuantitiesUnknown) {
+      return 'Ready to finalize. No quantities are recorded, and each lot sells on its code until it is finished.';
+    }
     return this.receipt.stockMode === 'purchase_record'
       ? 'Ready to finalize. This records the purchase and what is owed, and creates no stock.'
       : 'Ready to finalize. This will create immutable lot and stock records.'; }
@@ -80,10 +100,35 @@ export class SupplyReceivingComponent implements OnInit, OnDestroy {
 
   /** What kind of document this GRN is, said the way the shop says it. */
   stockModeLabel(value: unknown): string {
-    return value === 'purchase_record' ? 'Purchase record' : 'Stock receipt';
+    if (value === 'purchase_record') return 'Purchase record';
+    if (value === 'open_lot') return 'No quantities';
+    return 'Stock receipt';
   }
 
   isPurchaseRecord(value: unknown): boolean { return value === 'purchase_record'; }
+
+  isOpenLot(value: unknown): boolean { return value === 'open_lot'; }
+
+  /** A lot nobody counted, still selling. */
+  lotIsOpen(lot: { quantity_known?: number; closed_at?: string | null }): boolean {
+    return Number(lot?.quantity_known) === 0 && !lot?.closed_at;
+  }
+
+  /**
+   * Finishes a lot that was never counted. What it sold becomes what it
+   * received, so from then on it reads as a lot that sold out, and its code is
+   * free for the next load.
+   */
+  async closeOpenLot(lot: any): Promise<void> {
+    const sold = `${Number(lot.sold_handling || 0)} ${lot.handling_uom_snapshot || ''}`.trim();
+    if (!confirm(`Finish ${lot.lot_tag || lot.lot_code}? It will be recorded as having received what it sold${sold ? ` (${sold})` : ''}, and its code goes free.`)) return;
+    const reason = prompt('Why is it finished? (optional)', 'Load finished') || '';
+    const result = await this.api().closeOpenLot(lot.id, reason, this.origin().locCode, this.actor());
+    if (!result.success) { this.error = result.error || 'Could not finish this lot.'; return; }
+    this.info = `${result.data.lotTag || result.data.lotCode} finished at ${result.data.soldHandling}`
+      + `${result.data.soldBase != null ? ` / ${result.data.soldBase}` : ''} sold. Its code is free again.`;
+    await this.load();
+  }
 
   /**
    * A consignment supplier is paid out of what sells from their lot, so their
@@ -91,8 +136,19 @@ export class SupplyReceivingComponent implements OnInit, OnDestroy {
    * stock receipt rather than leaving an impossible pair on screen.
    */
   onOwnershipChanged(): void {
-    if (this.receipt.ownershipModel === 'consignment') this.receipt.stockMode = 'stock_receipt';
+    // Each kind belongs to one side: a purchase record is money owed on an
+    // owned purchase, and a delivery with no quantities can only be
+    // consignment, where the supplier is paid from what sells.
+    if (this.receipt.ownershipModel === 'consignment' && this.receipt.stockMode === 'purchase_record') {
+      this.receipt.stockMode = 'stock_receipt';
+    }
+    if (this.receipt.ownershipModel !== 'consignment' && this.receipt.stockMode === 'open_lot') {
+      this.receipt.stockMode = 'stock_receipt';
+    }
   }
+
+  /** With no quantities to enter, a line needs only its item. */
+  get grnQuantitiesUnknown(): boolean { return this.receipt.stockMode === 'open_lot'; }
 
   /**
    * The supplier box takes a pick from the list or free text. Text that matches
@@ -331,7 +387,9 @@ export class SupplyReceivingComponent implements OnInit, OnDestroy {
     if (showMessage) this.reportSuccess(`GRN ${result.data.grnNumber} saved as draft.`);
     await this.load(); return true;
   }
-  async finalize(): Promise<void> { if (!this.canFinalizeGrn) { this.reportError(this.grnReadiness); return; } if (!(await this.saveGoodsReceiptDraft(false))) return; this.saving = true; const result = await this.api().finalizeGoodsReceiptDraft(this.receipt.id, this.actor()?.id, this.actor()); this.saving = false; if (!result.success) { this.reportError(result.error || 'Could not finalize GRN.'); return; } this.reportSuccess(this.receipt.stockMode === 'purchase_record'
+  async finalize(): Promise<void> { if (!this.canFinalizeGrn) { this.reportError(this.grnReadiness); return; } if (!(await this.saveGoodsReceiptDraft(false))) return; this.saving = true; const result = await this.api().finalizeGoodsReceiptDraft(this.receipt.id, this.actor()?.id, this.actor()); this.saving = false; if (!result.success) { this.reportError(result.error || 'Could not finalize GRN.'); return; } this.reportSuccess(this.receipt.stockMode === 'open_lot'
+      ? `GRN ${result.data.grnNumber} finalized. Its lots sell on their codes until they are finished from Stock control.`
+      : this.receipt.stockMode === 'purchase_record'
       ? `GRN ${result.data.grnNumber} finalized. The purchase and what is owed are recorded; no stock was created.`
       : `GRN ${result.data.grnNumber} finalized. Stock and supplier entries are now posted.`); this.closeGoodsReceipt(); await this.load(); }
   async cancelGoodsReceipt(): Promise<void> { if (!this.receipt.id) { this.closeGoodsReceipt(); return; } const result = await this.api().cancelGoodsReceiptDraft(this.receipt.id, this.actor()?.id, this.actor()); if (!result.success) { this.reportError(result.error || 'Could not cancel GRN draft.'); return; } this.reportSuccess('GRN draft cancelled. No stock or supplier entries were posted.'); this.closeGoodsReceipt(); await this.load(); }

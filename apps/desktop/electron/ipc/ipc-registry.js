@@ -648,6 +648,12 @@ function registerIpcHandlers(services) {
     lotId: payload?.lotId, tag: payload?.tag, locCode: payload?.locCode
   }), { authorize: requireReceivingManage });
 
+  // Finishing a lot nobody counted: what it sold becomes what it received, and
+  // its code goes free for the next one.
+  wrapIpcHandler('inventory.lots.close', async (payload) => services.catalogService.closeOpenLot({
+    lotId: payload?.lotId, reason: payload?.reason, locCode: payload?.locCode, userId: actorId(payload)
+  }), { authorize: requireReceivingManage });
+
   wrapIpcHandler('inventory.allocations.exceptions', async (payload) => services.catalogService.listAllocationExceptions(payload?.locCode), { authorize: requireReceivingView });
   wrapIpcHandler('inventory.allocations.list', async (payload) => services.catalogService.listRecentLotAllocations(payload?.locCode, payload?.limit), { authorize: requireReceivingView });
   wrapIpcHandler('inventory.allocations.resolve', async (payload) => services.catalogService.allocateException({ ...(payload?.allocation || {}), userId: payload?.actor?.id || null }), { authorize: requireInventoryAdjust });

@@ -229,7 +229,7 @@
 /* ── Narrow windows ─────────────────────────────────────── */
 @media (max-width: 1080px) {
   .main-grid { grid-template-columns: 1fr; }
-  .lot-row { grid-template-columns: 90px minmax(0, 1fr) minmax(110px, auto); }
+  .lot-row { grid-template-columns: 90px minmax(0, 1fr) minmax(110px, auto) auto; }
   .lot-code { display: none; }
 }
 @media (max-width: 700px) {
@@ -241,3 +241,12 @@
   .lots-tools { width: 100%; }
   .lots-tools input { flex: 1; width: auto; }
 }
+
+/* A lot nobody counted shows what it has sold, not a balance it does not have. */
+.lot-qty.open strong { color:#8a5a12; }
+.lot-qty.open .open-note { color:var(--ui-ink-muted); font-size:10px; font-style:italic; }
+
+/* The far-right column: what bills still being written have booked, over the
+   lot's own record number. Both read right-aligned. */
+.lot-meta { display: grid; justify-items: end; gap: 2px; min-width: 0; }
+.lot-held { color: #2f6bff; font-size: 10.5px; font-weight: 700; text-align: right; white-space: nowrap; }

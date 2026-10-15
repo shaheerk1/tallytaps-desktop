@@ -51,11 +51,22 @@
             <strong>{{ lot.supplierName }}</strong>
             <small>{{ ageLabel(lot.receivedOn) }} · {{ lot.receivedOn }} <em class="own" [class.consignment]="lot.ownership === 'consignment'">{{ lot.ownership === 'consignment' ? 'Consignment' : 'Owned' }}</em></small>
           </div>
-          <div class="lot-qty">
+          <div class="lot-qty" *ngIf="!lot.isOpen">
             <strong>{{ quantity(lot.remainingHandling) }} <small>{{ lot.handlingUom }}</small></strong>
             <span *ngIf="lot.remainingBase != null">{{ quantity(lot.remainingBase) }} {{ lot.baseUom }}</span>
           </div>
-          <small class="lot-code" [title]="lot.lotCode">{{ lot.lotCode }}</small>
+          <div class="lot-qty open" *ngIf="lot.isOpen" title="Nobody counted this load. This is what has been billed against it so far.">
+            <strong>{{ quantity(lot.soldHandling) }} <small>{{ lot.handlingUom }} sold</small></strong>
+            <span *ngIf="lot.soldBase != null">{{ quantity(lot.soldBase) }} {{ lot.baseUom }}</span>
+            <span class="open-note">not counted</span>
+          </div>
+          <div class="lot-meta">
+            <small class="lot-held" *ngIf="lot.heldHandling > 0 || (lot.heldBase || 0) > 0"
+              title="On bills being written that name this lot. Not taken from it until those bills are finished.">
+              {{ quantity(lot.heldHandling) }} {{ lot.handlingUom }}<ng-container *ngIf="lot.heldBase != null"> · {{ quantity(lot.heldBase) }} {{ lot.baseUom }}</ng-container> on hold
+            </small>
+            <small class="lot-code" [title]="lot.lotCode">{{ lot.lotCode }}</small>
+          </div>
         </div>
       </div>
 
