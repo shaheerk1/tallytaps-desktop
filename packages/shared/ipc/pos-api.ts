@@ -1065,6 +1065,194 @@ export type LotProfitRow = {
   fullySold: boolean;
 };
 
+/** One lot on the lot history list, live or long retired. */
+export type LotHistoryRow = {
+  id: number;
+  /** The lot's own identity, which never changes. */
+  lotCode: string;
+  /** The short code the counter types today, if it still has one. */
+  lotTag: string | null;
+  /** Every code this lot has been billed under, the current one first. */
+  billedCodes: string[];
+  locCode: string;
+  productId: number;
+  sku: string;
+  productName: string;
+  supplierId: number;
+  supplierCode: string | null;
+  supplierName: string;
+  goodsReceiptId: number | null;
+  grnNumber: string | null;
+  grnDate: string | null;
+  vehicleNo: string | null;
+  externalReference: string | null;
+  grnDocumentType: string | null;
+  stockMode: 'stock_receipt' | 'purchase_record' | 'open_lot';
+  ownershipModel: string;
+  stockTracked: boolean;
+  /** False for a lot nobody counted on arrival. */
+  quantityKnown: boolean;
+  date: string | null;
+  createdAt: string | null;
+  closedAt: string | null;
+  closedReason: string | null;
+  /** Still selling: holding stock, or uncounted and not yet finished. */
+  live: boolean;
+  handlingUom: string | null;
+  baseUom: string | null;
+  conversionMode: string | null;
+  expectedBasePerHandling: number | null;
+  actualBasePerHandling: number | null;
+  receivedHandling: number;
+  receivedBase: number | null;
+  remainingHandling: number;
+  remainingBase: number | null;
+  soldHandling: number;
+  soldBase: number;
+  heldHandling: number;
+  heldBase: number | null;
+  saleValue: number;
+  saleLineCount: number;
+  purchaseCost: number;
+  allocatedCost: number;
+  landedCost: number;
+};
+
+export type LotHistoryPage = {
+  rows: LotHistoryRow[];
+  page: number;
+  pageSize: number;
+  total: number;
+  pageCount: number;
+};
+
+/** A cost attached to one lot. */
+export type LotHistoryExpense = {
+  id: number;
+  expenseNumber: string;
+  categoryName: string;
+  payee: string | null;
+  amount: number;
+  basis: string;
+  basisValue: number | null;
+  reason: string | null;
+  date: string | null;
+  documentType: string;
+  status: string;
+  userName: string | null;
+};
+
+/** A load that left this lot on another lorry rather than over the counter. */
+export type LotIssue = {
+  id: number;
+  issueNo: string;
+  date: string | null;
+  destination: string;
+  vehicleNumber: string | null;
+  handlingQuantity: number;
+  baseQuantity: number | null;
+  note: string | null;
+};
+
+/** Wastage, damage, a supplier return or a count correction on one lot. */
+export type LotAdjustment = {
+  id: number;
+  kind: 'loss' | 'damage' | 'supplier_return' | 'correction' | 'physical_count' | string;
+  documentNo: string;
+  date: string | null;
+  /** Signed: what left the lot is negative. */
+  handlingQuantity: number;
+  baseQuantity: number | null;
+  reason: string | null;
+  userName: string | null;
+};
+
+export type LotSummary = {
+  lot: LotHistoryRow;
+  expenses: LotHistoryExpense[];
+  expenseTotal: number;
+  /** What a consignment lot has accrued to its supplier as it sold. */
+  supplierDue: number;
+  issues: LotIssue[];
+  adjustments: LotAdjustment[];
+  /** Always positive: goods that left on another lorry. */
+  sentOut: { handling: number; base: number };
+  /** Signed, so a loss reads as the negative number it was written as. */
+  adjusted: { handling: number; base: number };
+};
+
+/** One sale line's share of a lot. A refund is the same shape, negative. */
+export type LotSaleLine = {
+  id: number;
+  invoiceId: number;
+  invoiceNumber: string;
+  invoiceItemId: number;
+  /** The day this movement happened: a return belongs to the day it came back. */
+  date: string | null;
+  /** The day the bill itself was written. */
+  invoiceDate: string | null;
+  billedAt: string | null;
+  documentType: 'sale' | 'refund';
+  documentNo: number | null;
+  itemCode: string;
+  description: string;
+  supplyCode: string | null;
+  unitPrice: number;
+  handlingUom: string | null;
+  baseUom: string | null;
+  handlingQuantity: number;
+  baseQuantity: number | null;
+  merchandiseTotal: number;
+  saleValue: number;
+};
+
+export type LotSaleLines = {
+  lines: LotSaleLine[];
+  totals: { lines: number; handlingQuantity: number; baseQuantity: number; merchandiseTotal: number; saleValue: number };
+};
+
+/** A whole bill that took something from a lot; its money is the bill's own. */
+export type LotBill = {
+  id: number;
+  invoiceNumber: string;
+  locCode: string;
+  macCode: string;
+  date: string | null;
+  dueDate: string | null;
+  billedAt: string | null;
+  customerCode: string | null;
+  customerAccountId: number | null;
+  customerName: string | null;
+  status: string;
+  saleType: string | null;
+  merchandiseTotal: number;
+  bagChargeTotal: number;
+  wageChargeTotal: number;
+  discountTotal: number;
+  taxTotal: number;
+  grandTotal: number;
+  paidTotal: number;
+  refundedTotal: number;
+  /** What the bill is worth once returns are off it. */
+  netTotal: number;
+  balance: number;
+  settled: boolean;
+  lotLines: number;
+  lotHandling: number;
+  lotBase: number | null;
+};
+
+export type LotBillTotals = {
+  bills: number; grandTotal: number; paidTotal: number; refundedTotal: number; netTotal: number; balance: number;
+};
+
+export type LotBills = {
+  bills: LotBill[];
+  totals: LotBillTotals;
+  settledTotals: LotBillTotals;
+  unsettledTotals: LotBillTotals;
+};
+
 export type LotProfitability = {
   lots: LotProfitRow[];
   totals: {
@@ -1624,9 +1812,30 @@ export type PattiyalCandidate = {
 /** A GRN a lot expense can be recorded against, with its lots. */
 export type ExpenseGoodsTarget = {
   id: number; grnNumber: string; date: string; supplierName: string; supplierCode: string | null;
+  vehicleNo: string | null;
   /** A purchase-record GRN carries costs the same way, but holds no stock. */
-  stockMode: 'stock_receipt' | 'purchase_record';
-  lots: Array<{ id: number; lotCode: string; lotTag: string | null; productName: string }>;
+  stockMode: 'stock_receipt' | 'purchase_record' | 'open_lot';
+  lots: ExpenseGoodsLot[];
+};
+
+/** One lot a cost can be put on, with enough of it to recognise the goods. */
+export type ExpenseGoodsLot = {
+  id: number;
+  lotCode: string;
+  lotTag: string | null;
+  productName: string;
+  sku: string;
+  /** False for a lot nobody counted on arrival. */
+  quantityKnown: boolean;
+  closed: boolean;
+  handlingUom: string | null;
+  baseUom: string | null;
+  receivedHandling: number;
+  receivedBase: number | null;
+  remainingHandling: number;
+  remainingBase: number | null;
+  soldHandling: number;
+  soldBase: number;
 };
 
 /** One supplier on the supplier accounts list. Balance: + we owe them, - they owe us. */
@@ -1970,6 +2179,30 @@ export interface PosApi {
     createSupplier: (supplier: SupplierInput, actor?: ActorContext | null) => Promise<IpcResult<SupplierRecord>>;
     /** Lots still holding stock at a location, with item, supplier and remaining quantities. */
     listInventoryLots: (productId: number | null, locCode: string | null, actor?: ActorContext | null) => Promise<IpcResult<Array<Record<string, any>>>>;
+    /**
+      * Wastage, damage, a supplier return or a count correction on one lot.
+      * Quantities are signed: what leaves the lot is negative.
+      */
+    adjustLot: (adjustment: {
+      inventoryLotId: number;
+      handlingQuantity?: number | null;
+      baseQuantity?: number | null;
+      kind: 'loss' | 'damage' | 'supplier_return' | 'correction' | 'physical_count';
+      reason: string;
+      origin: { locCode: string; macCode: string; txnDate: string };
+    }, actor?: ActorContext | null) => Promise<IpcResult<{
+      lotId: number; lotCode: string; lotTag: string | null; productName: string;
+      documentNo: string; kind: string; handlingQuantity: number | null; baseQuantity: number | null;
+      remainingHandling: number | null; remainingBase: number | null; countedStock: boolean;
+    }>>;
+    /** Every lot this location ever had, newest first, a page at a time. */
+    listLotHistory: (filters: { locCode?: string; page?: number; pageSize?: number; term?: string; status?: 'all' | 'live' | 'retired'; productId?: number; supplierId?: number; fromDate?: string; toDate?: string }, actor?: ActorContext | null) => Promise<IpcResult<LotHistoryPage>>;
+    /** One lot: what it is, the delivery that brought it, and its costs. */
+    getLotSummary: (inventoryLotId: number, locCode: string | null, actor?: ActorContext | null) => Promise<IpcResult<LotSummary>>;
+    /** The sale lines this lot gave, refunds included as negative lines. Needs lot-costing.view. */
+    listLotSaleLines: (inventoryLotId: number, locCode: string | null, actor?: ActorContext | null) => Promise<IpcResult<LotSaleLines>>;
+    /** Every bill that took anything from this lot, whole. Needs lot-costing.view. */
+    listLotBills: (inventoryLotId: number, locCode: string | null, actor?: ActorContext | null) => Promise<IpcResult<LotBills>>;
   };
   customerAdvances: {
     balance: (customerAccountId: number, locCode: string, actor?: ActorContext | null) => Promise<IpcResult<number>>;

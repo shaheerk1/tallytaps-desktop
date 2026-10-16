@@ -1,0 +1,317 @@
+<section class="workflow-card lot-history-card">
+
+  <!-- ── Every lot, newest first ─────────────────────────────────────────── -->
+  <ng-container *ngIf="view === 'list'">
+    <div class="card-heading">
+      <div>
+        <h2>All lots</h2>
+        <p>Every lot this shop has had, the finished ones too. A lot's own record never changes; the short codes beside it are what the counter actually typed to sell from it.</p>
+      </div>
+    </div>
+
+    <div class="lh-filters">
+      <div class="lh-search">
+        <input type="search" [(ngModel)]="term" (keyup.enter)="search()" placeholder="Code, item, supplier, GRN or vehicle" />
+        <button type="button" class="button-secondary" (click)="search()">Search</button>
+      </div>
+      <div class="lh-chips">
+        <button type="button" [class.chosen]="status === 'all'" (click)="setStatus('all')">All</button>
+        <button type="button" [class.chosen]="status === 'live'" (click)="setStatus('live')">Still selling</button>
+        <button type="button" [class.chosen]="status === 'retired'" (click)="setStatus('retired')">Finished</button>
+      </div>
+    </div>
+
+    <p class="lh-error" *ngIf="error">{{ error }}</p>
+
+    <div class="lh-row lh-head">
+      <span>Codes</span><span>Item</span><span>Supplier</span><span>Arrived</span><span>Sold</span><span>Lot record</span><span></span>
+    </div>
+
+    <div class="lh-row" *ngFor="let lot of page?.rows; trackBy: trackLot">
+      <span class="lh-codes">
+        <i class="lh-code" *ngFor="let code of lot.billedCodes">{{ code }}</i>
+        <small *ngIf="!lot.billedCodes.length">No code</small>
+      </span>
+      <span class="lh-item"><strong>{{ lot.sku }}</strong><small>{{ lot.productName }}</small></span>
+      <span class="lh-supplier">{{ lot.supplierName }}<small>{{ lot.grnNumber }} · {{ lot.date }}</small></span>
+      <span class="lh-qty">
+        <ng-container *ngIf="lot.quantityKnown">{{ measure(lot.receivedHandling, lot.handlingUom) }}<small *ngIf="lot.receivedBase != null">{{ measure(lot.receivedBase, lot.baseUom) }}</small></ng-container>
+        <em *ngIf="!lot.quantityKnown">Not counted</em>
+      </span>
+      <span class="lh-qty">
+        {{ measure(lot.soldHandling, lot.handlingUom) }}<small *ngIf="lot.baseUom">{{ measure(lot.soldBase, lot.baseUom) }}</small>
+        <small class="lh-held" *ngIf="lot.heldHandling > 0 || (lot.heldBase || 0) > 0">{{ measure(lot.heldHandling, lot.handlingUom) }} on hold</small>
+      </span>
+      <span class="lh-record">
+        <code [title]="lot.lotCode">{{ lot.lotCode }}</code>
+        <i class="lh-status" [attr.data-kind]="statusKind(lot)">{{ statusOf(lot) }}</i>
+      </span>
+      <span class="lh-open"><button type="button" class="button-quiet" (click)="openLot(lot.id)">View lot</button></span>
+    </div>
+
+    <div class="empty-state" *ngIf="!loading && page && !page.rows.length">No lot here matches that.</div>
+    <div class="empty-state" *ngIf="loading">Reading lots…</div>
+
+    <div class="lh-pager" *ngIf="page && page.total">
+      <span>{{ firstShown }}–{{ lastShown }} of {{ page.total }}</span>
+      <div class="lh-pager-buttons">
+        <button type="button" class="button-quiet" [disabled]="page.page <= 1" (click)="goToPage(1)">First</button>
+        <button type="button" class="button-quiet" [disabled]="page.page <= 1" (click)="goToPage(page.page - 1)">Previous</button>
+        <span class="lh-page-no">Page {{ page.page }} of {{ page.pageCount }}</span>
+        <button type="button" class="button-quiet" [disabled]="page.page >= page.pageCount" (click)="goToPage(page.page + 1)">Next</button>
+        <button type="button" class="button-quiet" [disabled]="page.page >= page.pageCount" (click)="goToPage(page.pageCount)">Last</button>
+      </div>
+    </div>
+  </ng-container>
+
+  <!-- ── One lot, whole ──────────────────────────────────────────────────── -->
+  <ng-container *ngIf="view === 'detail'">
+    <div class="card-heading lh-detail-head">
+      <div>
+        <button type="button" class="button-quiet lh-back" (click)="backToList()">← All lots</button>
+        <h2>{{ summary?.lot?.sku }} <small>{{ summary?.lot?.productName }}</small></h2>
+        <p *ngIf="summary"><code>{{ summary.lot.lotCode }}</code> · {{ summary.lot.supplierName }} · {{ summary.lot.date }}</p>
+      </div>
+      <i class="lh-status" *ngIf="summary" [attr.data-kind]="statusKind(summary.lot)">{{ statusOf(summary.lot) }}</i>
+    </div>
+
+    <p class="lh-error" *ngIf="error">{{ error }}</p>
+    <div class="empty-state" *ngIf="summaryLoading">Reading this lot…</div>
+
+    <ng-container *ngIf="summary && !summaryLoading">
+      <!-- Everything worth knowing without reading: the figures first. -->
+      <div class="lh-tiles">
+        <div class="lh-tile" *ngFor="let tile of glanceTiles; trackBy: trackTile" [attr.data-kind]="tile.kind">
+          <span>{{ tile.label }}</span>
+          <strong>{{ tile.value }}</strong>
+          <b *ngIf="tile.second">{{ tile.second }}</b>
+          <small *ngIf="tile.note">{{ tile.note }}</small>
+        </div>
+      </div>
+
+      <!-- The detail behind them, one part at a time. -->
+      <nav class="lh-tabs">
+        <button type="button" [class.chosen]="detailTab === 'delivery'" (click)="detailTab = 'delivery'">Delivery</button>
+        <button type="button" [class.chosen]="detailTab === 'movements'" (click)="detailTab = 'movements'">Movements <em *ngIf="movementCount">{{ movementCount }}</em></button>
+        <button type="button" [class.chosen]="detailTab === 'expenses'" (click)="detailTab = 'expenses'">Expenses <em *ngIf="summary.expenses.length">{{ summary.expenses.length }}</em></button>
+        <button type="button" [class.chosen]="detailTab === 'sales'" (click)="detailTab = 'sales'">Sales</button>
+        <button type="button" [class.chosen]="detailTab === 'bills'" (click)="detailTab = 'bills'">Bills</button>
+      </nav>
+
+      <!-- What it is, and which delivery brought it -->
+      <ng-container *ngIf="detailTab === 'delivery'">
+        <div class="lh-facts">
+          <div class="lh-fact">
+            <label>Lot record</label>
+            <strong><code>{{ summary.lot.lotCode }}</code></strong>
+            <small>Never changes. Bills, costs and counts all hang off this.</small>
+          </div>
+          <div class="lh-fact">
+            <label>Codes used at the counter</label>
+            <strong class="lh-codes">
+              <i class="lh-code" *ngFor="let code of summary.lot.billedCodes">{{ code }}</i>
+              <span *ngIf="!summary.lot.billedCodes.length">&mdash;</span>
+            </strong>
+            <small>Read from the bills themselves, so a code since changed is still here. A code edited before it was ever billed leaves no trace.</small>
+          </div>
+          <div class="lh-fact">
+            <label>Created</label>
+            <strong>{{ summary.lot.date }}</strong>
+            <small *ngIf="summary.lot.closedAt">Finished {{ summary.lot.closedAt | date:'dd MMM yyyy' }}<ng-container *ngIf="summary.lot.closedReason"> &middot; {{ summary.lot.closedReason }}</ng-container></small>
+          </div>
+          <div class="lh-fact">
+            <label>Ownership</label>
+            <strong>{{ summary.lot.ownershipModel === 'consignment' ? 'Consignment' : 'Owned' }}</strong>
+            <small *ngIf="summary.lot.ownershipModel === 'consignment' && summary.supplierDue">Owed to supplier so far {{ summary.supplierDue | number:'1.2-2' }}</small>
+          </div>
+          <div class="lh-fact"><label>GRN</label><strong>{{ summary.lot.grnNumber || '&mdash;' }}</strong><small>{{ summary.lot.grnDate }}</small></div>
+          <div class="lh-fact"><label>Vehicle</label><strong>{{ summary.lot.vehicleNo || '&mdash;' }}</strong><small *ngIf="summary.lot.externalReference">Ref {{ summary.lot.externalReference }}</small></div>
+          <div class="lh-fact">
+            <label>Arrived</label>
+            <strong *ngIf="summary.lot.quantityKnown">{{ measure(summary.lot.receivedHandling, summary.lot.handlingUom) }}<ng-container *ngIf="summary.lot.receivedBase != null"> &middot; {{ measure(summary.lot.receivedBase, summary.lot.baseUom) }}</ng-container></strong>
+            <strong *ngIf="!summary.lot.quantityKnown">Not counted</strong>
+            <small *ngIf="summary.lot.actualBasePerHandling">{{ summary.lot.actualBasePerHandling | number:'1.0-3' }} {{ summary.lot.baseUom }} per {{ summary.lot.handlingUom }}</small>
+          </div>
+          <div class="lh-fact">
+            <label>Still on the lot</label>
+            <strong *ngIf="summary.lot.quantityKnown">{{ measure(summary.lot.remainingHandling, summary.lot.handlingUom) }}<ng-container *ngIf="summary.lot.remainingBase != null"> &middot; {{ measure(summary.lot.remainingBase, summary.lot.baseUom) }}</ng-container></strong>
+            <strong *ngIf="!summary.lot.quantityKnown">&mdash;</strong>
+            <small *ngIf="summary.lot.heldHandling > 0 || (summary.lot.heldBase || 0) > 0">{{ measure(summary.lot.heldHandling, summary.lot.handlingUom) }} on hold</small>
+          </div>
+          <div class="lh-fact">
+            <label>Sold</label>
+            <strong>{{ measure(summary.lot.soldHandling, summary.lot.handlingUom) }}<ng-container *ngIf="summary.lot.baseUom"> &middot; {{ measure(summary.lot.soldBase, summary.lot.baseUom) }}</ng-container></strong>
+            <small>{{ summary.lot.saleLineCount }} bill {{ summary.lot.saleLineCount === 1 ? 'line' : 'lines' }}</small>
+          </div>
+        </div>
+      </ng-container>
+
+      <!-- Everything that left it, by every route -->
+      <ng-container *ngIf="detailTab === 'movements'">
+        <div class="lh-out-row lh-out-head"><span>How it left</span><span>{{ summary.lot.handlingUom }}</span><span>{{ summary.lot.baseUom || '' }}</span><span></span></div>
+        <div class="lh-out-row" *ngFor="let row of outflowRows; trackBy: trackOutflow" [class.pending]="row.pending">
+          <span><strong>{{ row.label }}</strong></span>
+          <span class="lh-amount">{{ row.handling | number:'1.0-3' }}</span>
+          <span class="lh-amount">{{ row.base == null ? '&mdash;' : (row.base | number:'1.0-3') }}</span>
+          <span class="lh-out-note">{{ row.note }}</span>
+        </div>
+        <div class="lh-out-row lh-out-total">
+          <span>Gone out altogether</span>
+          <span class="lh-amount">{{ outflowTotal.handling | number:'1.0-3' }}</span>
+          <span class="lh-amount">{{ outflowTotal.base == null ? '&mdash;' : (outflowTotal.base | number:'1.0-3') }}</span>
+          <span class="lh-out-note" *ngIf="outflowWithHeld">{{ outflowWithHeld.handling | number:'1.0-3' }}<ng-container *ngIf="outflowWithHeld.base != null"> &middot; {{ outflowWithHeld.base | number:'1.0-3' }}</ng-container> once the bills on the counter are finished</span>
+          <span class="lh-out-note" *ngIf="!outflowWithHeld && !summary.lot.quantityKnown">Nobody counted this lot, so this is what it is taken to have received when it is finished.</span>
+        </div>
+
+        <!-- Loads that went on somebody else's lorry -->
+        <h4 class="lh-day" *ngIf="summary.issues.length">Sent out</h4>
+        <div class="lh-move-row" *ngFor="let row of summary.issues">
+          <span><strong>{{ row.destination }}</strong><small>#{{ row.issueNo }}<ng-container *ngIf="row.vehicleNumber"> &middot; {{ row.vehicleNumber }}</ng-container></small></span>
+          <span class="lh-amount">{{ measure(row.handlingQuantity, summary.lot.handlingUom) }}<small *ngIf="row.baseQuantity != null">{{ measure(row.baseQuantity, summary.lot.baseUom) }}</small></span>
+          <span>{{ row.note || '&mdash;' }}</span>
+          <span>{{ row.date }}</span>
+        </div>
+
+        <!-- Wastage, damage, goods back to the supplier, counts that disagreed -->
+        <h4 class="lh-day" *ngIf="summary.adjustments.length">Adjustments</h4>
+        <div class="lh-move-row" *ngFor="let row of summary.adjustments">
+          <span><strong>{{ adjustmentKindLabel(row.kind) }}</strong><small>{{ row.documentNo }}<ng-container *ngIf="row.userName"> &middot; {{ row.userName }}</ng-container></small></span>
+          <span class="lh-amount">{{ measure(row.handlingQuantity, summary.lot.handlingUom) }}<small *ngIf="row.baseQuantity != null">{{ measure(row.baseQuantity, summary.lot.baseUom) }}</small></span>
+          <span>{{ row.reason || '&mdash;' }}</span>
+          <span>{{ row.date }}</span>
+        </div>
+        <div class="empty-state" *ngIf="!summary.issues.length && !summary.adjustments.length">Nothing has left this lot except over the counter.</div>
+      </ng-container>
+
+      <!-- What it cost -->
+      <ng-container *ngIf="detailTab === 'expenses'">
+        <div class="lh-expense-row lh-expense-head"><span>Expense</span><span>Reason</span><span>Date</span><span>Amount</span></div>
+        <div class="lh-expense-row" *ngFor="let expense of summary.expenses">
+          <span><strong>{{ expense.categoryName }}</strong><small>{{ expense.expenseNumber }}<ng-container *ngIf="expense.payee"> &middot; {{ expense.payee }}</ng-container></small></span>
+          <span>{{ expense.reason || '&mdash;' }}<small *ngIf="expense.basis !== 'direct'">Shared across the delivery by {{ expense.basis }}</small></span>
+          <span>{{ expense.date }}</span>
+          <span class="lh-amount">{{ expense.amount | number:'1.2-2' }}</span>
+        </div>
+        <div class="lh-expense-row lh-expense-total" *ngIf="summary.expenses.length">
+          <span>Total on this lot</span><span></span><span></span>
+          <span class="lh-amount">{{ summary.expenseTotal | number:'1.2-2' }}</span>
+        </div>
+        <div class="empty-state" *ngIf="!summary.expenses.length">No cost has been put on this lot.</div>
+      </ng-container>
+
+      <!-- What it sold -->
+      <ng-container *ngIf="detailTab === 'sales'">
+      <p class="lh-locked" *ngIf="!canSeeMoney">What this lot sold is part of its costs, which your role does not open.</p>
+
+      <ng-container *ngIf="canSeeMoney">
+        <div class="lh-actions" *ngIf="!sales">
+          <button type="button" class="button-secondary" [disabled]="salesLoading" (click)="loadSales()">{{ salesLoading ? 'Loading…' : 'Load sales' }}</button>
+          <small>Every line that took goods from this lot. Left closed until asked for, because a long-running lot has a great many.</small>
+        </div>
+
+        <ng-container *ngIf="sales">
+          <div class="lh-ticks">
+            <label><input type="checkbox" [(ngModel)]="groupByPrice" /> Group by price</label>
+            <label><input type="checkbox" [(ngModel)]="breakByDays" /> Break by days</label>
+            <button type="button" class="button-quiet" (click)="loadSales()">Refresh</button>
+          </div>
+
+          <div class="lh-sale-block" *ngFor="let group of saleGroups">
+            <h4 class="lh-day" *ngIf="group.date">{{ group.date | date:'EEEE, dd MMM yyyy' }}</h4>
+            <div class="lh-sale-row lh-sale-head">
+              <span>Item</span><span>Unit Count</span><span>Measured Qty</span><span>Rate</span><span>Line total</span>
+            </div>
+            <div class="lh-sale-row" *ngFor="let row of group.rows; trackBy: trackSaleRow" [class.returned]="row.merchandiseTotal < 0">
+              <span><strong>{{ row.itemCode }}</strong><small>{{ row.description }}<ng-container *ngIf="row.lines > 1"> · {{ row.lines }} lines</ng-container></small></span>
+              <span class="lh-amount">{{ measure(row.handlingQuantity, row.handlingUom) }}</span>
+              <span class="lh-amount">{{ measure(row.baseQuantity, row.baseUom) }}</span>
+              <span class="lh-amount">{{ row.unitPrice | number:'1.2-2' }}</span>
+              <span class="lh-amount">{{ row.merchandiseTotal | number:'1.2-2' }}</span>
+            </div>
+            <div class="lh-sale-row lh-sale-total">
+              <span>{{ group.date ? 'Day total' : 'Total' }}<small>{{ group.totals.lines }} {{ group.totals.lines === 1 ? 'line' : 'lines' }}</small></span>
+              <span class="lh-amount">{{ measure(group.totals.handlingQuantity, summary.lot.handlingUom) }}</span>
+              <span class="lh-amount">{{ measure(group.totals.baseQuantity, summary.lot.baseUom) }}</span>
+              <span></span>
+              <span class="lh-amount">{{ group.totals.merchandiseTotal | number:'1.2-2' }}</span>
+            </div>
+          </div>
+
+          <div class="lh-sale-row lh-sale-grand" *ngIf="sales.lines.length">
+            <span>Lot total<small>{{ sales.totals.lines }} {{ sales.totals.lines === 1 ? 'line' : 'lines' }}</small></span>
+            <span class="lh-amount">{{ measure(sales.totals.handlingQuantity, summary.lot.handlingUom) }}</span>
+            <span class="lh-amount">{{ measure(sales.totals.baseQuantity, summary.lot.baseUom) }}</span>
+            <span></span>
+            <span class="lh-amount">{{ sales.totals.merchandiseTotal | number:'1.2-2' }}</span>
+          </div>
+          <div class="empty-state" *ngIf="!sales.lines.length">Nothing has been billed from this lot.</div>
+        </ng-container>
+      </ng-container>
+      </ng-container>
+
+      <!-- Which bills carried it -->
+      <ng-container *ngIf="detailTab === 'bills'">
+      <p class="lh-locked" *ngIf="!canSeeMoney">Bills carry what the shop was paid, which your role does not open.</p>
+      <ng-container *ngIf="canSeeMoney">
+        <div class="lh-actions" *ngIf="!bills">
+          <button type="button" class="button-secondary" [disabled]="billsLoading" (click)="loadBills()">{{ billsLoading ? 'Loading…' : 'Load bills' }}</button>
+          <small>A bill appears whole, however little of it came from this lot. Its money is the whole bill's, charges and returns included.</small>
+        </div>
+
+        <ng-container *ngIf="bills">
+          <div class="lh-ticks">
+            <label><input type="checkbox" [(ngModel)]="groupBySettlement" /> Settled and unsettled apart</label>
+            <span class="lh-switch">
+              <button type="button" [class.chosen]="billsLayout === 'list'" (click)="billsLayout = 'list'">List</button>
+              <button type="button" [class.chosen]="billsLayout === 'grid'" (click)="billsLayout = 'grid'">Grid</button>
+            </span>
+            <span class="lh-switch">
+              <button type="button" [class.chosen]="billsOrder === 'newest'" (click)="billsOrder = 'newest'">Newest first</button>
+              <button type="button" [class.chosen]="billsOrder === 'oldest'" (click)="billsOrder = 'oldest'">Oldest first</button>
+            </span>
+            <button type="button" class="button-quiet" (click)="loadBills()">Refresh</button>
+          </div>
+
+          <div class="lh-bill-block" *ngFor="let group of billGroups">
+            <h4 class="lh-day">{{ group.title }}
+              <small>{{ group.totals.bills }} {{ group.totals.bills === 1 ? 'bill' : 'bills' }} · {{ group.totals.netTotal | number:'1.2-2' }} net<ng-container *ngIf="group.totals.balance"> · {{ group.totals.balance | number:'1.2-2' }} still owed</ng-container></small>
+            </h4>
+
+            <div class="lh-bill-list" *ngIf="billsLayout === 'list'">
+              <div class="lh-bill-row lh-bill-head"><span>Bill</span><span>Customer</span><span>From this lot</span><span>Charges</span><span>Bill total</span><span>Owed</span></div>
+              <button type="button" class="lh-bill-row" *ngFor="let bill of group.bills; trackBy: trackBill" (click)="openBill(bill)">
+                <span><strong>{{ bill.invoiceNumber }}</strong><small>{{ bill.billedAt | date:'dd MMM yyyy HH:mm' }}</small></span>
+                <span>{{ bill.customerName || bill.customerCode || 'Counter' }}</span>
+                <span>{{ measure(bill.lotHandling, summary.lot.handlingUom) }}<small *ngIf="bill.lotBase != null">{{ measure(bill.lotBase, summary.lot.baseUom) }}</small></span>
+                <span class="lh-amount">{{ bill.bagChargeTotal + bill.wageChargeTotal | number:'1.2-2' }}<small *ngIf="bill.refundedTotal">−{{ bill.refundedTotal | number:'1.2-2' }} returned</small></span>
+                <span class="lh-amount"><strong>{{ bill.netTotal | number:'1.2-2' }}</strong></span>
+                <span class="lh-amount" [class.owing]="!bill.settled">{{ bill.balance | number:'1.2-2' }}</span>
+              </button>
+            </div>
+
+            <div class="lh-bill-grid" *ngIf="billsLayout === 'grid'">
+              <button type="button" class="lh-bill-card" *ngFor="let bill of group.bills; trackBy: trackBill" (click)="openBill(bill)">
+                <strong>{{ bill.invoiceNumber }}</strong>
+                <small>{{ bill.billedAt | date:'dd MMM yyyy HH:mm' }}</small>
+                <span class="lh-bill-customer">{{ bill.customerName || bill.customerCode || 'Counter' }}</span>
+                <b>{{ bill.netTotal | number:'1.2-2' }}</b>
+                <i [class.owing]="!bill.settled">{{ bill.settled ? 'Settled' : (bill.balance | number:'1.2-2') + ' owed' }}</i>
+              </button>
+            </div>
+          </div>
+
+          <div class="lh-bill-row lh-sale-grand" *ngIf="bills.bills.length">
+            <span>All bills<small>{{ bills.totals.bills }}</small></span>
+            <span></span>
+            <span></span>
+            <span class="lh-amount">{{ bills.totals.refundedTotal | number:'1.2-2' }} returned</span>
+            <span class="lh-amount"><strong>{{ bills.totals.netTotal | number:'1.2-2' }}</strong></span>
+            <span class="lh-amount" [class.owing]="bills.totals.balance > 0">{{ bills.totals.balance | number:'1.2-2' }}</span>
+          </div>
+          <div class="empty-state" *ngIf="!bills.bills.length">No bill has taken anything from this lot.</div>
+        </ng-container>
+      </ng-container>
+      </ng-container>
+    </ng-container>
+  </ng-container>
+</section>

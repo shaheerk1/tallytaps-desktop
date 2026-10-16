@@ -1522,8 +1522,23 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
                   COALESCE(SUM(CASE WHEN document_type = 'refund' THEN -COALESCE(base_quantity, 0) ELSE COALESCE(base_quantity, 0) END), 0) AS base
              FROM lot_sale_allocations WHERE inventory_lot_id = ?`, [Number(lotId)]
         );
-        const soldHandling = Math.max(0, Math.round(Number(sold.handling || 0) * 1000) / 1000);
-        const soldBase = Math.max(0, Math.round(Number(sold.base || 0) * 1000) / 1000);
+        // Goods leave an uncounted lot three ways, and all three say it was
+        // here: billed, sent out on another lorry, or lost. What it received
+        // is the whole of what left it, which is the only number anybody can
+        // honestly write down for a load nobody counted.
+        const [[issued]] = await connection.execute(
+          `SELECT COALESCE(SUM(handling_quantity), 0) AS handling, COALESCE(SUM(base_quantity), 0) AS base
+             FROM inventory_issue_lines WHERE inventory_lot_id = ?`, [Number(lotId)]
+        );
+        const [[lost]] = await connection.execute(
+          `SELECT COALESCE(SUM(package_qty), 0) AS handling, COALESCE(SUM(kilos), 0) AS base
+             FROM inventory_measurements
+            WHERE inventory_lot_id = ? AND document_type = 'stock_adjustment'`, [Number(lotId)]
+        );
+        const outflow = (...parts) => Math.max(0, Math.round(parts.reduce((sum, part) => sum + Number(part || 0), 0) * 1000) / 1000);
+        // A loss is written as a negative measurement, so it is turned round here.
+        const soldHandling = outflow(sold.handling, issued.handling, -Number(lost.handling || 0));
+        const soldBase = outflow(sold.base, issued.base, -Number(lost.base || 0));
         // A lot measured in two ways keeps both; one measured in one keeps one.
         const keepsBase = lot.base_uom_snapshot != null || soldBase > 0;
 
@@ -1555,6 +1570,129 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
         return {
           lotId: Number(lotId), lotTag: lot.lot_tag, lotCode: lot.lot_code,
           productName: lot.product_name, soldHandling, soldBase: keepsBase ? soldBase : null, closed: true
+        };
+      } catch (error) { await connection.rollback(); throw error; }
+    });
+  }
+
+  /**
+   * An adjustment on one lot: wastage, damage, goods back to the supplier, or
+   * a count that disagrees with the books.
+   *
+   * The existing manual adjustment moves a whole product and names no lot,
+   * which is right for stock that was never received against one. This states
+   * which goods changed, so the lot that carried the loss carries its cost too.
+   *
+   * Quantities are signed: what leaves the lot is negative. A lot nobody
+   * counted takes only those -- there is no balance to add back to -- and it
+   * keeps no stock, so nothing is posted to the ledger for it. What it loses
+   * becomes part of what it received when it is finished.
+   */
+  const ADJUSTMENT_KINDS = ['loss', 'damage', 'supplier_return', 'correction', 'physical_count'];
+
+  async function adjustLot({
+    inventoryLotId, handlingQuantity = null, baseQuantity = null, kind = 'loss',
+    reason, locCode, macCode, businessDate, userId = null
+  }) {
+    const why = String(reason || '').trim();
+    if (!inventoryLotId) throw new Error('Choose the lot this adjustment belongs to.');
+    if (!why) throw new Error('Write why this lot is being adjusted.');
+    if (!ADJUSTMENT_KINDS.includes(kind)) throw new Error('Choose what happened to these goods.');
+    const handling = handlingQuantity == null || handlingQuantity === '' ? null : Number(handlingQuantity);
+    const base = baseQuantity == null || baseQuantity === '' ? null : Number(baseQuantity);
+    if ((handling != null && !Number.isFinite(handling)) || (base != null && !Number.isFinite(base))) {
+      throw new Error('Enter a valid quantity.');
+    }
+    if (!handling && !base) throw new Error('Enter what changed, in one measure or both.');
+
+    return database.withConnection(async (connection) => {
+      await connection.beginTransaction();
+      try {
+        if (!businessDayRepository) throw new Error('Business-day control is not available.');
+        await businessDayRepository.assertOpenWithConnection(connection, { locationCode: locCode, businessDate });
+        const [lots] = await connection.execute(
+          `SELECT l.*, p.name AS product_name FROM inventory_lots l JOIN products p ON p.id = l.product_id
+            WHERE l.id = ? FOR UPDATE`, [Number(inventoryLotId)]
+        );
+        const lot = lots[0];
+        if (!lot) throw new Error('That stock lot no longer exists.');
+        if (String(lot.loc_code) !== String(locCode || '').trim()) throw new Error('That stock lot belongs to another location.');
+
+        const uncounted = Number(lot.quantity_known) === 0 && !lot.closed_at;
+        const keepsStock = Number(lot.stock_tracked) !== 0;
+        if (!keepsStock && !uncounted) {
+          throw new Error(`${lot.lot_tag || lot.lot_code} is a purchase record, not stock, so there is nothing to adjust.`);
+        }
+        if (uncounted && ((handling || 0) > 0 || (base || 0) > 0)) {
+          throw new Error(`Nobody counted ${lot.lot_tag || lot.lot_code}, so it has no balance to add to. Only what leaves it can be recorded.`);
+        }
+        if (!uncounted) {
+          const remainingHandling = Number(lot.remaining_handling_quantity || 0);
+          if (handling != null && handling < 0 && Math.abs(handling) > remainingHandling + 0.0005) {
+            throw new Error(`${lot.lot_tag || lot.lot_code} has only ${remainingHandling} ${lot.handling_uom_snapshot || ''} left to take off.`.replace(/\s+/g, ' '));
+          }
+          if (base != null && base < 0 && lot.remaining_base_quantity != null
+              && Math.abs(base) > Number(lot.remaining_base_quantity || 0) + 0.0005) {
+            throw new Error(`${lot.lot_tag || lot.lot_code} has only ${lot.remaining_base_quantity} ${lot.base_uom_snapshot || ''} left to take off.`.replace(/\s+/g, ' '));
+          }
+        }
+
+        const documentNo = await documentSequenceRepository.allocateWithConnection(connection, {
+          documentType: 'stock_adjustment', locCode, macCode, txnDate: businessDate
+        });
+
+        if (!uncounted) {
+          await connection.execute(
+            `UPDATE inventory_lots
+                SET remaining_quantity = remaining_quantity + ?,
+                    remaining_handling_quantity = remaining_handling_quantity + ?,
+                    remaining_base_quantity = CASE WHEN remaining_base_quantity IS NULL THEN NULL ELSE remaining_base_quantity + ? END,
+                    remaining_kilos = CASE WHEN remaining_kilos IS NULL THEN NULL ELSE remaining_kilos + ? END
+              WHERE id = ?`,
+            [handling || 0, handling || 0, base || 0, base || 0, lot.id]
+          );
+        }
+
+        await connection.execute(
+          `INSERT INTO inventory_measurements
+             (inventory_lot_id, loc_code, mac_code, txn_date, document_type, document_no, line_no, event_no,
+              measurement_type, package_qty, kilos, reason, recorded_by)
+           VALUES (?, ?, ?, ?, 'stock_adjustment', ?, 1, 1, ?, ?, ?, ?, ?)`,
+          [lot.id, lot.loc_code, macCode, businessDate, documentNo, kind,
+            handling == null ? null : handling, base == null ? null : base, why.slice(0, 255), userId || null]
+        );
+
+        if (keepsStock) {
+          await inventoryLedgerRepository.postWithConnection(connection, {
+            productId: lot.product_id,
+            inventoryLotId: lot.id,
+            locCode,
+            macCode,
+            businessDate,
+            documentType: 'stock_adjustment',
+            documentNo,
+            lineNo: 1,
+            eventNo: 1,
+            movementType: 'adjustment',
+            referenceType: 'inventory_lot',
+            referenceId: lot.id,
+            note: `${kind}: ${why}`.slice(0, 255),
+            createdBy: userId,
+            handlingDelta: handling,
+            baseDelta: base,
+            handlingUom: lot.handling_uom_snapshot,
+            baseUom: lot.base_uom_snapshot
+          });
+        }
+        await connection.commit();
+        return {
+          lotId: lot.id, lotCode: lot.lot_code, lotTag: lot.lot_tag, productName: lot.product_name,
+          documentNo, kind, handlingQuantity: handling, baseQuantity: base,
+          remainingHandling: uncounted ? null : Math.round((Number(lot.remaining_handling_quantity || 0) + (handling || 0)) * 1000) / 1000,
+          remainingBase: uncounted || lot.remaining_base_quantity == null
+            ? null
+            : Math.round((Number(lot.remaining_base_quantity || 0) + (base || 0)) * 1000) / 1000,
+          countedStock: keepsStock
         };
       } catch (error) { await connection.rollback(); throw error; }
     });
@@ -2081,6 +2219,7 @@ function createCatalogRepository({ database, documentSequenceRepository, busines
     ,listInventoryLots
     ,setLotTag
     ,closeOpenLot
+    ,adjustLot
     ,listInventorySummary
     ,finalizeStockCount
     ,listAllocationExceptions

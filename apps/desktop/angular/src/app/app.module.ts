@@ -20,6 +20,7 @@ import { CustomerAccountsComponent } from './customer-accounts/customer-accounts
 import { ChequeRegisterComponent } from './cheque-register/cheque-register.component';
 import { SupplyReceivingComponent } from './supply-receiving/supply-receiving.component';
 import { PattiyalWorkspaceComponent } from './supply-receiving/pattiyal-workspace.component';
+import { LotHistoryComponent } from './supply-receiving/lot-history.component';
 import { ReportsComponent } from './reports/reports.component';
 import { FieldTransactionInboxComponent } from './field-transaction-inbox/field-transaction-inbox.component';
 import { BusinessDayComponent } from './business-day/business-day.component';
@@ -47,6 +48,7 @@ import { routes } from './app.routes';
     ChequeRegisterComponent,
     SupplyReceivingComponent,
     PattiyalWorkspaceComponent,
+    LotHistoryComponent,
     ReportsComponent,
     FieldTransactionInboxComponent,
     BusinessDayComponent,

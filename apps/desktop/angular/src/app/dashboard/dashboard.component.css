@@ -250,3 +250,7 @@
    lot's own record number. Both read right-aligned. */
 .lot-meta { display: grid; justify-items: end; gap: 2px; min-width: 0; }
 .lot-held { color: #2f6bff; font-size: 10.5px; font-weight: 700; text-align: right; white-space: nowrap; }
+
+/* A lot row opens its own record on a double click. */
+.lot-row { cursor: default; }
+.lot-row:hover { background: #fafcff; }

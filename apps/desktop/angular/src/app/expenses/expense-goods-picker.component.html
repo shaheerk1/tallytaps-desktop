@@ -1,8 +1,31 @@
 <div class="goods-picker">
   <div class="picker-search">
-    <input type="search" data-flow-stay [(ngModel)]="term" (keyup.enter)="load()" placeholder="Find a GRN, supplier, lot or item" />
+    <input type="search" data-flow-stay [(ngModel)]="term" (ngModelChange)="onTermChanged()" (keyup.enter)="load()"
+      placeholder="Type a lot code (KAR1), or find a GRN, supplier or item" />
     <button type="button" (click)="load()" [disabled]="loading">{{ loading ? 'Finding…' : 'Find' }}</button>
   </div>
+
+  <p class="picker-matched" *ngIf="matchedByCode">
+    <strong>{{ matchedByCode }}</strong> picked its own lot and delivery.
+  </p>
+
+  <!-- Straight from the search: a delivery and its lots, one click each. -->
+  <div class="picker-results" *ngIf="term.trim() && targets.length">
+    <div class="picker-result" *ngFor="let grn of targets; trackBy: trackGrn" [class.chosen]="grn.id === goodsReceiptId">
+      <button type="button" class="result-head" (click)="pick(grn, null)">
+        <strong>{{ grn.grnNumber }}</strong>
+        <span>{{ grn.supplierCode || grn.supplierName }} · {{ grn.date }}<ng-container *ngIf="grn.vehicleNo"> · {{ grn.vehicleNo }}</ng-container></span>
+        <em *ngIf="grn.stockMode !== 'stock_receipt'">{{ grn.stockMode === 'purchase_record' ? 'Purchase record' : 'No quantities' }}</em>
+      </button>
+      <button type="button" class="result-lot" *ngFor="let lot of grn.lots; trackBy: trackLot"
+        [class.chosen]="lot.id === inventoryLotId" (click)="pick(grn, lot)">
+        <strong>{{ lotLabel(lot) }}</strong>
+        <small>{{ lotQuantities(lot) }}</small>
+      </button>
+    </div>
+  </div>
+  <p class="picker-empty" *ngIf="term.trim() && !targets.length && !loading">Nothing here matches that.</p>
+
   <label>
     <span>GRN it belongs to</span>
     <select [ngModel]="goodsReceiptId" (ngModelChange)="chooseGrn($event)">
@@ -12,11 +35,25 @@
     <small *ngIf="!term && !loading">Showing GRNs from the last 30 days. Search to find an older one.</small>
     <small class="picker-error" *ngIf="error">{{ error }}</small>
   </label>
+
   <label *ngIf="selected">
     <span>Lot</span>
     <select [ngModel]="inventoryLotId" (ngModelChange)="chooseLot($event)">
       <option [ngValue]="null">Whole GRN ({{ selected.lots.length }} {{ selected.lots.length === 1 ? 'lot' : 'lots' }}, shared by weight)</option>
-      <option *ngFor="let lot of selected.lots" [ngValue]="lot.id">{{ lot.lotTag || lot.lotCode }} · {{ lot.productName }}</option>
+      <option *ngFor="let lot of selected.lots" [ngValue]="lot.id">{{ lotLabel(lot) }} — {{ lotQuantities(lot) }}</option>
     </select>
   </label>
+
+  <!-- What the cost is about to be attached to, stated rather than implied. -->
+  <div class="picker-chosen" *ngIf="selectedLot">
+    <span>This cost goes on</span>
+    <strong>{{ lotLabel(selectedLot) }}</strong>
+    <small>{{ lotQuantities(selectedLot) }}</small>
+    <small class="picker-record">{{ selectedLot.lotCode }}</small>
+  </div>
+  <div class="picker-chosen" *ngIf="selected && !selectedLot">
+    <span>This cost goes on</span>
+    <strong>All of {{ selected.grnNumber }}</strong>
+    <small>{{ selected.lots.length }} {{ selected.lots.length === 1 ? 'lot' : 'lots' }}, shared by weight</small>
+  </div>
 </div>

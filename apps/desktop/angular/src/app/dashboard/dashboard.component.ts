@@ -199,6 +199,8 @@ export class DashboardComponent implements OnInit {
   // ── Shortcuts into Supplier Receiving ──────────────────────
 
   openLotCodes(): void { void this.pageLinks.openReceiving({ open: 'lot-codes' }); }
+  /** A double click on a lot opens its own record, where its whole story is. */
+  openLot(lot: LotRow): void { void this.pageLinks.openReceiving({ open: 'lot-codes', lotId: lot.id }); }
   newGrn(): void { void this.pageLinks.openReceiving({ open: 'new-grn' }); }
   newStatement(): void { void this.pageLinks.openReceiving({ open: 'new-statement' }); }
   sendGoodsOut(): void { void this.pageLinks.openReceiving({ open: 'send-out' }); }

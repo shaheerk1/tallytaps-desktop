@@ -61,6 +61,15 @@ function createInventoryIssueRepository({ database, documentSequenceRepository, 
           const base = measure(line.baseQuantity);
           if (handling == null || !(handling > 0)) throw new Error('Enter how many bags are leaving.');
 
+          // A lot nobody counted has no balance to check a load against, and
+          // keeps no stock to take it out of. What leaves it is still recorded,
+          // and is added to what it received when somebody finishes it.
+          const uncounted = Number(lot.quantity_known) === 0 && !lot.closed_at;
+          const keepsStock = Number(lot.stock_tracked) !== 0;
+          if (!keepsStock && !uncounted) {
+            throw new Error(`${lot.lot_code} is a purchase record, not stock, so nothing can be sent out of it.`);
+          }
+
           // A lot that tracks a second measure must state both. This single
           // rule is what the stock-count route was missing.
           const lotTracksBase = lot.remaining_base_quantity != null || lot.base_uom_snapshot != null;
@@ -68,14 +77,16 @@ function createInventoryIssueRepository({ database, documentSequenceRepository, 
             throw new Error(`${lot.lot_code} is measured in ${lot.base_uom_snapshot || 'a second unit'} as well. Enter that quantity too.`);
           }
 
-          const remainingHandling = Number(lot.remaining_handling_quantity || 0);
-          if (handling > remainingHandling + 0.0005) {
-            throw new Error(`${lot.lot_code} has only ${remainingHandling} left to send out.`);
-          }
-          if (base != null && lot.remaining_base_quantity != null) {
-            const remainingBase = Number(lot.remaining_base_quantity || 0);
-            if (base > remainingBase + 0.0005) {
-              throw new Error(`${lot.lot_code} has only ${remainingBase} ${lot.base_uom_snapshot || ''} left to send out.`);
+          if (!uncounted) {
+            const remainingHandling = Number(lot.remaining_handling_quantity || 0);
+            if (handling > remainingHandling + 0.0005) {
+              throw new Error(`${lot.lot_code} has only ${remainingHandling} left to send out.`);
+            }
+            if (base != null && lot.remaining_base_quantity != null) {
+              const remainingBase = Number(lot.remaining_base_quantity || 0);
+              if (base > remainingBase + 0.0005) {
+                throw new Error(`${lot.lot_code} has only ${remainingBase} ${lot.base_uom_snapshot || ''} left to send out.`);
+              }
             }
           }
 
@@ -88,15 +99,18 @@ function createInventoryIssueRepository({ database, documentSequenceRepository, 
               handling, base, lot.handling_uom_snapshot, lot.base_uom_snapshot, text(line.note) || null]
           );
 
-          await connection.execute(
-            `UPDATE inventory_lots
-             SET remaining_handling_quantity = remaining_handling_quantity - ?,
-                 remaining_quantity = remaining_quantity - ?,
-                 remaining_base_quantity = CASE WHEN remaining_base_quantity IS NULL THEN NULL ELSE remaining_base_quantity - ? END,
-                 remaining_kilos = CASE WHEN remaining_kilos IS NULL THEN NULL ELSE remaining_kilos - ? END
-             WHERE id = ?`,
-            [handling, handling, base || 0, base || 0, lot.id]
-          );
+          // Nothing to run down on a lot that never held a balance.
+          if (!uncounted) {
+            await connection.execute(
+              `UPDATE inventory_lots
+               SET remaining_handling_quantity = remaining_handling_quantity - ?,
+                   remaining_quantity = remaining_quantity - ?,
+                   remaining_base_quantity = CASE WHEN remaining_base_quantity IS NULL THEN NULL ELSE remaining_base_quantity - ? END,
+                   remaining_kilos = CASE WHEN remaining_kilos IS NULL THEN NULL ELSE remaining_kilos - ? END
+               WHERE id = ?`,
+              [handling, handling, base || 0, base || 0, lot.id]
+            );
+          }
 
           // A weighed load is a weighbridge reading in the lot's measurement
           // history; an unweighed one is simply what left.
@@ -110,7 +124,9 @@ function createInventoryIssueRepository({ database, documentSequenceRepository, 
               `Sent to ${shopName}`, userId || null]
           );
 
-          await inventoryLedgerRepository.postWithConnection(connection, {
+          // A lot that keeps no stock has nothing to take out of the ledger;
+          // posting one would be the very thing that drives it negative.
+          if (keepsStock) await inventoryLedgerRepository.postWithConnection(connection, {
             productId: lot.product_id,
             inventoryLotId: lot.id,
             locCode, macCode, businessDate,

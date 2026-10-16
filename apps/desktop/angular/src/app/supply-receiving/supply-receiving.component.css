@@ -169,3 +169,15 @@ button { font:inherit; font-weight:700; cursor:pointer; } button:disabled { curs
 .lot-finish { margin-left:8px; padding:3px 8px; font-size:10.5px; }
 
 .lot-code-record .lot-held { display:block; margin-top:2px; color:#2f6bff; font-size:10.5px; font-weight:700; }
+
+/* ── Adjusting one lot ──────────────────────────────────────── */
+.lot-adjust .section-hint { margin: 0 0 10px; }
+.lot-adjust-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; margin: 10px 0; border: 1px solid var(--ui-border, #e4e8f0); border-radius: 8px; overflow: hidden; background: var(--ui-border, #e4e8f0); }
+.lot-adjust-facts > div { display: grid; gap: 2px; padding: 8px 10px; background: #fff; }
+.lot-adjust-facts span { color: var(--ui-ink-muted, #64748b); font-size: 9px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+.lot-adjust-facts strong { font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.lot-adjust-history { margin-top: 12px; }
+.lot-adjust-history h4 { margin: 0 0 6px; color: var(--ui-ink-muted, #64748b); font-size: 10px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+.lot-adjust-row { display: grid; grid-template-columns: 120px minmax(120px, .9fr) minmax(140px, 1.4fr) 92px; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--ui-border, #e4e8f0); font-size: 11.5px; }
+.lot-adjust-kind { padding: 2px 7px; border-radius: 999px; background: #fdf0d8; color: #8a5a12; font-size: 9px; font-weight: 900; text-transform: uppercase; justify-self: start; }
+.lot-adjust-kind.sent { background: #eaf1ff; color: #2f6bff; }

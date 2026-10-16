@@ -1,5 +1,8 @@
 <section class="invoice-history">
-  <header class="invoice-header"><h1>Invoice Archive <span>~ Historical Bills</span></h1><p>Find finalized sales, inspect their immutable details, reprint, or save a PDF copy.</p></header>
+  <header class="invoice-header">
+    <button type="button" class="btn secondary go-back" *ngIf="backTo" (click)="goBack()">&larr; Back to {{ backTo.label }}</button>
+    <h1>Invoice Archive <span>~ Historical Bills</span></h1><p>Find finalized sales, inspect their immutable details, reprint, or save a PDF copy.</p>
+  </header>
   <div class="filters">
     <label>Location<input [(ngModel)]="locCode" (change)="search()" /></label><label>Machine<input [(ngModel)]="macCode" (change)="search()" /></label><label>Billing date<input type="date" [(ngModel)]="txnDate" (change)="search()" /></label><label>Customer code<input [(ngModel)]="customerCode" (keyup.enter)="search()" placeholder="Customer code" /></label><label>Invoice or receipt<input [(ngModel)]="term" (keyup.enter)="search()" placeholder="Invoice or receipt #" /></label><label class="check-filter" title="Bills returned in full are hidden by default. Bills where only part came back always stay in the list, marked, with their net value."><input type="checkbox" [(ngModel)]="showRefunded" (change)="search()" /> Show fully returned bills</label><button class="btn" (click)="search()">Search</button>
   </div>

@@ -74,6 +74,27 @@ closed control where the chosen lot is summarised. Reading "Rem 0/0" there is
 what a cashier sees for most of a bill, so the closed control has to say the
 same thing as the list it came from.
 
+## The other two ways goods leave it
+
+Billing is not the only one. A load can leave on another lorry, and goods can
+be wasted, damaged or sent back to the supplier. Both are open to a lot nobody
+counted, and both work the same way as a sale does there: the movement is
+recorded, no balance is run down (there is none), and nothing is posted to the
+stock ledger (it keeps none). Posting either would be the very thing that
+drives the ledger negative.
+
+So an uncounted lot accepts only *outflows*. An adjustment that would add goods
+back is refused: there is no balance to add to, and a bag that is still there
+is not a fact anybody counted.
+
+**Finishing it therefore counts all three.** What such a lot received is the
+whole of what left it -- billed, sent out, and lost -- because that is the only
+number anybody can honestly write down for a load nobody counted. A lot that
+sold 15, sent out 3 and wasted 2 is recorded as having received 20.
+
+A counted lot is unchanged by any of this: an adjustment moves its balance and
+its stock movement together, as it always did.
+
 ## What bills still on the counter have booked
 
 Every lot, counted or not, also shows what bills **being written** have booked

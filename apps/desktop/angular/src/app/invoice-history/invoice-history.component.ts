@@ -71,6 +71,15 @@ export class InvoiceHistoryComponent implements OnInit, OnDestroy {
     void this.pageLinks.consume(this.route);
   }
 
+  /**
+   * Where this archive was opened from, when it was opened from somewhere
+   * else. The link itself is spent as soon as it is applied, so the way back
+   * is held by the link service rather than read out of the address.
+   */
+  get backTo(): { label: string } | null { return this.pageLinks.returnTarget; }
+
+  goBack(): void { void this.pageLinks.goBack(); }
+
   /** A new bill needs the right to create bills, nothing more: it posts only when finalized. */
   get canCopyBill(): boolean { return this.session.hasPermission('billing.create'); }
 

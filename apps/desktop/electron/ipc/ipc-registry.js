@@ -639,6 +639,13 @@ function registerIpcHandlers(services) {
   wrapIpcHandler('supply.agreements.list', async (payload) => services.catalogService.listSupplyAgreements(payload?.supplierId || null), { authorize: requireSuppliersView });
   wrapIpcHandler('inventory.lots.list', async (payload) => services.catalogService.listInventoryLots(payload?.productId || null, payload?.locCode || null), { authorize: requireReceivingView });
   wrapIpcHandler('inventory.summary.list', async (payload) => services.catalogService.listInventorySummary(payload?.locCode), { authorize: requireReceivingView });
+  // Lot history: what this location's lots did, retired ones included. The
+  // list and a lot's own record go with the right to see receiving; what a lot
+  // earned is money, so it sits behind the right to see lot costs.
+  wrapIpcHandler('inventory.lots.history', async (payload) => services.lotHistoryService.listLots(payload?.filters || {}), { authorize: requireReceivingView });
+  wrapIpcHandler('inventory.lots.summary', async (payload) => services.lotHistoryService.getSummary(payload || {}), { authorize: requireReceivingView });
+  wrapIpcHandler('inventory.lots.saleLines', async (payload) => services.lotHistoryService.listSaleLines(payload || {}), { authorize: requireLotCostingView });
+  wrapIpcHandler('inventory.lots.bills', async (payload) => services.lotHistoryService.listBills(payload || {}), { authorize: requireLotCostingView });
   wrapIpcHandler('inventory.counts.finalize', async (payload) => services.catalogService.finalizeStockCount(payload?.count || {}), { authorize: requireInventoryAdjust });
   wrapIpcHandler('inventory.issues.list', async (payload) => services.inventoryIssueService.listIssues(payload?.filters || {}), { authorize: requireReceivingView });
   wrapIpcHandler('inventory.issues.record', async (payload) => services.inventoryIssueService.recordIssue({ ...(payload?.issue || {}), userId: payload?.actor?.id || null }), { authorize: requireInventoryIssue });
@@ -653,6 +660,19 @@ function registerIpcHandlers(services) {
   wrapIpcHandler('inventory.lots.close', async (payload) => services.catalogService.closeOpenLot({
     lotId: payload?.lotId, reason: payload?.reason, locCode: payload?.locCode, userId: actorId(payload)
   }), { authorize: requireReceivingManage });
+
+  // One lot adjusted: wastage, damage, goods back to the supplier, or a count
+  // that disagrees. The location and date come from the signed-in workstation.
+  wrapIpcHandler('inventory.lots.adjust', async (payload) => {
+    const adjustment = payload?.adjustment || {};
+    return services.catalogService.adjustLot({
+      ...adjustment,
+      locCode: adjustment.origin?.locCode,
+      macCode: adjustment.origin?.macCode,
+      businessDate: adjustment.origin?.txnDate,
+      userId: actorId(payload)
+    });
+  }, { authorize: requireInventoryAdjust });
 
   wrapIpcHandler('inventory.allocations.exceptions', async (payload) => services.catalogService.listAllocationExceptions(payload?.locCode), { authorize: requireReceivingView });
   wrapIpcHandler('inventory.allocations.list', async (payload) => services.catalogService.listRecentLotAllocations(payload?.locCode, payload?.limit), { authorize: requireReceivingView });

@@ -265,13 +265,24 @@ function createLotCostingRepository({ database, documentSequenceRepository, busi
         params.push(like, like, like, like, like, like);
       }
       const [rows] = await connection.query(
-        `SELECT g.id AS goods_receipt_id, g.grn_number, g.business_date, g.stock_mode, s.name AS supplier_name, s.supplier_code,
-                l.id AS lot_id, l.lot_code, l.lot_tag, p.name AS product_name
+        `SELECT g.id AS goods_receipt_id, g.grn_number, g.business_date, g.stock_mode, g.vehicle_no,
+                s.name AS supplier_name, s.supplier_code,
+                l.id AS lot_id, l.lot_code, l.lot_tag, p.name AS product_name, p.sku,
+                l.quantity_known, l.closed_at, l.handling_uom_snapshot, l.base_uom_snapshot,
+                l.received_handling_quantity, l.received_base_quantity,
+                l.remaining_handling_quantity, l.remaining_base_quantity,
+                COALESCE(sold.handling, 0) AS sold_handling, COALESCE(sold.base, 0) AS sold_base
          FROM goods_receipts g
          JOIN suppliers s ON s.id = g.supplier_id
          JOIN goods_receipt_lines gl ON gl.goods_receipt_id = g.id
          JOIN inventory_lots l ON l.goods_receipt_line_id = gl.id
          JOIN products p ON p.id = l.product_id
+         LEFT JOIN (
+           SELECT inventory_lot_id,
+                  SUM(CASE WHEN document_type = 'refund' THEN -handling_quantity ELSE handling_quantity END) AS handling,
+                  SUM(CASE WHEN document_type = 'refund' THEN -COALESCE(base_quantity, 0) ELSE COALESCE(base_quantity, 0) END) AS base
+             FROM lot_sale_allocations GROUP BY inventory_lot_id
+         ) sold ON sold.inventory_lot_id = l.id
          WHERE ${clauses.join(' AND ')}
          ORDER BY g.business_date DESC, g.id DESC, l.line_no`, params
       );
@@ -280,9 +291,30 @@ function createLotCostingRepository({ database, documentSequenceRepository, busi
         const id = Number(row.goods_receipt_id);
         if (!grns.has(id)) {
           if (grns.size >= Math.min(200, Math.max(1, Number(filters.limit || 60)))) continue;
-          grns.set(id, { id, grnNumber: row.grn_number, date: dateOnly(row.business_date), supplierName: row.supplier_name, supplierCode: row.supplier_code || null, stockMode: row.stock_mode === 'purchase_record' ? 'purchase_record' : 'stock_receipt', lots: [] });
+          grns.set(id, {
+            id, grnNumber: row.grn_number, date: dateOnly(row.business_date),
+            supplierName: row.supplier_name, supplierCode: row.supplier_code || null,
+            vehicleNo: row.vehicle_no || null,
+            stockMode: row.stock_mode === 'purchase_record' ? 'purchase_record' : (row.stock_mode === 'open_lot' ? 'open_lot' : 'stock_receipt'),
+            lots: []
+          });
         }
-        grns.get(id).lots.push({ id: Number(row.lot_id), lotCode: row.lot_code, lotTag: row.lot_tag || null, productName: row.product_name });
+        // The quantities travel with the lot so the person attaching a cost can
+        // see they picked the right goods, not just the right code.
+        const measure = (value) => (value == null ? null : Math.round(Number(value) * 1000) / 1000);
+        grns.get(id).lots.push({
+          id: Number(row.lot_id), lotCode: row.lot_code, lotTag: row.lot_tag || null,
+          productName: row.product_name, sku: row.sku,
+          quantityKnown: Number(row.quantity_known) !== 0,
+          closed: Boolean(row.closed_at),
+          handlingUom: row.handling_uom_snapshot, baseUom: row.base_uom_snapshot,
+          receivedHandling: measure(row.received_handling_quantity) || 0,
+          receivedBase: measure(row.received_base_quantity),
+          remainingHandling: measure(row.remaining_handling_quantity) || 0,
+          remainingBase: measure(row.remaining_base_quantity),
+          soldHandling: measure(row.sold_handling) || 0,
+          soldBase: measure(row.sold_base) || 0
+        });
       }
       return [...grns.values()];
     });

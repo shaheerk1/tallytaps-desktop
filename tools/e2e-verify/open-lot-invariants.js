@@ -9,10 +9,12 @@
  *      counted stock, and leaves the open lot alone;
  *   4. the supplier is owed for what sold out of it, as consignment always is;
  *   5. it keeps no stock, so nothing in the stock ledger goes negative;
- *   6. closing it writes down what it sold as what it received, and frees the
- *      code for the next lot;
- *   7. a closed lot cannot be sold from or closed again;
- *   8. a delivery with no quantities cannot be an owned purchase.
+ *   6. goods also leave it on another lorry and as wastage, and neither
+ *      touches a balance or the stock ledger;
+ *   7. closing it writes down everything that left it as what it received, and
+ *      frees the code for the next lot;
+ *   8. a closed lot cannot be sold from or closed again;
+ *   9. a delivery with no quantities cannot be an owned purchase.
  */
 const { runVerifier, assert, expectRefusal } = require('./lib/ipc-harness');
 
@@ -197,21 +199,77 @@ runVerifier('Open lot invariants', async (app) => {
     `A lot no held line names is untouched, got ${JSON.stringify({ held: countedWhileHeld.held_handling, left: countedWhileHeld.remaining_handling_quantity })}.`);
   passed.push('a bill still being written shows what it has booked, on the lot it named');
 
-  // ── 6. Finishing it ───────────────────────────────────────
+  // ── 6. Goods leaving it any other way ─────────────────────
+  // The held line would otherwise sit in the way of finishing the lot.
+  await ok('billing.bill.abandon', { bill: { ...origin, receiptNo: heldBill.receiptNo, userId } });
+
+  await ok('inventory.issues.record', { issue: {
+    locCode: 'OPL01', macCode: 'O1', businessDate: DATE, destination: 'Rohana Stores',
+    vehicleNumber: 'LR-2211', userId,
+    lines: [{ inventoryLotId: openLot.id, handlingQuantity: 3, baseQuantity: null, note: 'Second shop' }]
+  } });
+  const afterIssue = await db(
+    'SELECT remaining_handling_quantity, active_lot_tag FROM inventory_lots WHERE id = ?', [openLot.id]
+  );
+  assert(money(afterIssue[0].remaining_handling_quantity) === 0 && afterIssue[0].active_lot_tag != null,
+    'A load sent out of an uncounted lot runs no balance down and leaves its code alone.');
+  const issueMoves = await db(
+    "SELECT id FROM stock_movements WHERE inventory_lot_id = ? AND document_type = 'inventory_issue'", [openLot.id]
+  );
+  assert(issueMoves.length === 0,
+    `and posts nothing to the stock ledger, because the lot keeps no stock, got ${issueMoves.length}.`);
+
+  await ok('inventory.lots.adjust', { adjustment: {
+    inventoryLotId: openLot.id, kind: 'loss', handlingQuantity: -2, baseQuantity: null,
+    reason: 'Spoiled in the rain', origin
+  } });
+  const adjustMoves = await db(
+    "SELECT id FROM stock_movements WHERE inventory_lot_id = ? AND document_type = 'stock_adjustment'", [openLot.id]
+  );
+  assert(adjustMoves.length === 0, 'Wastage on an uncounted lot writes no stock movement either.');
+  await expectRefusal(
+    call('inventory.lots.adjust', { adjustment: {
+      inventoryLotId: openLot.id, kind: 'correction', handlingQuantity: 4, baseQuantity: null,
+      reason: 'found more', origin
+    } }),
+    /no balance to add to/, 'adding goods back to a lot nobody counted'
+  );
+  passed.push('goods leave it on another lorry and as wastage, with no balance and no ledger touched');
+
+  // A counted lot is adjusted the ordinary way: its balance moves, and so
+  // does the stock ledger.
+  await ok('inventory.lots.adjust', { adjustment: {
+    inventoryLotId: countedLot.id, kind: 'damage', handlingQuantity: -1, baseQuantity: null,
+    reason: 'Torn bag', origin
+  } });
+  const [countedAdjusted] = await db('SELECT remaining_handling_quantity FROM inventory_lots WHERE id = ?', [countedLot.id]);
+  assert(money(countedAdjusted.remaining_handling_quantity) === 15,
+    `A counted lot loses what was wasted, got ${countedAdjusted.remaining_handling_quantity} of 15.`);
+  const countedMoves = await db(
+    "SELECT COALESCE(SUM(handling_quantity_delta), 0) AS delta FROM stock_movements WHERE inventory_lot_id = ? AND document_type = 'stock_adjustment'",
+    [countedLot.id]
+  );
+  assert(money(countedMoves[0].delta) === -1,
+    `and the stock ledger loses it too, got ${countedMoves[0].delta}.`);
+  passed.push('wastage on a counted lot moves its balance and the stock ledger together');
+
+  // ── 7. Finishing it ───────────────────────────────────────
   const closed = await ok('inventory.lots.close', { lotId: openLot.id, reason: 'Load finished', locCode: 'OPL01' });
-  assert(closed.closed === true && money(closed.soldHandling) === 15, `Closing must report what it sold, got ${JSON.stringify(closed)}.`);
+  // 15 billed, 3 sent out, 2 wasted: everything that left it was once in it.
+  assert(closed.closed === true && money(closed.soldHandling) === 20,
+    `Closing must count everything that left it, got ${JSON.stringify(closed)}.`);
   const [finished] = await db(
     'SELECT quantity_known, received_handling_quantity, remaining_handling_quantity, active_lot_tag, closed_at, closed_reason FROM inventory_lots WHERE id = ?',
     [openLot.id]
   );
-  assert(Number(finished.quantity_known) === 1 && money(finished.received_handling_quantity) === 15,
+  assert(Number(finished.quantity_known) === 1 && money(finished.received_handling_quantity) === 20,
     `What it sold becomes what it received, got ${JSON.stringify(finished)}.`);
   assert(money(finished.remaining_handling_quantity) === 0 && finished.active_lot_tag == null,
     'It reads as a lot that sold out, and its code is free again.');
   assert(finished.closed_reason === 'Load finished', 'The reason is kept with it.');
-  passed.push('closing writes down what it sold as what it received, and frees the code');
+  passed.push('closing writes down everything that left it as what it received, and frees the code');
 
-  // ── 7. Not after that ─────────────────────────────────────
+  // ── 8. Not after that ─────────────────────────────────────
   await expectRefusal(
     call('inventory.lots.close', { lotId: openLot.id, reason: 'again', locCode: 'OPL01' }),
     /already finished/, 'finishing a lot twice'
@@ -226,7 +284,7 @@ runVerifier('Open lot invariants', async (app) => {
   );
   passed.push('a finished lot takes no more sales and cannot be finished again');
 
-  // ── 8. Only consignment ───────────────────────────────────
+  // ── 9. Only consignment ───────────────────────────────────
   await expectRefusal(
     call('supply.goodsReceipts.drafts.save', { receipt: {
       supplierName: 'Owned Farm', ownershipModel: 'owned', stockMode: 'open_lot',

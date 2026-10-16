@@ -12,9 +12,19 @@ export class SupplyReceivingComponent implements OnInit, OnDestroy {
   activePanel: 'receive' | 'pattiyal' | 'inventory' = 'receive';
   /** Which part of Stock control is open. Unmatched sales are shown on their tab, so none go unnoticed. */
   stockTab: 'onhand' | 'lotcodes' | 'adjust' | 'sendout' | 'allocation' = 'onhand';
+  /** A lot another screen asked to open, on the way back from one of its bills. */
+  openLotFromLink: number | null = null;
   panelInfo = ''; panelError = '';
   receipt: any = { supplierId: null, supplierName: '', ownershipModel: 'owned', stockMode: 'stock_receipt', businessDate: new Date().toISOString().slice(0, 10), vehicleNo: '', externalReference: '', lines: [{ productId: null, packageQty: null, packageUnit: '', receivedKilos: null, expectedKilos: null, expectedBasePerHandling: null, ratioTolerancePercent: 20, conversionMode: 'variable', unitCost: null }] };
   adjustment: any = { productId: null, handlingQuantity: null, baseQuantity: null, businessDate: new Date().toISOString().slice(0, 10), reason: '' };
+  /**
+   * An adjustment on one named lot. Quantities are typed as plain amounts and
+   * turned into signed deltas when recorded: wastage, damage and a supplier
+   * return always take goods off, and only a count correction may add any back.
+   */
+  lotAdjustment: any = { inventoryLotId: null, kind: 'loss', direction: 'off', handlingQuantity: null, baseQuantity: null, reason: '' };
+  lotAdjustmentSummary: any = null;
+  lotAdjustmentLoading = false;
   stockCount: any = { businessDate: new Date().toISOString().slice(0, 10), reason: '', lines: [] };
   issues: any[] = [];
   /** Goods leaving on someone else's lorry. Both measures are required. */
@@ -57,6 +67,9 @@ export class SupplyReceivingComponent implements OnInit, OnDestroy {
     } else if (link.open === 'lot-codes' || link.open === 'send-out' || link.open === 'adjust-count') {
       this.selectPanel('inventory');
       this.stockTab = link.open === 'lot-codes' ? 'lotcodes' : link.open === 'send-out' ? 'sendout' : 'adjust';
+      // Coming back from a bill: the history below opens at that lot instead
+      // of at the list, so the trip back lands where the trip out started.
+      this.openLotFromLink = Number(link.lotId) || null;
     } else if (link.open === 'new-statement') {
       this.selectPanel('pattiyal');
       // The statement workspace appears with the tab; start the draft once it is there.
@@ -442,6 +455,78 @@ export class SupplyReceivingComponent implements OnInit, OnDestroy {
   async printGrn(id: number): Promise<void> { const detail = await this.receiptDetail(id); if (!detail) return; const result = await this.printing.printDocument(this.grnDocument(detail, await this.printSettings())); this.info = result.success ? 'GRN acknowledgement sent to the receipt printer.' : result.error || 'GRN print failed.'; }
   async saveGrnPdf(id: number): Promise<void> { const detail = await this.receiptDetail(id); if (!detail) return; const number = detail.receipt.grn_number; const result = await this.printing.savePdf(this.grnDocument(detail, await this.printSettings()), { prompt: true, fileName: `${number}.pdf` }); this.info = result.success ? (result.canceled ? 'PDF save canceled.' : `GRN PDF saved to ${result.filePath}.`) : result.error || 'GRN PDF save failed.'; }
   async saveAdjustment(): Promise<void> { const result = await this.api().adjustStock({ ...this.adjustment, ...this.origin(this.adjustment.businessDate) }, this.actor()); if (!result.success) { this.error = result.error || 'Could not save stock adjustment.'; return; } this.info = 'Dual stock adjustment recorded.'; this.adjustment.handlingQuantity = null; this.adjustment.baseQuantity = null; this.adjustment.reason = ''; await this.load(); }
+  // ---- adjusting one lot -------------------------------------------------
+
+  /** Every lot that can still take an adjustment: it holds stock, or nobody counted it. */
+  get adjustableLots(): any[] {
+    return this.lots.filter((lot: any) => this.lotIsOpen(lot)
+      || Number(lot.remaining_handling_quantity || 0) > 0.0005
+      || Number(lot.remaining_base_quantity || 0) > 0.0005);
+  }
+
+  /** A lot nobody counted has no balance, so only what leaves it can be recorded. */
+  get lotAdjustmentIsUncounted(): boolean {
+    const lot = this.lotById(this.lotAdjustment.inventoryLotId);
+    return !!lot && this.lotIsOpen(lot);
+  }
+
+  get lotAdjustmentTakesOff(): boolean {
+    if (this.lotAdjustment.kind !== 'correction') return true;
+    return this.lotAdjustment.direction !== 'back';
+  }
+
+  get canRecordLotAdjustment(): boolean {
+    if (!this.lotAdjustment.inventoryLotId || !String(this.lotAdjustment.reason || '').trim()) return false;
+    return Number(this.lotAdjustment.handlingQuantity || 0) > 0 || Number(this.lotAdjustment.baseQuantity || 0) > 0;
+  }
+
+  /** The chosen lot in full, so the person can see they picked the right one. */
+  async onLotAdjustmentLotChanged(): Promise<void> {
+    this.lotAdjustmentSummary = null;
+    const lotId = Number(this.lotAdjustment.inventoryLotId || 0);
+    if (!lotId) return;
+    if (this.lotIsOpen(this.lotById(lotId))) this.lotAdjustment.direction = 'off';
+    this.lotAdjustmentLoading = true;
+    const result = await this.api().getLotSummary(lotId, this.origin().locCode, this.actor());
+    this.lotAdjustmentLoading = false;
+    if (result?.success) this.lotAdjustmentSummary = result.data;
+  }
+
+  async recordLotAdjustment(): Promise<void> {
+    if (this.saving || !this.canRecordLotAdjustment) return;
+    const sign = this.lotAdjustmentTakesOff ? -1 : 1;
+    const magnitude = (value: unknown) => {
+      const amount = Math.abs(Number(value || 0));
+      return amount > 0 ? Math.round(amount * sign * 1000) / 1000 : null;
+    };
+    this.saving = true;
+    const result = await this.api().adjustLot({
+      inventoryLotId: Number(this.lotAdjustment.inventoryLotId),
+      kind: this.lotAdjustment.kind,
+      handlingQuantity: magnitude(this.lotAdjustment.handlingQuantity),
+      baseQuantity: magnitude(this.lotAdjustment.baseQuantity),
+      reason: String(this.lotAdjustment.reason || '').trim(),
+      origin: this.origin(this.adjustment.businessDate)
+    }, this.actor());
+    this.saving = false;
+    if (!result?.success) { this.reportError(result?.error || 'Could not adjust this lot.'); return; }
+    const lotId = Number(this.lotAdjustment.inventoryLotId);
+    this.reportSuccess(`${result.data.lotTag || result.data.lotCode} adjusted.`
+      + (result.data.countedStock ? ' Stock and the lot balance moved with it.' : ' It keeps no stock, so only the record moved.'));
+    this.lotAdjustment = { ...this.lotAdjustment, handlingQuantity: null, baseQuantity: null, reason: '' };
+    await this.load();
+    this.lotAdjustment.inventoryLotId = lotId;
+    await this.onLotAdjustmentLotChanged();
+  }
+
+  adjustmentKindLabel(kind: string): string {
+    if (kind === 'loss') return 'Wastage';
+    if (kind === 'damage') return 'Damaged';
+    if (kind === 'supplier_return') return 'Back to supplier';
+    if (kind === 'physical_count') return 'Counted';
+    return 'Correction';
+  }
+
   eligibleAllocationLots(productId: number, saleDate: string, excludeLotId: number | null = null): any[] { return this.lots.filter((lot: any) => Number(lot.product_id) === Number(productId) && Number(lot.id) !== Number(excludeLotId) && this.dateInput(lot.txn_date) <= this.dateInput(saleDate) && (Number(lot.remaining_handling_quantity || 0) > 0.0005 || Number(lot.remaining_base_quantity || 0) > 0.0005)); }
   beginExceptionAllocation(item: any): void { const candidates = this.eligibleAllocationLots(item.product_id, item.txn_date); this.exceptionAllocation = { exceptionId: item.id, productId: item.product_id, saleDate: this.dateInput(item.txn_date), inventoryLotId: candidates[0]?.id || null, handlingQuantity: Number(item.unallocated_handling_quantity || 0), baseQuantity: item.unallocated_base_quantity == null ? null : Number(item.unallocated_base_quantity), reason: '' }; }
   cancelExceptionAllocation(): void { this.exceptionAllocation = { exceptionId: null, productId: null, saleDate: '', inventoryLotId: null, handlingQuantity: null, baseQuantity: null, reason: '' }; }
@@ -458,7 +543,20 @@ export class SupplyReceivingComponent implements OnInit, OnDestroy {
   addIssueLine(): void { this.issue.lines.push({ inventoryLotId: null, handlingQuantity: null, baseQuantity: null, note: '' }); }
   removeIssueLine(index: number): void { if (this.issue.lines.length > 1) this.issue.lines.splice(index, 1); }
   get issueLotsAvailable(): any[] {
-    return this.lots.filter((lot: any) => Number(lot.remaining_handling_quantity || 0) > 0.0005 || Number(lot.remaining_base_quantity || 0) > 0.0005);
+    // A lot nobody counted has no balance to send out of, but the goods are
+    // real and can leave on another lorry like any others. What left it is
+    // added to what it received when somebody finishes it.
+    return this.lots.filter((lot: any) => this.lotIsOpen(lot)
+      || Number(lot.remaining_handling_quantity || 0) > 0.0005
+      || Number(lot.remaining_base_quantity || 0) > 0.0005);
+  }
+
+  /** What a lot has left, or that nobody ever counted it. */
+  lotStockText(lot: any): string {
+    if (this.lotIsOpen(lot)) return 'not counted';
+    const parts = [`${Number(lot.remaining_handling_quantity || 0)} ${lot.handling_uom_snapshot || ''}`.trim()];
+    if (lot.remaining_base_quantity != null) parts.push(`${Number(lot.remaining_base_quantity)} ${lot.base_uom_snapshot || ''}`.trim());
+    return `${parts.join(' / ')} left`;
   }
 
   async recordIssue(): Promise<void> {

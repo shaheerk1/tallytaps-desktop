@@ -43,6 +43,24 @@ export type BillingCopyLink = {
  */
 export type ReceivingLink = {
   open: 'new-grn' | 'new-statement' | 'lot-codes' | 'send-out' | 'adjust-count';
+  /** With 'lot-codes': open this lot's own summary rather than the list. */
+  lotId?: number;
+};
+
+/**
+ * Where a screen was opened from, so it can offer a way back.
+ *
+ * Held in memory rather than in the address, because a link is consumed as
+ * soon as it is applied and the way back has to outlive it. It is the one
+ * link the user walks in both directions, so the return trip carries its own
+ * link -- the lot summary reopens at the lot, not at the list.
+ */
+export type ReturnTarget = {
+  /** Where to go, as a link of its own. */
+  url: string;
+  queryParams?: Record<string, string | number>;
+  /** What to call it on the button: "Back to lot BONS". */
+  label: string;
 };
 
 const RECEIVING_TARGETS: ReceivingLink['open'][] = ['new-grn', 'new-statement', 'lot-codes', 'send-out', 'adjust-count'];
@@ -55,7 +73,7 @@ const PARAMS = {
     copyFromInvoiceId: 'copyFrom'
   },
   receiving: {
-    open: 'open'
+    open: 'open', lotId: 'lot'
   }
 } as const;
 
@@ -66,7 +84,25 @@ const ALL_LINK_PARAMS: string[] = Object.values(PARAMS).flatMap((group) => Objec
 export class PageLinksService {
   constructor(private router: Router) {}
 
-  openInvoiceArchive(link: InvoiceArchiveLink): Promise<boolean> {
+  /** Where the screen now opening should offer to go back to, if anywhere. */
+  private pendingReturn: ReturnTarget | null = null;
+
+  get returnTarget(): ReturnTarget | null { return this.pendingReturn; }
+
+  /** Takes the offered way back, and spends it: it is good for one trip. */
+  goBack(): Promise<boolean> {
+    const target = this.pendingReturn;
+    this.pendingReturn = null;
+    if (!target) return Promise.resolve(false);
+    return this.router.navigate([target.url], { queryParams: target.queryParams || {} });
+  }
+
+  clearReturn(): void { this.pendingReturn = null; }
+
+  openInvoiceArchive(link: InvoiceArchiveLink, returnTo: ReturnTarget | null = null): Promise<boolean> {
+    // A screen that offers no way back clears the last one, so a stale offer
+    // never appears on a bill opened some other way.
+    this.pendingReturn = returnTo;
     const p = PARAMS.invoiceArchive;
     return this.router.navigate(['/invoices'], {
       queryParams: withoutEmpty({
@@ -87,7 +123,9 @@ export class PageLinksService {
   }
 
   openReceiving(link: ReceivingLink): Promise<boolean> {
-    return this.router.navigate(['/receiving'], { queryParams: { [PARAMS.receiving.open]: link.open } });
+    return this.router.navigate(['/receiving'], {
+      queryParams: withoutEmpty({ [PARAMS.receiving.open]: link.open, [PARAMS.receiving.lotId]: link.lotId })
+    });
   }
 
   /**
@@ -130,7 +168,9 @@ export function readBillingCopyLink(params: ParamMap): BillingCopyLink | null {
 
 export function readReceivingLink(params: ParamMap): ReceivingLink | null {
   const open = params.get(PARAMS.receiving.open) as ReceivingLink['open'] | null;
-  return open && RECEIVING_TARGETS.includes(open) ? { open } : null;
+  if (!open || !RECEIVING_TARGETS.includes(open)) return null;
+  const lotId = positiveInteger(params.get(PARAMS.receiving.lotId));
+  return lotId ? { open, lotId } : { open };
 }
 
 function positiveInteger(value: string | null): number | null {

@@ -10,3 +10,30 @@
 .goods-picker input:focus, .goods-picker select:focus { border-color:var(--ui-primary); outline:none; box-shadow:var(--ui-focus); }
 .goods-picker select { appearance:none; padding-right:38px; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5' fill='none' stroke='%2364748b' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); background-position:right 13px center; background-repeat:no-repeat; cursor:pointer; }
 .goods-picker select option { padding:6px 8px; font-size:15px; }
+
+/* A typed code that picked its own lot. */
+.goods-picker .picker-matched { margin:0; padding:7px 10px; border:1px solid #9dcec0; border-radius:8px; background:var(--ui-success-soft); color:#075d49; font-size:12px; }
+.goods-picker .picker-matched strong { font-family:ui-monospace,'Cascadia Mono',Consolas,monospace; }
+.goods-picker .picker-empty { margin:0; color:var(--ui-ink-muted); font-size:12px; }
+
+/* Search results: a delivery, then its lots, each one click. */
+.picker-results { display:grid; gap:8px; max-height:280px; overflow:auto; padding:2px; }
+.picker-result { border:1px solid var(--ui-border-strong); border-radius:8px; background:var(--ui-surface); overflow:hidden; }
+.picker-result.chosen { border-color:var(--ui-primary); box-shadow:inset 3px 0 var(--ui-primary); }
+.picker-result button { display:grid; width:100%; padding:7px 10px; border:0; background:transparent; color:var(--ui-ink); text-align:left; font:inherit; cursor:pointer; }
+.picker-result button:hover { background:#f5f9ff; }
+.result-head { grid-template-columns:auto 1fr auto; gap:8px; align-items:baseline; border-bottom:1px solid var(--ui-border); background:var(--ui-surface-muted); }
+.result-head strong { font-size:12.5px; }
+.result-head span { color:var(--ui-ink-muted); font-size:11px; }
+.result-head em { padding:2px 7px; border-radius:999px; background:#fdf0d8; color:#8a5a12; font-size:9px; font-style:normal; font-weight:900; text-transform:uppercase; }
+.result-lot { gap:2px; border-top:1px solid var(--ui-border); }
+.result-lot.chosen { background:#eaf5ef; }
+.result-lot strong { font-size:12px; }
+.result-lot small { color:var(--ui-ink-muted); font-size:11px; }
+
+/* What the cost is about to land on. */
+.picker-chosen { display:grid; gap:2px; padding:9px 11px; border:1px solid #a8c6ea; border-radius:8px; background:#f3f8ff; }
+.picker-chosen span { color:var(--ui-ink-muted); font-size:9px; font-weight:800; letter-spacing:.04em; text-transform:uppercase; }
+.picker-chosen strong { font-size:13px; }
+.picker-chosen small { color:#36506f; font-size:11.5px; }
+.picker-chosen .picker-record { color:#8a97a8; font-family:ui-monospace,'Cascadia Mono',Consolas,monospace; font-size:10.5px; }

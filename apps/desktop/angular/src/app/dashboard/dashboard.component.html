@@ -45,7 +45,8 @@
             <em>{{ group.lots.length }} {{ group.lots.length === 1 ? 'lot' : 'lots' }}</em>
           </div>
         </div>
-        <div class="lot-row" *ngFor="let lot of group.lots; trackBy: trackLot">
+        <div class="lot-row" *ngFor="let lot of group.lots; trackBy: trackLot"
+          (dblclick)="openLot(lot)" title="Double-click to open this lot's own record">
           <span class="lot-tag" title="Type this code when billing">{{ lot.tag || '—' }}</span>
           <div class="lot-source">
             <strong>{{ lot.supplierName }}</strong>
